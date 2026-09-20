@@ -27,3 +27,11 @@ FIXED/CHANGED:
 - Wall material now uses the brick tile as `map` + `bumpMap` (mortar recesses read in relief); noise tile kept as roughness variation
 - Per-instance tint upgraded from grayscale jitter to RGB value + warm/cool drift (`tintR/G/B`) so walls no longer read as clones
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e759cf2
+
+## LOOP 5 — Floor and ceiling
+FIXED/CHANGED:
+- `makeFloorTexture` replaced by `makeCobbleTexture` (procedural cobblestone: jittered rounded stones, worn highlights, seated shadows, dust speckle) used as map + bumpMap on the floor in `src/game/world.js`
+- Ceiling now dark planks via new `makePlankTexture` (board seams, grain streaks)
+- Dark wooden ceiling beams every 3 cells, both orientations (shadow-casting, noise-bumped)
+- 6 hanging chains: curved TubeGeometry segments with sag from the ceiling (one anchored in the entrance cell and one in the centre chamber, which are always open; 4 seeded positions elsewhere)
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: c8d1b9c

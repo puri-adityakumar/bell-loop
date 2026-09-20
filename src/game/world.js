@@ -418,9 +418,11 @@ export class BellLoopGame {
     this.hemisphere = new THREE.HemisphereLight(0x141c2a, 0x030407, 0.2)
     this.scene.add(this.hemisphere)
 
-    // the flashlight: a spotlight parented to the camera *position*, whose
-    // target lags behind the view direction (that lag is the horror)
-    this.flashlight = new THREE.SpotLight(PALETTE.flashlight, 55, 34, 0.46, 0.55, 2)
+    // the flashlight (loop 6): a warm lamp cone with a soft penumbra edge. It
+    // is the scene's ONLY shadow-casting light — candle points stay shadow-free
+    // for speed — and its target lags behind the view direction (that lag is
+    // the horror).
+    this.flashlight = new THREE.SpotLight(0xffdca0, 55, 34, 0.5, 0.62, 1.8)
     this.flashlight.castShadow = true
     this.flashlight.shadow.mapSize.set(1024, 1024)
     this.flashlight.shadow.camera.near = 0.2
@@ -1210,6 +1212,22 @@ export class BellLoopGame {
     this._flashDesired.copy(this.camera.position).addScaledVector(this._forward, 9)
     // the lag: the cone catches up with where you are looking
     this.flashlightTarget.position.lerp(this._flashDesired, 1 - Math.exp(-5.5 * dt))
+
+    // loop 6: battery dying as the bell approaches — in the last 8 seconds the
+    // lamp browns out in irregular dips, then recovers after the reset
+    const BASE = 55
+    let desired = BASE
+    if (this.phase === PHASE.PLAYING && this.timeLeft < 8) {
+      const danger = 1 - this.timeLeft / 8
+      const dip = Math.max(0, flickerNoise(this.animTime * 2.3 + 1.4)) * danger
+      desired = BASE * (1 - 0.5 * dip)
+    } else if (this.phase === PHASE.RESET && this.resetElapsed < 1.2) {
+      desired = BASE * 0.72 // the toll knocks the battery for a moment
+    }
+    this.flashlight.intensity += (desired - this.flashlight.intensity) * (1 - Math.exp(-11 * dt))
+    // colour cools as it browns out
+    const warmth = this.flashlight.intensity / BASE
+    this.flashlight.color.setRGB(1, 0.8 + 0.06 * warmth, 0.55 + 0.13 * warmth)
   }
 
   _updateShrines(dt) {
