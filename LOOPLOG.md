@@ -42,3 +42,12 @@ FIXED/CHANGED:
 - Battery behaviour: irregular brown-out dips in the last 8s of a loop (flickerNoise-driven, deepening with danger), a post-toll dip at reset start, smooth exponential intensity recovery, and a colour that cools as it dims
 - Lag-follow cone retained and tuned
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: dd5ade3
+
+## LOOP 7 — Candle flames
+FIXED/CHANGED:
+- New `makeFlameSpriteTexture` (procedural teardrop glow) in `src/game/world.js`; the stretched-sphere flame replaced by 3 layered additive sprites per shrine, each bobbing/swaying at its own frequency, opacity+scale driven by the flicker field and the ignite ramp
+- Point light now pulses both intensity AND radius (`flameLight.distance` breathes 7.4..8.8)
+- Ember particles: 12-point Points cloud per shrine rising from the wick with lateral drift and recycle; simulated + visible only while lit
+- Unlit candles read waxy-dead: greyer duller wax (0x57554e), roughness 0.88 vs lit 0.62
+- `_applyShrineStates` / `_lightShrine` / `_updateShrines` updated for the flames array + embers
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: ff46f6c
