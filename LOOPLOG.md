@@ -81,3 +81,10 @@ FIXED/CHANGED:
 - Walls no longer pop: `_captureWallPositions` snapshots the standing layout at reset start; `_updateWallMatrices` glides walls present in both layouts from old to new cell over the whole reset (easeInOut on `wallAnimT`)
 - `src/game/audio.js`: `bellToll` now runs through a per-toll bus feeding `_echoTail` — two damped lowpass repeats (~0.21 s / ~0.38 s, 50% then 27% level, slight random jitter) reading as stone-corridor returns
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 152818f
+
+## LOOP 12 — Audio depth (whispers, footsteps, second bell)
+FIXED/CHANGED:
+- `src/game/audio.js`: `_buildWhisper` — bandpassed noise (2600 Hz sibilance + 420 Hz chest) riding slow inhale/exhale sine LFOs into the ambient bus; stopped in `stopAmbient`
+- `footstep`: surface variation — scuff drifts 620–1080 Hz, 30% chance of a "raised cobble" strike (narrower band, +25% level), sprints land higher/harder
+- `_distantSecondBell` — scheduled 14–30 s: quiet (0.11), lowpassed 540 Hz, pitch-offset (175–215 Hz), detuned partials with a REVERSED swell envelope, patched through the ambient bus
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 2809529

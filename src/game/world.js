@@ -1171,8 +1171,9 @@ export class BellLoopGame {
         // in place so the fog visibly swirls behind the overlay
         this._updateStartDrift(dt)
         break
-      default:
-        // WON (frozen scene)
+      case PHASE.WON:
+        // loop 13: final toll, light holds, black creeps in, ambience released
+        this._updateWin(dt)
         break
     }
     this._updateFlashlight(dt)
@@ -1272,7 +1273,38 @@ export class BellLoopGame {
     this.door.target = 1
     this.door.leak.visible = false
     this.audio?.winChord()
+    // loop 13: choreography state — final toll at 0.9s, black by 4.2s,
+    // ambience released once the picture is gone
+    this.winElapsed = 0
+    this.winTolled = false
+    this.winAmbientStopped = false
     if (typeof document.exitPointerLock === 'function') document.exitPointerLock()
+  }
+
+  /** loop 13: the win plays out — toll, light swells, then black takes it. */
+  _updateWin(dt) {
+    this.winElapsed += dt
+    const elapsed = this.winElapsed
+
+    // one last, very low toll — the loop closing behind you
+    if (!this.winTolled && elapsed >= 0.9) {
+      this.winTolled = true
+      this.audio?.bellToll(0, 110, 0.5)
+      this.addShake(0.05)
+    }
+
+    // the black creeps in only after the chord has had its moment
+    const FADE_DELAY = 1.6
+    const FADE_TIME = 2.6
+    const fade =
+      elapsed <= FADE_DELAY ? 0 : Math.min(1, (elapsed - FADE_DELAY) / FADE_TIME)
+    this.store.set({ fade })
+
+    // release the ambience once the screen is fully dark
+    if (!this.winAmbientStopped && elapsed >= FADE_DELAY + FADE_TIME + 0.4) {
+      this.winAmbientStopped = true
+      this.audio?.stopAmbient()
+    }
   }
 
   // -------------------------------------------------------------------------
