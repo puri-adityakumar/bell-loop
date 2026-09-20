@@ -1131,14 +1131,41 @@ export class BellLoopGame {
       case PHASE.RESET:
         this._updateReset(dt)
         break
+      case PHASE.START:
+        // loop 10: the title screen breathes — the camera drifts very slowly
+        // in place so the fog visibly swirls behind the overlay
+        this._updateStartDrift(dt)
+        break
       default:
-        // START (overlay up, world frozen and sunken) and WON (frozen scene)
+        // WON (frozen scene)
         break
     }
     this._updateFlashlight(dt)
     this._updateShrines(dt)
     this._updateDoor(dt)
     this._updateSpawnLight(dt)
+  }
+
+  /** loop 10: slow breathing camera drift while the title screen is up. */
+  _updateStartDrift(dt) {
+    if (!this._startDriftBase) {
+      this._startDriftBase = {
+        x: this.camera.position.x,
+        y: this.camera.position.y,
+        z: this.camera.position.z,
+        yaw: this.player.yaw,
+      }
+    }
+    const t = this.animTime
+    const base = this._startDriftBase
+    this.camera.position.set(
+      base.x + Math.sin(t * 0.11) * 0.22,
+      base.y + Math.sin(t * 0.07 + 1.3) * 0.045,
+      base.z + Math.cos(t * 0.09) * 0.22,
+    )
+    this.player.yaw = base.yaw + Math.sin(t * 0.05) * 0.06
+    this.player.pitch = Math.sin(t * 0.06 + 0.7) * 0.02
+    this.player._applyCamera()
   }
 
   _updatePlaying(dt, state) {

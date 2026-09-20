@@ -59,3 +59,9 @@ FIXED/CHANGED:
 - Loop counter re-typeset: thin letter-spaced uppercase, negative margin re-centering
 - `src/ui/styles.css`: `.flame-sigil` block, `sigil-flicker` + `heartbeat-throb` keyframes, heartbeat trace styles
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e7fca73
+
+## LOOP 9 — Audio ambience
+FIXED/CHANGED:
+- `src/game/audio.js`: sub-bass rumble bed added to the drone bus (32 Hz sine vs 33.3 Hz triangle beat + noise through 55 Hz lowpass, ~17 s swell LFO); ducks and stops with ambience
+- Scheduled corridor events via `_scheduleAmbient` (self-rescheduling timers, cleared in `stopAmbient`): `_windGust` (bandpass noise swell, 4–12 s), `_distantClang` (muffled bell-partial hit far back in the mix, 9–22 s), `_waterDrip` (pitch-glide blip + plink echo, 2.5–8 s)
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e8bc846
