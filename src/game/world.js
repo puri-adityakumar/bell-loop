@@ -293,6 +293,26 @@ function makeBrickTexture(size = 256, seed = 4242) {
   return texture
 }
 
+/** Soft teardrop glow used by the layered flame sprites (loop 7). */
+function makeFlameSpriteTexture(size = 64) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const gradient = ctx.createRadialGradient(size / 2, size * 0.62, 2, size / 2, size * 0.62, size * 0.5)
+  gradient.addColorStop(0, 'rgba(255,240,200,1)')
+  gradient.addColorStop(0.35, 'rgba(255,170,70,0.85)')
+  gradient.addColorStop(0.7, 'rgba(200,80,20,0.3)')
+  gradient.addColorStop(1, 'rgba(120,30,0,0)')
+  ctx.fillStyle = gradient
+  ctx.beginPath()
+  ctx.ellipse(size / 2, size * 0.58, size * 0.32, size * 0.46, 0, 0, Math.PI * 2)
+  ctx.fill()
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
 // ---------------------------------------------------------------------------
 // the game
 // ---------------------------------------------------------------------------
@@ -338,6 +358,7 @@ export class BellLoopGame {
     this.cobbleTexture = makeCobbleTexture()
     this.plankTexture = makePlankTexture()
     this.brickTexture = makeBrickTexture()
+    this.flameSpriteTexture = makeFlameSpriteTexture()
 
     this._buildLights()
     this._buildStaticGeometry()
@@ -730,10 +751,23 @@ export class BellLoopGame {
         drips.push(drip, blob)
       }
 
-      const flameMaterial = new THREE.MeshBasicMaterial({ color: PALETTE.flame })
-      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), flameMaterial)
-      flame.scale.set(0.8, 1.7, 0.8)
-      flame.position.y = 1.34
+      // layered sprite flame (loop 7): three additive teardrops that wobble at
+      // different frequencies, replacing the old stretched sphere
+      const flames = [0, 1, 2].map((layer) => {
+        const sprite = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            map: this.flameSpriteTexture,
+            color: PALETTE.flame,
+            transparent: true,
+            opacity: 0,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          }),
+        )
+        sprite.position.y = 1.3 + layer * 0.02
+        sprite.visible = false
+        return sprite
+      })
 
       const halo = new THREE.Mesh(
         new THREE.SphereGeometry(0.22, 10, 10),
@@ -745,6 +779,34 @@ export class BellLoopGame {
         }),
       )
       halo.position.y = 1.34
+
+      // tiny embers rising from a lit candle (loop 7): one Points cloud per
+      // shrine, recycled positions, only simulated while lit
+      const EMBER_COUNT = 12
+      const emberPositions = new Float32Array(EMBER_COUNT * 3)
+      const emberSpeeds = new Float32Array(EMBER_COUNT)
+      for (let i = 0; i < EMBER_COUNT; i++) {
+        emberPositions[i * 3] = (dripRng() - 0.5) * 0.06
+        emberPositions[i * 3 + 1] = 1.2 + dripRng() * 0.5
+        emberPositions[i * 3 + 2] = (dripRng() - 0.5) * 0.06
+        emberSpeeds[i] = 0.18 + dripRng() * 0.3
+      }
+      const emberGeometry = new THREE.BufferGeometry()
+      emberGeometry.setAttribute('position', new THREE.BufferAttribute(emberPositions, 3))
+      const embers = new THREE.Points(
+        emberGeometry,
+        new THREE.PointsMaterial({
+          color: 0xffb35c,
+          size: 0.035,
+          transparent: true,
+          opacity: 0.75,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          sizeAttenuation: true,
+        }),
+      )
+      embers.visible = false
+      embers.frustumCulled = false
 
       const flameLight = new THREE.PointLight(PALETTE.candleLight, 0, 8, 2)
       flameLight.position.y = 1.38
@@ -762,8 +824,9 @@ export class BellLoopGame {
         ring,
         candle,
         ...drips,
-        flame,
+        ...flames,
         halo,
+        embers,
         flameLight,
         glimmer,
       )
@@ -774,7 +837,9 @@ export class BellLoopGame {
         group,
         candle,
         candleMaterial,
-        flame,
+        flames,
+        embers,
+        emberSpeeds,
         halo,
         flameLight,
         glimmer,
@@ -785,7 +850,8 @@ export class BellLoopGame {
         baseIntensity: 14,
       })
     }
-    this._unlitCandleColor = new THREE.Color(0x67655c)
+    // waxy-dead unlit candle: greyer, duller wax, melted sheen gone
+    this._unlitCandleColor = new THREE.Color(0x57554e)
     this._ivoryColor = new THREE.Color(PALETTE.ivory)
   }
 
@@ -810,11 +876,15 @@ export class BellLoopGame {
       const lit = Boolean(candles[id])
       shrine.lit = lit
       shrine.level = lit ? 1 : 0
-      shrine.flame.visible = lit
+      for (const flame of shrine.flames) flame.visible = lit
+      shrine.embers.visible = lit
       shrine.halo.visible = lit
       shrine.flameLight.intensity = lit ? shrine.baseIntensity : 0
+      shrine.flameLight.distance = lit ? 8 : 0
       shrine.glimmer.intensity = lit ? 0 : 1.2
+      // waxy-dead when unlit: greyer, duller wax
       shrine.candleMaterial.color.copy(lit ? this._ivoryColor : this._unlitCandleColor)
+      shrine.candleMaterial.roughness = lit ? 0.62 : 0.88
     }
   }
 
@@ -824,10 +894,12 @@ export class BellLoopGame {
     this.store.update((state) => applyLightCandle(state, shrine.id))
     shrine.lit = true
     shrine.level = 0
-    shrine.flame.visible = true
+    for (const flame of shrine.flames) flame.visible = true
+    shrine.embers.visible = true
     shrine.halo.visible = true
     shrine.glimmer.intensity = 0
     shrine.candleMaterial.color.copy(this._ivoryColor)
+    shrine.candleMaterial.roughness = 0.62
     this.audio?.candleWhoosh()
     if (candlesLit(this.store.get().candles) === SHRINE_IDS.length) {
       // all three are burning: something changed at the centre of the maze
@@ -1237,10 +1309,36 @@ export class BellLoopGame {
       shrine.level += (1 - shrine.level) * (1 - Math.exp(-4 * dt))
       const noise = flickerNoise(this.animTime + shrine.flicker)
       const n01 = 0.5 + 0.5 * noise
+      // layered flame: each layer bobs and sways at its own frequency
+      shrine.flames.forEach((flame, layer) => {
+        const wobble = flickerNoise(this.animTime * (1.6 + layer * 0.7) + shrine.flicker + layer * 2.1)
+        flame.position.x = wobble * (0.014 + layer * 0.008)
+        flame.position.y = 1.3 + layer * 0.02 + n01 * 0.015
+        const s = (1.1 - layer * 0.28) * shrine.level
+        flame.scale.set(s * (0.9 + 0.1 * n01), s * (1.7 + 0.25 * n01), 1)
+        flame.material.opacity = (0.8 - layer * 0.22) * shrine.level * (0.85 + 0.15 * n01)
+      })
+      // pulsing point light: intensity flicker + breathing radius
       shrine.flameLight.intensity = shrine.baseIntensity * shrine.level * (0.82 + 0.18 * n01)
-      shrine.flame.scale.set(0.8 - 0.06 * n01, 1.55 + 0.3 * n01, 0.8 - 0.06 * n01)
+      shrine.flameLight.distance = 7.4 + 1.4 * n01
       shrine.halo.scale.setScalar(0.9 + 0.25 * n01)
       shrine.halo.material.opacity = 0.1 + 0.06 * n01
+
+      // embers: rise, drift, recycle back into the candle top
+      const positions = shrine.embers.geometry.attributes.position
+      const array = positions.array
+      for (let i = 0; i < shrine.emberSpeeds.length; i++) {
+        const idx = i * 3
+        array[idx + 1] += shrine.emberSpeeds[i] * dt
+        array[idx] += Math.sin(this.animTime * 2.1 + i * 1.7) * 0.02 * dt
+        array[idx + 2] += Math.cos(this.animTime * 1.7 + i * 2.3) * 0.02 * dt
+        if (array[idx + 1] > 1.95) {
+          array[idx] = (Math.random() - 0.5) * 0.06
+          array[idx + 1] = 1.2
+          array[idx + 2] = (Math.random() - 0.5) * 0.06
+        }
+      }
+      positions.needsUpdate = true
     }
   }
 

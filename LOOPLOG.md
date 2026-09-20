@@ -35,3 +35,10 @@ FIXED/CHANGED:
 - Dark wooden ceiling beams every 3 cells, both orientations (shadow-casting, noise-bumped)
 - 6 hanging chains: curved TubeGeometry segments with sag from the ceiling (one anchored in the entrance cell and one in the centre chamber, which are always open; 4 seeded positions elsewhere)
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: c8d1b9c
+
+## LOOP 6 — Flashlight rework
+FIXED/CHANGED:
+- Flashlight rebuilt in `src/game/world.js`: warmer colour (0xffdca0), wider cone (0.5), deeper penumbra (0.62), softer decay (1.8); documented as the scene's single shadow-casting light
+- Battery behaviour: irregular brown-out dips in the last 8s of a loop (flickerNoise-driven, deepening with danger), a post-toll dip at reset start, smooth exponential intensity recovery, and a colour that cools as it dims
+- Lag-follow cone retained and tuned
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: dd5ade3
