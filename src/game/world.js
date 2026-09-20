@@ -155,41 +155,83 @@ function makeNoiseTexture(size = 128, seed = 1337) {
   return texture
 }
 
-/** Dark stone flagstones with grout lines and speckle. */
-function makeFloorTexture(size = 256, tiles = 4, seed = 99) {
+/** Dark cobblestone: rounded, jittered stones in dark grout with speckle. */
+function makeCobbleTexture(size = 256, cells = 5, seed = 99) {
   const canvas = document.createElement('canvas')
   canvas.width = size
   canvas.height = size
   const ctx = canvas.getContext('2d')
-  const noise = valueNoiseField(size, 12, seededRandom(seed))
-  const speck = seededRandom(seed + 5)
-  const tile = size / tiles
-  const image = ctx.createImageData(size, size)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const gx = x % tile
-      const gy = y % tile
-      const grout = gx < 2 || gy < 2 ? 0.55 : 1
-      const v = (0.55 + noise(x, y) * 0.45) * grout
-      const c = Math.max(0, Math.min(255, Math.round(v * 255)))
-      const i = (y * size + x) * 4
-      image.data[i] = c
-      image.data[i + 1] = c
-      image.data[i + 2] = Math.min(255, c + 4)
-      image.data[i + 3] = 255
+  const rand = seededRandom(seed)
+  ctx.fillStyle = '#0b0d12'
+  ctx.fillRect(0, 0, size, size)
+  const cell = size / cells
+  for (let j = 0; j < cells; j++) {
+    for (let i = 0; i < cells; i++) {
+      const cx = (i + 0.3 + rand() * 0.4) * cell
+      const cy = (j + 0.3 + rand() * 0.4) * cell
+      const rx = cell * (0.36 + rand() * 0.1)
+      const ry = cell * (0.32 + rand() * 0.1)
+      const v = 0.3 + rand() * 0.4
+      // the stone
+      ctx.fillStyle = `rgb(${Math.round(30 + 44 * v)},${Math.round(34 + 46 * v)},${Math.round(42 + 52 * v)})`
+      ctx.beginPath()
+      ctx.ellipse(cx, cy, rx, ry, rand() * Math.PI, 0, Math.PI * 2)
+      ctx.fill()
+      // worn highlight, top-left
+      ctx.strokeStyle = `rgba(190,200,215,${0.05 + rand() * 0.07})`
+      ctx.lineWidth = Math.max(1.5, cell * 0.06)
+      ctx.beginPath()
+      ctx.ellipse(cx, cy, rx * 0.82, ry * 0.82, 0, Math.PI * 1.05, Math.PI * 1.75)
+      ctx.stroke()
+      // seated shadow, bottom-right
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)'
+      ctx.beginPath()
+      ctx.ellipse(cx, cy, rx * 0.85, ry * 0.85, 0, Math.PI * 0.1, Math.PI * 0.8)
+      ctx.stroke()
     }
   }
-  ctx.putImageData(image, 0, 0)
-  // speckle of dust
-  ctx.globalAlpha = 0.25
-  for (let i = 0; i < 900; i++) {
-    ctx.fillStyle = speck() > 0.5 ? '#3b4150' : '#0a0c10'
-    ctx.fillRect(Math.floor(speck() * size), Math.floor(speck() * size), 1, 1)
+  // dust speckle
+  ctx.globalAlpha = 0.2
+  for (let i = 0; i < 1100; i++) {
+    const v = Math.floor(rand() * 60)
+    ctx.fillStyle = `rgb(${v},${v},${v + 5})`
+    ctx.fillRect(Math.floor(rand() * size), Math.floor(rand() * size), 1, 1)
   }
   ctx.globalAlpha = 1
   const texture = new THREE.CanvasTexture(canvas)
   texture.wrapS = THREE.RepeatWrapping
   texture.wrapT = THREE.RepeatWrapping
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
+/** Dark plank ceiling tile: long boards with seams and grain streaks. */
+function makePlankTexture(size = 128, boards = 5, seed = 606) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const rand = seededRandom(seed)
+  const boardH = size / boards
+  for (let b = 0; b < boards; b++) {
+    const v = 0.32 + rand() * 0.3
+    ctx.fillStyle = `rgb(${Math.round(34 * v + 10)},${Math.round(24 * v + 7)},${Math.round(15 * v + 5)})`
+    ctx.fillRect(0, b * boardH, size, boardH)
+    // grain streaks
+    ctx.globalAlpha = 0.25
+    for (let s = 0; s < 9; s++) {
+      ctx.fillStyle = rand() > 0.5 ? '#0a0705' : '#4a3826'
+      ctx.fillRect(0, b * boardH + rand() * boardH, size, 1)
+    }
+    ctx.globalAlpha = 1
+    // seam shadow between boards
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'
+    ctx.fillRect(0, b * boardH, size, 2)
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.colorSpace = THREE.SRGBColorSpace
   return texture
 }
 
@@ -293,7 +335,8 @@ export class BellLoopGame {
     this.camera = new THREE.PerspectiveCamera(72, this._aspect(), 0.05, 160)
 
     this.noiseTexture = makeNoiseTexture()
-    this.floorTexture = makeFloorTexture()
+    this.cobbleTexture = makeCobbleTexture()
+    this.plankTexture = makePlankTexture()
     this.brickTexture = makeBrickTexture()
 
     this._buildLights()
@@ -396,13 +439,14 @@ export class BellLoopGame {
 
   _buildStaticGeometry() {
     const repeat = FLOOR_SIZE / (CELL_SIZE * 2)
-    this.floorTexture.repeat.set(repeat, repeat)
-    this.floorTexture.colorSpace = THREE.SRGBColorSpace
+    this.cobbleTexture.repeat.set(repeat, repeat)
     this.floor = new THREE.Mesh(
       new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE),
       new THREE.MeshStandardMaterial({
         color: PALETTE.floor,
-        map: this.floorTexture,
+        map: this.cobbleTexture,
+        bumpMap: this.cobbleTexture,
+        bumpScale: 0.05,
         roughness: 1,
         metalness: 0,
       }),
@@ -411,13 +455,77 @@ export class BellLoopGame {
     this.floor.receiveShadow = true
     this.scene.add(this.floor)
 
+    // ceiling: dark planks
+    const plankRepeat = FLOOR_SIZE / (CELL_SIZE * 4)
+    this.plankTexture.repeat.set(plankRepeat, plankRepeat)
     this.ceiling = new THREE.Mesh(
       new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE),
-      new THREE.MeshStandardMaterial({ color: PALETTE.ceiling, roughness: 1, metalness: 0 }),
+      new THREE.MeshStandardMaterial({
+        color: PALETTE.ceiling,
+        map: this.plankTexture,
+        roughness: 1,
+        metalness: 0,
+      }),
     )
     this.ceiling.rotation.x = Math.PI / 2
     this.ceiling.position.y = WALL_HEIGHT
     this.scene.add(this.ceiling)
+
+    // --- loop 5: dark wooden ceiling beams every few cells ------------------
+    const beamMaterial = new THREE.MeshStandardMaterial({
+      color: 0x241a10,
+      roughness: 0.92,
+      metalness: 0.04,
+      bumpMap: this.noiseTexture,
+      bumpScale: 0.02,
+    })
+    const span = GRID * CELL_SIZE
+    const beamStep = CELL_SIZE * 3
+    const beamY = WALL_HEIGHT - 0.09
+    const longBeamGeometry = new THREE.BoxGeometry(span + 6, 0.16, 0.26)
+    const crossBeamGeometry = new THREE.BoxGeometry(0.26, 0.16, span + 6)
+    for (let k = -2; k * beamStep <= span + beamStep; k++) {
+      const pos = k * beamStep + span / 2
+      const alongX = new THREE.Mesh(longBeamGeometry, beamMaterial)
+      alongX.position.set(span / 2, beamY, pos)
+      const alongZ = new THREE.Mesh(crossBeamGeometry, beamMaterial)
+      alongZ.position.set(pos, beamY, span / 2)
+      for (const beam of [alongX, alongZ]) {
+        beam.castShadow = true
+        beam.receiveShadow = true
+        this.scene.add(beam)
+      }
+    }
+
+    // --- occasional hanging chains (curved tube segments) --------------------
+    const chainMaterial = new THREE.MeshStandardMaterial({
+      color: 0x2a2d33,
+      roughness: 0.55,
+      metalness: 0.8,
+    })
+    const chainRng = mulberry32(0xca10) // fixed stream, static dressing
+    const anchors = [
+      cellToWorld(0, 0), // always open: the entrance cell
+      cellToWorld(7, 7), // always open: the centre chamber
+    ]
+    for (let i = 0; i < 4; i++) {
+      const c = Math.floor(chainRng() * GRID)
+      const r = Math.floor(chainRng() * GRID)
+      anchors.push(cellToWorld(r, c))
+    }
+    for (const anchor of anchors) {
+      const sag = 0.22 + chainRng() * 0.3
+      const drop = 0.7 + chainRng() * 0.5
+      const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(anchor.x, WALL_HEIGHT - 0.02, anchor.z),
+        new THREE.Vector3(anchor.x + sag * 0.4, WALL_HEIGHT - drop * 0.55 - sag * 0.2, anchor.z + sag * 0.3),
+        new THREE.Vector3(anchor.x + sag * 0.7, WALL_HEIGHT - drop, anchor.z + sag * 0.6),
+      ])
+      const link = new THREE.Mesh(new THREE.TubeGeometry(curve, 14, 0.022, 6), chainMaterial)
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.014, 5, 10), chainMaterial)
+      ring.position.set(anchor.x, WALL_HEIGHT - 0.02, anchor.z)
+      this.scene.add(link, ring)
+    }
   }
 
   /**

@@ -20,3 +20,10 @@ FIXED/CHANGED:
 - `_setDoorOpen`/`_updateDoor`/`_applyDoorSwing` reworked for the double hinge
 - Note: `verify-world.mjs` (headless world smoke test) fails 4/12 — verified pre-existing on pristine baseline commit 8b3c3b9 (stale harness vs current world API), unrelated to this series; the task gate (verify.mjs + build) is what is tracked per loop
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 6ea0d66
+
+## LOOP 4 — Wall materials
+FIXED/CHANGED:
+- New `makeBrickTexture` in `src/game/world.js`: procedural dark stone-brick tile (offset rows, recessed mortar lines, per-brick value variation, chips, grime speckle, damp streaks)
+- Wall material now uses the brick tile as `map` + `bumpMap` (mortar recesses read in relief); noise tile kept as roughness variation
+- Per-instance tint upgraded from grayscale jitter to RGB value + warm/cool drift (`tintR/G/B`) so walls no longer read as clones
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e759cf2
