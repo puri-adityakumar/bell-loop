@@ -1,15 +1,15 @@
 /* THE BELL LOOP — palette-driven UI shell (PLAN.md §2). */
 
 :root {
-  --bg: #05060a;
-  --fog: #070a12;
-  --wall: #2a2f3a;
-  --floor: #14171f;
-  --wood: #4a3320;
-  --flame: #ffb347;
-  --flame-light: #ff9a3c;
-  --text: #d8cfae;
-  --brass: #8c7a3f;
+  --bg: #030407;
+  --fog: #04060c;
+  --wall: #232832;
+  --floor: #10131a;
+  --wood: #3d2a1a;
+  --flame: #ffa54a;
+  --flame-light: #ff9236;
+  --text: #cfc6a4;
+  --brass: #7d6c39;
   --serif: Georgia, 'Times New Roman', serif;
 }
 
@@ -40,22 +40,32 @@
   pointer-events: none;
 }
 
-/* --- grain + vignette ---------------------------------------------------- */
+/* --- grain + vignette (loop 1: heavier film grain, tighter vignette) ------ */
 
 .vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: radial-gradient(ellipse at 50% 50%, rgba(5, 6, 10, 0) 42%, rgba(3, 4, 8, 0.72) 100%);
+  background:
+    radial-gradient(ellipse at 50% 50%, rgba(3, 4, 8, 0) 34%, rgba(2, 3, 6, 0.82) 100%);
 }
 
 .grain {
   position: absolute;
   inset: -40%;
   pointer-events: none;
-  opacity: 0.05;
+  opacity: 0.09;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   animation: grain-jitter 0.66s steps(3) infinite;
+}
+
+/* loop 1: cold cellar desaturation wash over the whole frame */
+.desat {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: rgba(24, 30, 44, 0.14);
+  mix-blend-mode: saturation;
 }
 
 @keyframes grain-jitter {

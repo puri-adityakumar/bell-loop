@@ -38,20 +38,20 @@ import {
 } from './loop.js'
 import { PlayerController } from './player.js'
 
-/** Palette (PLAN.md §2). */
+/** Palette (PLAN.md §2) — loop-1 atmosphere pass: colder, deader, darker. */
 export const PALETTE = Object.freeze({
-  bg: 0x05060a,
-  fog: 0x070a12,
-  wall: 0x2a2f3a,
-  floor: 0x14171f,
-  ceiling: 0x0a0c12,
-  wood: 0x4a3320,
-  flame: 0xffb347,
-  candleLight: 0xff9a3c,
-  ivory: 0xe8ddc8,
-  brass: 0x8c7a3f,
-  cold: 0x445566,
-  flashlight: 0xffe6b0,
+  bg: 0x030407,
+  fog: 0x04060c,
+  wall: 0x232832,
+  floor: 0x10131a,
+  ceiling: 0x07090e,
+  wood: 0x3d2a1a,
+  flame: 0xffa54a,
+  candleLight: 0xff9236,
+  ivory: 0xd9cfba,
+  brass: 0x7d6c39,
+  cold: 0x3a4a5c,
+  flashlight: 0xffe2a8,
 })
 
 const MAX_WALL_INSTANCES = 400
@@ -218,7 +218,8 @@ export class BellLoopGame {
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.1
+    // loop 1: colder cellar dread — darker exposure, desaturated via ACES film
+    this.renderer.toneMappingExposure = 0.92
     this.canvas = this.renderer.domElement
     this.canvas.style.display = 'block'
     this.canvas.style.width = '100%'
@@ -228,7 +229,7 @@ export class BellLoopGame {
     // --- scene --------------------------------------------------------------
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(PALETTE.bg)
-    this.scene.fog = new THREE.FogExp2(PALETTE.fog, 0.095)
+    this.scene.fog = new THREE.FogExp2(PALETTE.fog, 0.135)
     this.camera = new THREE.PerspectiveCamera(72, this._aspect(), 0.05, 160)
 
     this.noiseTexture = makeNoiseTexture()
@@ -309,8 +310,8 @@ export class BellLoopGame {
   // -------------------------------------------------------------------------
 
   _buildLights() {
-    // a whisper of ambient so unlit faces are not pure black
-    this.hemisphere = new THREE.HemisphereLight(0x1a2233, 0x05060a, 0.25)
+    // a whisper of ambient so unlit faces are not pure black (colder blue now)
+    this.hemisphere = new THREE.HemisphereLight(0x141c2a, 0x030407, 0.2)
     this.scene.add(this.hemisphere)
 
     // the flashlight: a spotlight parented to the camera *position*, whose

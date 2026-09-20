@@ -51,6 +51,7 @@ export default function App() {
       <div className="scene" ref={containerRef} />
       <Hud hud={hud} />
       <div className="vignette" aria-hidden="true" />
+      <div className="desat" aria-hidden="true" />
       <div className="grain" aria-hidden="true" />
       {hud.phase === PHASE.START ? <StartOverlay onBegin={begin} /> : null}
       {hud.phase === PHASE.WON ? <WinOverlay onRestart={restart} /> : null}
