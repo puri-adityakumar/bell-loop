@@ -58,6 +58,8 @@ const MAX_WALL_INSTANCES = 400
 const FLOOR_SIZE = GRID * CELL_SIZE + 12
 const PROMPT_RANGE = 2.4 // metres: an unlit shrine is "in reach"
 const INTRO_FADE_SECONDS = 1.4
+/** How far the double door swings once it "stands open" (ajar, leaking light). */
+const DOOR_AJAR_SWING = 0.12
 /** Facing into the maze from the (0,0) corner spawn. */
 const ENTRANCE_YAW = -Math.PI * 0.75
 
@@ -662,10 +664,12 @@ export class BellLoopGame {
   // -------------------------------------------------------------------------
 
   /**
-   * The chamber at (7,7) has exactly one doorway (maze.centerApproach); its
-   * other three edges are ordinary maze walls. The door group is built in a
-   * canonical "approach from the north" frame and then yawed into place, so one
-   * geometry serves all four approach directions.
+   * The exit door at the centre of the maze (loop 3 rework): an arched stone
+   * frame — jambs plus radial voussoirs with a keystone — holding an
+   * iron-banded double door. Closed while the shrines burn; slightly ajar with
+   * warm light leaking through the centre crack once it stands open; it can
+   * then swing fully wide (the win sequence). One canonical "approach from the
+   * north" frame is yawed into place, so one geometry serves all approaches.
    */
   _buildDoor() {
     const woodMaterial = new THREE.MeshStandardMaterial({
@@ -678,41 +682,81 @@ export class BellLoopGame {
       roughness: 0.45,
       metalness: 0.7,
     })
+    const ironMaterial = new THREE.MeshStandardMaterial({
+      color: 0x23262c,
+      roughness: 0.5,
+      metalness: 0.82,
+    })
+    const stoneMaterial = new THREE.MeshStandardMaterial({
+      color: 0x39404b,
+      roughness: 0.96,
+      metalness: 0.02,
+      bumpMap: this.noiseTexture,
+      bumpScale: 0.04,
+    })
     const group = new THREE.Group()
     const openingHalf = CELL_SIZE / 2 - WALL_THICKNESS / 2 // 1.33m
+    const frameZ = -CELL_SIZE / 2
 
-    const postGeometry = new THREE.BoxGeometry(0.24, 2.52, 0.42)
-    const postLeft = new THREE.Mesh(postGeometry, woodMaterial)
-    postLeft.position.set(-openingHalf + 0.12, 1.26, -CELL_SIZE / 2)
-    const postRight = new THREE.Mesh(postGeometry, woodMaterial)
-    postRight.position.set(openingHalf - 0.12, 1.26, -CELL_SIZE / 2)
-    const lintel = new THREE.Mesh(
-      new THREE.BoxGeometry(openingHalf * 2 + 0.3, 0.44, 0.46),
-      woodMaterial,
-    )
-    lintel.position.set(0, 2.72, -CELL_SIZE / 2)
-    for (const part of [postLeft, postRight, lintel]) {
+    // --- arched stone frame -------------------------------------------------
+    const jambGeometry = new THREE.BoxGeometry(0.3, 2.24, 0.52)
+    const jambLeft = new THREE.Mesh(jambGeometry, stoneMaterial)
+    jambLeft.position.set(-openingHalf - 0.02, 1.12, frameZ)
+    const jambRight = new THREE.Mesh(jambGeometry, stoneMaterial)
+    jambRight.position.set(openingHalf + 0.02, 1.12, frameZ)
+    // voussoirs: radial wedge boxes along a squashed semicircle + a keystone
+    const voussoirs = []
+    const ARCH_SPRING = 2.16
+    const ARCH_RISE = 0.56
+    for (let i = 0; i <= 8; i++) {
+      const a = Math.PI - (i / 8) * Math.PI
+      const isKeystone = i === 4
+      const wedge = new THREE.Mesh(
+        new THREE.BoxGeometry(isKeystone ? 0.46 : 0.4, isKeystone ? 0.26 : 0.22, 0.56),
+        stoneMaterial,
+      )
+      wedge.position.set(
+        Math.cos(a) * (openingHalf + 0.06),
+        ARCH_SPRING + Math.sin(a) * ARCH_RISE,
+        frameZ,
+      )
+      wedge.rotation.z = a
+      voussoirs.push(wedge)
+    }
+    for (const part of [jambLeft, jambRight, ...voussoirs]) {
       part.castShadow = true
       part.receiveShadow = true
     }
 
-    // hinge group at the left post; the panel swings about it
-    const hinge = new THREE.Group()
-    hinge.position.set(-openingHalf + 0.16, 0, -CELL_SIZE / 2)
-    const panelWidth = (openingHalf - 0.16) * 2
-    const panel = new THREE.Mesh(
-      new THREE.BoxGeometry(panelWidth, 2.44, 0.12),
-      woodMaterial,
-    )
-    panel.position.set(panelWidth / 2, 1.22, 0)
-    panel.castShadow = true
-    panel.receiveShadow = true
-    hinge.add(panel)
-
-    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.022, 6, 14), brassMaterial)
-    handle.rotation.y = Math.PI / 2
-    handle.position.set(panelWidth - 0.28, 1.16, 0.1)
-    hinge.add(handle)
+    // --- iron-banded double door --------------------------------------------
+    const hingeL = new THREE.Group()
+    hingeL.position.set(-openingHalf + 0.14, 0, frameZ)
+    const hingeR = new THREE.Group()
+    hingeR.position.set(openingHalf - 0.14, 0, frameZ)
+    const panelWidth = openingHalf - 0.18
+    const panelGeometry = new THREE.BoxGeometry(panelWidth, 2.34, 0.1)
+    const panelL = new THREE.Mesh(panelGeometry, woodMaterial)
+    panelL.position.set(panelWidth / 2, 1.17, 0)
+    const panelR = new THREE.Mesh(panelGeometry, woodMaterial)
+    panelR.position.set(-panelWidth / 2, 1.17, 0)
+    for (const panel of [panelL, panelR]) {
+      panel.castShadow = true
+      panel.receiveShadow = true
+    }
+    // two iron bands per leaf + a ring handle
+    for (const hinge of [hingeL, hingeR]) {
+      const sign = hinge === hingeL ? 1 : -1
+      for (const bandY of [0.52, 1.78]) {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(panelWidth * 0.94, 0.09, 0.035), ironMaterial)
+        band.position.set(sign * (panelWidth / 2), bandY, 0.07)
+        hinge.add(band)
+      }
+      const handle = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.02, 6, 14), brassMaterial)
+      handle.position.set(sign * (panelWidth - 0.22), 1.12, 0.09)
+      hinge.add(handle)
+    }
+    hingeL.add(panelL)
+    hingeR.add(panelR)
 
     // what is beyond: a warm plane on the far wall of the chamber, plus a glow
     const beyond = new THREE.Mesh(
@@ -723,23 +767,37 @@ export class BellLoopGame {
     beyond.rotation.y = Math.PI
     beyond.visible = false
 
+    // the crack: a thin warm sliver + a weak light that leak into the corridor
+    const leak = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.045, 2.2),
+      new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0.85 }),
+    )
+    leak.position.set(0, 1.2, frameZ + 0.06)
+    leak.visible = false
+    const leakLight = new THREE.PointLight(0xffb066, 0, 5.5, 2)
+    leakLight.position.set(0, 1.3, frameZ - 0.35)
+    leakLight.visible = false
+
     const doorLight = new THREE.PointLight(0xffb066, 0, 18, 2)
     doorLight.position.set(0, 1.5, 0)
     const hintLight = new THREE.PointLight(0x2a3a55, 1.1, 6.5, 2)
     hintLight.position.set(0, 1.4, -CELL_SIZE / 2 - 0.6)
 
-    group.add(postLeft, postRight, lintel, hinge, beyond, doorLight, hintLight)
+    group.add(jambLeft, jambRight, ...voussoirs, hingeL, hingeR, beyond, leak, leakLight, doorLight, hintLight)
     this.scene.add(group)
 
     this.door = {
       group,
-      hinge,
-      panel,
+      hingeL,
+      hingeR,
       beyond,
+      leak,
+      leakLight,
       doorLight,
       hintLight,
       swing: 0,
       target: 0,
+      wide: false, // true during the win sequence: swing fully open
     }
     this.doorOpen = false
   }
@@ -779,19 +837,26 @@ export class BellLoopGame {
   _setDoorOpen(open, instant = false) {
     const wasOpen = this.doorOpen
     this.doorOpen = open
-    this.door.target = open ? 1 : 0
+    this.door.target = open ? (this.door.wide ? 1 : DOOR_AJAR_SWING) : 0
     if (instant) {
-      this.door.swing = open ? 1 : 0
-      this.door.hinge.rotation.y = -1.85 * this.door.swing
+      this.door.swing = this.door.target
+      this._applyDoorSwing()
     }
     this.door.beyond.visible = open
-    this.door.doorLight.visible = open
+    this.door.leak.visible = open && !this.door.wide
+    this.door.leakLight.visible = open
     this.door.hintLight.visible = !open
     this._refreshColliders()
     if (open && !wasOpen && !instant) {
       this.audio?.doorCreak(1.4)
       this.doorOpened = true
     }
+  }
+
+  /** Both leaves swing outward symmetrically: 0 = shut, 1 = wide open. */
+  _applyDoorSwing() {
+    this.door.hingeL.rotation.y = -1.5 * this.door.swing
+    this.door.hingeR.rotation.y = 1.5 * this.door.swing
   }
 
   // -------------------------------------------------------------------------
@@ -889,6 +954,10 @@ export class BellLoopGame {
     this.player.enabled = false
     this.nearestShrine = null
     this.store.set({ phase: PHASE.WON, prompt: null, fade: 0 })
+    // the double door swings fully wide as the win light floods in
+    this.door.wide = true
+    this.door.target = 1
+    this.door.leak.visible = false
     this.audio?.winChord()
     if (typeof document.exitPointerLock === 'function') document.exitPointerLock()
   }
@@ -986,10 +1055,15 @@ export class BellLoopGame {
     const door = this.door
     if (Math.abs(door.swing - door.target) > 0.0005) {
       door.swing += (door.target - door.swing) * (1 - Math.exp(-3.2 * dt))
-      door.hinge.rotation.y = -1.85 * easeOutCubic01(door.swing)
+      this._applyDoorSwing()
     }
     if (door.doorLight.visible) {
       door.doorLight.intensity = 15 + Math.sin(this.animTime * 1.7) * 2.5
+    }
+    if (door.leakLight.visible) {
+      // warm light breathing through the crack; gone once the door is wide
+      door.leakLight.intensity = (1.6 + Math.sin(this.animTime * 1.7) * 0.5) * (1 - door.swing)
+      door.leak.material.opacity = 0.85 * (1 - door.swing)
     }
   }
 
@@ -1030,6 +1104,7 @@ export class BellLoopGame {
     this.swapped = false
     this.introActive = false
     this.doorOpened = false
+    this.door.wide = false
     this.startedOnce = true
     this.player.enabled = true
     this.timeLeft = LOOP_SECONDS
