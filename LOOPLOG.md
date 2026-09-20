@@ -74,3 +74,10 @@ FIXED/CHANGED:
 - `src/game/world.js`: `_updateStartDrift` — slow breathing camera drift + yaw/pitch sway during PHASE.START so the fog visibly swirls; cleared on begin
 - `src/ui/styles.css`: `.title--start`, `.title-veil`, `.title-sub`, `.title-controls` blocks + `title-start-in`, `title-flicker`, `subtitle-in` keyframes
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 075a26c
+
+## LOOP 11 — Bell transition cinematics
+FIXED/CHANGED:
+- `src/game/world.js`: screenshake — `addShake` (clamped 0.14) kicked once per toll in `_updateReset` (tracked via `resetTollIndex`), decaying exp(-2.6t), applied as pos/roll offset in `_applyShake` after the player's camera write
+- Walls no longer pop: `_captureWallPositions` snapshots the standing layout at reset start; `_updateWallMatrices` glides walls present in both layouts from old to new cell over the whole reset (easeInOut on `wallAnimT`)
+- `src/game/audio.js`: `bellToll` now runs through a per-toll bus feeding `_echoTail` — two damped lowpass repeats (~0.21 s / ~0.38 s, 50% then 27% level, slight random jitter) reading as stone-corridor returns
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 152818f

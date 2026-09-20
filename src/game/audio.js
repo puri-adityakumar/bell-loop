@@ -169,6 +169,105 @@ export class AudioManager {
     this._scheduleAmbient(() => this._windGust(), 4, 12)
     this._scheduleAmbient(() => this._distantClang(), 9, 22)
     this._scheduleAmbient(() => this._waterDrip(), 2.5, 8)
+    // loop 12: whispered breath layer
+    this._whisper = this._buildWhisper()
+    // loop 12: a second bell somewhere else in the dark — quiet, offset,
+    // reversed envelope
+    this._scheduleAmbient(() => this._distantSecondBell(), 14, 30)
+  }
+
+  /**
+   * loop 12: whispered ambience — bandpassed noise shaped like slow breathing:
+   * two bandpass filters (sibilance + chest), amplitude riding a slow
+   * inhale/exhale LFO pair. Sits inside the ambient bus so it ducks with it.
+   */
+  _buildWhisper() {
+    if (!this.ctx) return null
+    const ctx = this.ctx
+    const target = this.ambient ? this.ambient.bus : this.master
+    const noise = this._noiseSource()
+    // sibilance: thin hiss band that carries the "shh"
+    const sib = ctx.createBiquadFilter()
+    sib.type = 'bandpass'
+    sib.frequency.value = 2600
+    sib.Q.value = 1.4
+    // chest: dark resonance under the hiss
+    const chest = ctx.createBiquadFilter()
+    chest.type = 'bandpass'
+    chest.frequency.value = 420
+    chest.Q.value = 0.9
+    const breath = ctx.createGain()
+    breath.gain.value = 0
+    // inhale (faster, brighter) and exhale (slower, darker) envelopes
+    const inhale = ctx.createOscillator()
+    inhale.type = 'sine'
+    inhale.frequency.value = 0.09
+    const exhale = ctx.createOscillator()
+    exhale.type = 'sine'
+    exhale.frequency.value = 0.062
+    const inhaleGain = ctx.createGain()
+    inhaleGain.gain.value = 0.016
+    const exhaleGain = ctx.createGain()
+    exhaleGain.gain.value = 0.011
+    inhale.connect(inhaleGain)
+    exhale.connect(exhaleGain)
+    inhaleGain.connect(breath.gain)
+    exhaleGain.connect(breath.gain)
+    const sibGain = ctx.createGain()
+    sibGain.gain.value = 0.4
+    const chestGain = ctx.createGain()
+    chestGain.gain.value = 0.6
+    noise.connect(sib)
+    noise.connect(chest)
+    sib.connect(sibGain)
+    chest.connect(chestGain)
+    sibGain.connect(breath)
+    chestGain.connect(breath)
+    breath.connect(target)
+    noise.start()
+    inhale.start()
+    exhale.start()
+    return { noise, inhale, exhale }
+  }
+
+  /**
+   * loop 12: the second bell. Same partial recipe as the toll, but quiet,
+   * muffled, offset in pitch, and with a REVERSED envelope — the partials swell
+   * up instead of striking, as if heard backwards through stone.
+   */
+  _distantSecondBell() {
+    if (!this.ctx) return
+    const ctx = this.ctx
+    const t0 = ctx.currentTime
+    const f0 = 175 + Math.random() * 40 // deliberately not the toll's 220
+    const muffle = ctx.createBiquadFilter()
+    muffle.type = 'lowpass'
+    muffle.frequency.value = 540
+    const bus = ctx.createGain()
+    bus.gain.value = 0.11
+    bus.connect(muffle)
+    muffle.connect(this.ambient ? this.ambient.bus : this.master)
+    const partials = [
+      { ratio: 0.5, gain: 0.5, tau: 2.2 },
+      { ratio: 1, gain: 1, tau: 1.9 },
+      { ratio: 1.19, gain: 0.35, tau: 1.6 },
+      { ratio: 2, gain: 0.4, tau: 1.4 },
+    ]
+    for (const p of partials) {
+      const osc = ctx.createOscillator()
+      osc.type = 'sine'
+      osc.frequency.value = f0 * p.ratio
+      osc.detune.value = 8 // sour, other
+      // reversed swell: slow attack, fast release
+      const g = ctx.createGain()
+      g.gain.setValueAtTime(0.0001, t0)
+      g.gain.linearRampToValueAtTime(p.gain, t0 + 1.1)
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.6)
+      osc.connect(g)
+      g.connect(bus)
+      osc.start(t0)
+      osc.stop(t0 + 1.8)
+    }
   }
 
   /** Schedule an ambience one-shot to repeat every min..max seconds. */
@@ -202,6 +301,18 @@ export class AudioManager {
     }
     this.ambient = null
     this.ambientGain = null
+    // loop 12: the whisper breathes with the ambience
+    if (this._whisper) {
+      const { noise, inhale, exhale } = this._whisper
+      for (const node of [noise, inhale, exhale]) {
+        try {
+          node.stop(now + 3)
+        } catch {
+          /* already stopped */
+        }
+      }
+      this._whisper = null
+    }
     if (this._ambientTimers) {
       for (const timer of this._ambientTimers) clearTimeout(timer)
       this._ambientTimers = []
@@ -374,19 +485,23 @@ export class AudioManager {
     e2.connect(this.master)
   }
 
-  /** Footstep: bandpassed noise scuff + a low thud. */
+  /** Footstep: bandpassed noise scuff + a low thud. Surface varies with speed. */
   footstep(sprinting = false) {
     if (!this.ctx) return
     const ctx = this.ctx
     const t0 = ctx.currentTime
     const level = sprinting ? 0.13 : 0.1
 
+    // loop 12: surface variation — the scuff drifts across the cobble band and
+    // catches stones at random; sprints land harder and higher
+    const scuffHz = 620 + Math.random() * 460 + (sprinting ? 160 : 0)
+    const stone = Math.random() < 0.3 // a lucky strike on a raised cobble
     const noise = this._noiseSource()
     const band = ctx.createBiquadFilter()
     band.type = 'bandpass'
-    band.frequency.value = 700 + Math.random() * 300
-    band.Q.value = 2
-    const ng = this._decayGain(level, 0.02, t0, 0.001)
+    band.frequency.value = scuffHz
+    band.Q.value = stone ? 3.2 : 2
+    const ng = this._decayGain(level * (stone ? 1.25 : 1), 0.02, t0, 0.001)
     noise.connect(band)
     band.connect(ng)
     ng.connect(this.master)
