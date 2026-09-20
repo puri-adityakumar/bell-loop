@@ -469,40 +469,92 @@ export class BellLoopGame {
   // shrines + candles
   // -------------------------------------------------------------------------
 
-  /** Three squat pedestals with a candle on top, built once and moved per loop. */
+  /**
+   * Proper 3D candle shrines (loop 2): a chipped stone pedestal — beveled
+   * square base, fluted column, irregular chipped cap — an iron drip-ring
+   * holder, and a stubby wax candle with drips frozen down its side. Built
+   * once, moved per loop.
+   */
   _buildShrines() {
-    const woodMaterial = new THREE.MeshStandardMaterial({
-      color: PALETTE.wood,
-      roughness: 0.9,
-      metalness: 0.05,
+    // cold graveyard stone; the shared noise tile reads as pitted surface
+    const stoneMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3d434e,
+      roughness: 0.97,
+      metalness: 0.02,
+      bumpMap: this.noiseTexture,
+      bumpScale: 0.035,
+    })
+    const stoneDark = new THREE.MeshStandardMaterial({
+      color: 0x2c313a,
+      roughness: 0.98,
+      metalness: 0.02,
+      bumpMap: this.noiseTexture,
+      bumpScale: 0.045,
+    })
+    const ironMaterial = new THREE.MeshStandardMaterial({
+      color: 0x22252b,
+      roughness: 0.52,
+      metalness: 0.85,
     })
     this.shrines = new Map()
+    const dripRng = mulberry32(0xbea2) // one stream, so the three shrines differ
     for (const id of SHRINE_IDS) {
       const group = new THREE.Group()
 
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.52, 0.18, 10), woodMaterial)
-      base.position.y = 0.09
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.36, 0.55, 10), woodMaterial)
-      shaft.position.y = 0.46
-      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.3, 0.1, 10), woodMaterial)
-      cap.position.y = 0.78
-      for (const part of [base, shaft, cap]) {
+      // beveled square plinth (a 4-sided frustum rotated 45° reads as chamfered)
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.47, 0.16, 4), stoneDark)
+      base.position.y = 0.08
+      base.rotation.y = Math.PI / 4
+
+      // fluted column with a waist
+      const column = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 0.62, 6), stoneMaterial)
+      column.position.y = 0.47
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 6), stoneDark)
+      collar.position.y = 0.72
+
+      // chipped cap: irregular 7-gon slab, uneven rim
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.2, 0.1, 7), stoneMaterial)
+      cap.position.y = 0.83
+      cap.rotation.y = dripRng() * Math.PI
+      for (const part of [base, column, collar, cap]) {
         part.castShadow = true
         part.receiveShadow = true
       }
 
+      // iron holder ring + drip dish on the cap
+      const dish = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.03, 10), ironMaterial)
+      dish.position.y = 0.9
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.018, 6, 14), ironMaterial)
+      ring.rotation.x = Math.PI / 2
+      ring.position.y = 0.935
+      dish.castShadow = true
+
+      // the candle: wax stub with drips frozen down its side
       const candleMaterial = new THREE.MeshStandardMaterial({
         color: PALETTE.ivory,
-        roughness: 0.72,
+        roughness: 0.62,
       })
-      const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.095, 0.36, 8), candleMaterial)
-      candle.position.y = 1.01
+      const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.095, 0.34, 9), candleMaterial)
+      candle.position.y = 1.05
       candle.castShadow = true
+      const dripCount = 3 + Math.floor(dripRng() * 3)
+      const drips = []
+      for (let i = 0; i < dripCount; i++) {
+        const h = 0.07 + dripRng() * 0.13
+        const angle = dripRng() * Math.PI * 2
+        const r = 0.082
+        const drip = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.026, h, 5), candleMaterial)
+        drip.position.set(Math.cos(angle) * r, 1.12 - h / 2, Math.sin(angle) * r)
+        const blob = new THREE.Mesh(new THREE.SphereGeometry(0.026, 5, 4), candleMaterial)
+        blob.position.set(Math.cos(angle) * r, 1.12 - h, Math.sin(angle) * r)
+        blob.scale.set(1, 0.55, 1)
+        drips.push(drip, blob)
+      }
 
       const flameMaterial = new THREE.MeshBasicMaterial({ color: PALETTE.flame })
       const flame = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), flameMaterial)
       flame.scale.set(0.8, 1.7, 0.8)
-      flame.position.y = 1.3
+      flame.position.y = 1.34
 
       const halo = new THREE.Mesh(
         new THREE.SphereGeometry(0.22, 10, 10),
@@ -513,16 +565,29 @@ export class BellLoopGame {
           depthWrite: false,
         }),
       )
-      halo.position.y = 1.3
+      halo.position.y = 1.34
 
       const flameLight = new THREE.PointLight(PALETTE.candleLight, 0, 8, 2)
-      flameLight.position.y = 1.34
+      flameLight.position.y = 1.38
 
       // a cold glimmer marks an UNLIT shrine: findable in the dark, clearly off
       const glimmer = new THREE.PointLight(PALETTE.cold, 1.2, 2.8, 2)
       glimmer.position.y = 1.15
 
-      group.add(base, shaft, cap, candle, flame, halo, flameLight, glimmer)
+      group.add(
+        base,
+        column,
+        collar,
+        cap,
+        dish,
+        ring,
+        candle,
+        ...drips,
+        flame,
+        halo,
+        flameLight,
+        glimmer,
+      )
       this.scene.add(group)
 
       this.shrines.set(id, {
@@ -541,7 +606,7 @@ export class BellLoopGame {
         baseIntensity: 14,
       })
     }
-    this._unlitCandleColor = new THREE.Color(0x6b6b62)
+    this._unlitCandleColor = new THREE.Color(0x67655c)
     this._ivoryColor = new THREE.Color(PALETTE.ivory)
   }
 
