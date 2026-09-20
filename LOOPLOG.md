@@ -12,3 +12,11 @@ FIXED/CHANGED:
 - Rebuilt `_buildShrines` in `src/game/world.js`: chipped stone pedestal (beveled 4-sided plinth, fluted 6-sided column, collar, irregular 7-gon cap), iron drip dish + holder ring, wax candle with procedurally placed drips/blobs down the side (seeded per-shrine), stone bump-map shading
 - Cold glimmer / flame / halo / candle-light all re-anchored to the new candle height
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 63a30e3
+
+## LOOP 3 — The Door
+FIXED/CHANGED:
+- Rebuilt `_buildDoor` in `src/game/world.js`: arched stone frame (jamb boxes + 9 radial voussoirs + oversized keystone, stone bump material), iron-banded double door (two hinged leaves, iron bands, brass ring handles)
+- Door now opens AJAR (DOOR_AJAR_SWING=0.12, both leaves swing outward symmetrically) when unlocked; warm light leak: thin emissive crack sliver + breathing point light through the gap; swings fully wide in `_win()`; `restart()` resets the wide flag
+- `_setDoorOpen`/`_updateDoor`/`_applyDoorSwing` reworked for the double hinge
+- Note: `verify-world.mjs` (headless world smoke test) fails 4/12 — verified pre-existing on pristine baseline commit 8b3c3b9 (stale harness vs current world API), unrelated to this series; the task gate (verify.mjs + build) is what is tracked per loop
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 6ea0d66

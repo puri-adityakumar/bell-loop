@@ -193,6 +193,64 @@ function makeFloorTexture(size = 256, tiles = 4, seed = 99) {
   return texture
 }
 
+/**
+ * Dark stone-brick wall tile (loop 4): rows of offset bricks with recessed
+ * mortar lines, per-brick value variation and speckle noise. The same canvas
+ * doubles as bumpMap, so mortar lines read as real recesses.
+ */
+function makeBrickTexture(size = 256, seed = 4242) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const rand = seededRandom(seed)
+  const rows = 6
+  const brickH = size / rows
+  const brickW = size / 3
+  const mortar = 4
+  ctx.fillStyle = '#1a1d24' // mortar
+  ctx.fillRect(0, 0, size, size)
+  for (let row = 0; row < rows; row++) {
+    const offset = (row % 2) * (brickW / 2)
+    for (let col = -1; col <= 3; col++) {
+      const x = col * brickW + offset
+      const y = row * brickH
+      // per-brick value: cold grey with occasional warmer stone
+      const v = 0.52 + rand() * 0.4
+      const warm = rand() < 0.22 ? 10 : 0
+      const r = Math.round(38 * v + warm)
+      const g = Math.round(42 * v + warm * 0.7)
+      const b = Math.round(52 * v)
+      ctx.fillStyle = `rgb(${r},${g},${b})`
+      ctx.fillRect(x + mortar / 2, y + mortar / 2, brickW - mortar, brickH - mortar)
+      // chipped highlight on one edge, shadow on the other
+      ctx.fillStyle = `rgba(255,255,255,${0.03 + rand() * 0.05})`
+      ctx.fillRect(x + mortar / 2, y + mortar / 2, brickW - mortar, 2)
+      ctx.fillStyle = 'rgba(0,0,0,0.22)'
+      ctx.fillRect(x + mortar / 2, y + brickH - mortar / 2 - 2, brickW - mortar, 2)
+    }
+  }
+  // grime speckle + vertical damp streaks
+  ctx.globalAlpha = 0.16
+  for (let i = 0; i < 1400; i++) {
+    const v = Math.floor(rand() * 70)
+    ctx.fillStyle = `rgb(${v},${v},${v + 6})`
+    ctx.fillRect(Math.floor(rand() * size), Math.floor(rand() * size), 1, 1)
+  }
+  ctx.globalAlpha = 0.08
+  for (let i = 0; i < 7; i++) {
+    const x = rand() * size
+    ctx.fillStyle = '#06070b'
+    ctx.fillRect(x, 0, 3 + rand() * 7, size)
+  }
+  ctx.globalAlpha = 1
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
 // ---------------------------------------------------------------------------
 // the game
 // ---------------------------------------------------------------------------
@@ -236,6 +294,7 @@ export class BellLoopGame {
 
     this.noiseTexture = makeNoiseTexture()
     this.floorTexture = makeFloorTexture()
+    this.brickTexture = makeBrickTexture()
 
     this._buildLights()
     this._buildStaticGeometry()
@@ -369,10 +428,13 @@ export class BellLoopGame {
   _buildWalls() {
     this.wallMaterial = new THREE.MeshStandardMaterial({
       color: PALETTE.wall,
-      roughness: 0.93,
+      // loop 4: real stone-brick surface — the map carries the brick pattern,
+      // the same tile doubles as bumpMap so mortar lines recess
+      map: this.brickTexture,
+      roughness: 0.95,
       metalness: 0,
-      bumpMap: this.noiseTexture,
-      bumpScale: 0.02,
+      bumpMap: this.brickTexture,
+      bumpScale: 0.035,
       roughnessMap: this.noiseTexture,
     })
     this.wallMeshX = new THREE.InstancedMesh(
@@ -417,7 +479,7 @@ export class BellLoopGame {
       const mesh = entry.axis === 'x' ? this.wallMeshX : this.wallMeshZ
       const index = counts[entry.axis]
       mesh.setMatrixAt(index, this._wallMatrix)
-      this._wallColor.setRGB(entry.jitter, entry.jitter, entry.jitter)
+      this._wallColor.setRGB(entry.tintR, entry.tintG, entry.tintB)
       mesh.setColorAt(index, this._wallColor)
       counts[entry.axis] += 1
     }
@@ -442,13 +504,18 @@ export class BellLoopGame {
     this.wallEntries = maze.walls.map((wall) => {
       const distance = Math.hypot(wall.cx - entrance.x, wall.cz - entrance.z)
       if (distance > maxDistance) maxDistance = distance
+      // per-instance tint: slight value + warm/cool drift so no two walls clone
+      const v = 0.86 + jitterRng() * 0.2
+      const tint = jitterRng() < 0.5 ? 1 : -1
       return {
         axis: wall.axis,
         x: wall.cx,
         y: WALL_HEIGHT / 2,
         z: wall.cz,
         distance,
-        jitter: 0.92 + jitterRng() * 0.16,
+        tintR: v + tint * 0.035 * jitterRng(),
+        tintG: v + tint * 0.012 * jitterRng(),
+        tintB: v - tint * 0.03 * jitterRng(),
         delay: 0,
       }
     })
