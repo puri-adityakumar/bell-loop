@@ -58,6 +58,11 @@ export default function Hud({ hud }) {
         <div className={`hud__prompt${hud.prompt === 'light' ? ' hud__prompt--on' : ''}`} aria-hidden="true">
           <span className="hud__prompt-key">E</span>
         </div>
+        {hud.showFps && hud.phase !== PHASE.START ? (
+          <div className="hud__fps" aria-hidden="true">
+            {hud.fps}
+          </div>
+        ) : null}
       </div>
     </>
   )

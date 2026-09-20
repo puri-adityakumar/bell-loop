@@ -53,6 +53,8 @@ export function createInitialState(loopNumber = 1, phase = PHASE.PLAYING) {
     doorOpen: false,
     fade: phase === PHASE.START ? 1 : 0,
     prompt: null, // 'light' while an unlit shrine is in reach
+    fps: 0, // loop 14: hidden perf counter (toggled with F)
+    showFps: false,
   }
 }
 
@@ -218,6 +220,8 @@ export function hudSnapshot(state) {
     doorOpen: state.doorOpen,
     fade: state.fade,
     prompt: state.prompt,
+    fps: state.fps ?? 0, // loop 14: hidden perf counter, toggled with F
+    showFps: state.showFps ?? false,
   }
 }
 

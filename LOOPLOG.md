@@ -88,3 +88,8 @@ FIXED/CHANGED:
 - `footstep`: surface variation — scuff drifts 620–1080 Hz, 30% chance of a "raised cobble" strike (narrower band, +25% level), sprints land higher/harder
 - `_distantSecondBell` — scheduled 14–30 s: quiet (0.11), lowpassed 540 Hz, pitch-offset (175–215 Hz), detuned partials with a REVERSED swell envelope, patched through the ambient bus
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 2809529
+
+## LOOP 13 — Win sequence choreography
+FIXED/CHANGED:
+- `src/game/world.js`: `PHASE.WON` no longer a frozen no-op — `_updateWin` runs the choreography: deep 110 Hz final toll + small shake at 0.9 s, fade held at 0 until 1.6 s then eased to black by 4.2 s, `stopAmbient` fires 0.4 s after full black
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 6ef0596

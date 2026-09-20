@@ -335,7 +335,7 @@ export class BellLoopGame {
     this.renderer = options.createRenderer
       ? options.createRenderer(container)
       : new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)) // loop 14: DPR clamp
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 450, false)
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
@@ -395,6 +395,9 @@ export class BellLoopGame {
     this.maze = null
     this.wallEntries = []
     this.meterAccum = 0
+    // loop 14: rolling FPS meter (sampled twice a second, hidden unless F)
+    this._fpsFrames = 0
+    this._fpsAccum = 0
     /** Authoritative countdown; mirror into the store at ~20Hz. */
     this.timeLeft = LOOP_SECONDS
     this.clock = new THREE.Clock()
@@ -402,6 +405,10 @@ export class BellLoopGame {
     // --- input --------------------------------------------------------------
     this._onKeyDown = (e) => {
       if (e.code === 'KeyE' || e.code === 'Space') this.tryLight()
+      // loop 14: hidden performance counter, toggled with F
+      if (e.code === 'KeyF') {
+        this.store.update((state) => ({ ...state, showFps: !state.showFps }))
+      }
     }
     this._onMouseDown = () => {
       this.tryLight()
@@ -1151,6 +1158,15 @@ export class BellLoopGame {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this._animate)
     const dt = Math.min(this.clock.getDelta(), 0.05)
+    // loop 14: sample the frame rate over 0.5 s windows
+    this._fpsFrames++
+    this._fpsAccum += dt
+    if (this._fpsAccum >= 0.5) {
+      const fps = Math.round(this._fpsFrames / this._fpsAccum)
+      this._fpsFrames = 0
+      this._fpsAccum = 0
+      if (this.store.get().showFps) this.store.set({ fps })
+    }
     this.update(dt)
     this.renderer.render(this.scene, this.camera)
   }
