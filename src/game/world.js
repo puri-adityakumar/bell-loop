@@ -382,6 +382,14 @@ export class BellLoopGame {
     this.introActive = false
     this.startedOnce = false
     this.animTime = 0
+    // loop 11: cinematic screenshake — amplitude decays, applied as a temporary
+    // camera offset after the player writes its pose each frame
+    this.shake = 0 // current shake amplitude (world units)
+    this._shakeSeed = Math.random() * 100
+    // loop 11: wall animation — during RESET walls travel between layouts over
+    // time instead of popping at the swap
+    this.wallAnimFrom = null // map "axis:x|z" -> { x, z, y } old positions
+    this.wallAnimT = 0 // 0..1 progress of the cross-fade
     this.nearestShrine = null
     this.doorOpened = false
     this.maze = null
@@ -600,12 +608,25 @@ export class BellLoopGame {
    */
   _updateWallMatrices(progressFor) {
     const counts = { x: 0, z: 0 }
+    const slide = this.wallAnimFrom ? easeInOut01(this.wallAnimT) : 1
     for (const entry of this.wallEntries) {
       let p = progressFor(entry)
       if (p < 0) p = 0
       else if (p > 1) p = 1
+      let x = entry.x
+      let z = entry.z
+      // loop 11: while the cross-fade runs, walls that exist in BOTH layouts
+      // glide from their old cell to the new one; the rest just rise/sink
+      if (slide < 1) {
+        const key = `${entry.axis}:${Math.round(entry.x * 2)}|${Math.round(entry.z * 2)}`
+        const from = this.wallAnimFrom.get(key)
+        if (from) {
+          x = from.x + (entry.x - from.x) * slide
+          z = from.z + (entry.z - from.z) * slide
+        }
+      }
       const y = entry.y - (1 - p) * (WALL_HEIGHT + 0.5)
-      this._wallOffset.set(entry.x, y, entry.z)
+      this._wallOffset.set(x, y, z)
       this._wallMatrix.compose(this._wallOffset, this._wallQuat, this._wallScale)
       const mesh = entry.axis === 'x' ? this.wallMeshX : this.wallMeshZ
       const index = counts[entry.axis]
@@ -620,6 +641,20 @@ export class BellLoopGame {
     this.wallMeshZ.instanceMatrix.needsUpdate = true
     if (this.wallMeshX.instanceColor) this.wallMeshX.instanceColor.needsUpdate = true
     if (this.wallMeshZ.instanceColor) this.wallMeshZ.instanceColor.needsUpdate = true
+  }
+
+  /** loop 11: snapshot the standing walls so the next layout can glide in. */
+  _captureWallPositions() {
+    this.wallAnimFrom = new Map()
+    for (const entry of this.wallEntries) {
+      // only walls currently standing take part in the slide
+      if (entry.y > 0) {
+        this.wallAnimFrom.set(`${entry.axis}:${Math.round(entry.x * 2)}|${Math.round(entry.z * 2)}`, {
+          x: entry.x,
+          z: entry.z,
+        })
+      }
+    }
   }
 
   /**
@@ -1144,6 +1179,8 @@ export class BellLoopGame {
     this._updateShrines(dt)
     this._updateDoor(dt)
     this._updateSpawnLight(dt)
+    // loop 11: the shake writes last so it rides on top of the player's pose
+    this._applyShake(dt)
   }
 
   /** loop 10: slow breathing camera drift while the title screen is up. */
@@ -1249,6 +1286,10 @@ export class BellLoopGame {
     this.player.enabled = true // still free to walk while the walls sink
     this.store.set({ phase: PHASE.RESET, prompt: null })
     this.audio?.bellSequence(RESET_TIMELINE.tolls, RESET_TIMELINE.tollSpacing)
+    // loop 11: snapshot the old layout so the walls can glide to the new one
+    this._captureWallPositions()
+    this.wallAnimT = 0
+    this.resetTollIndex = 0 // shake lands with each toll in _updateReset
     this.timeLeft = LOOP_SECONDS
   }
 
@@ -1256,9 +1297,24 @@ export class BellLoopGame {
     this.resetElapsed += dt
     const elapsed = this.resetElapsed
 
+    // loop 11: the shake lands with every toll, decaying between them
+    while (
+      this.resetTollIndex < RESET_TIMELINE.tolls &&
+      elapsed >= this.resetTollIndex * RESET_TIMELINE.tollSpacing
+    ) {
+      this.addShake(0.055)
+      this.resetTollIndex++
+    }
+
     if (!this.swapped && elapsed >= RESET_SWAP_AT) {
       this.swapped = true
       this._swapLoop()
+    }
+
+    // loop 11: the walls glide to their new cells through the whole reset
+    if (this.wallAnimFrom) {
+      this.wallAnimT = Math.min(1, this.wallAnimT + dt / RESET_TIMELINE.total)
+      if (this.wallAnimT >= 1) this.wallAnimFrom = null
     }
 
     if (this.swapped) {
@@ -1275,6 +1331,27 @@ export class BellLoopGame {
       this.player.enabled = true
       this.store.set({ phase: PHASE.PLAYING })
     }
+  }
+
+  /**
+   * loop 11: kick the screenshake. Amplitude is clamped so stacked tolls
+   * cannot fling the camera through a wall.
+   */
+  addShake(amount) {
+    this.shake = Math.min(0.14, this.shake + amount)
+  }
+
+  /** loop 11: apply the decaying shake offset after the player's camera write. */
+  _applyShake(dt) {
+    if (this.shake <= 0.0005) {
+      this.shake = 0
+      return
+    }
+    this.shake *= Math.exp(-2.6 * dt)
+    const t = this.animTime * 31 + this._shakeSeed
+    this.camera.position.x += Math.sin(t * 1.1) * this.shake
+    this.camera.position.y += Math.sin(t * 1.7 + 1.2) * this.shake * 0.6
+    this.camera.rotation.z += Math.sin(t * 0.9 + 0.5) * this.shake * 0.35
   }
 
   /** Everything the bell changes: layout, shrines, door, spawn, loop counter. */

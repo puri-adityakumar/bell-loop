@@ -65,3 +65,12 @@ FIXED/CHANGED:
 - `src/game/audio.js`: sub-bass rumble bed added to the drone bus (32 Hz sine vs 33.3 Hz triangle beat + noise through 55 Hz lowpass, ~17 s swell LFO); ducks and stops with ambience
 - Scheduled corridor events via `_scheduleAmbient` (self-rescheduling timers, cleared in `stopAmbient`): `_windGust` (bandpass noise swell, 4–12 s), `_distantClang` (muffled bell-partial hit far back in the mix, 9–22 s), `_waterDrip` (pitch-glide blip + plink echo, 2.5–8 s)
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e8bc846
+
+## LOOP 10 — Start overlay title screen
+NOTE: loop 9 delivered the ambience part of roadmap item 11 early; loop 10 returns to roadmap order (item 9, start overlay).
+FIXED/CHANGED:
+- `src/ui/StartOverlay.jsx`: full title card — stacked THE/BELL/LOOP in huge tracked-out serif with staggered flicker, italic whisper subtitle between hairline rules, "CLICK TO WAKE UP" prompt, bottom controls hint (WASD / MOUSE / E)
+- Overlay background now transparent with a radial darkness veil — the live 3D world (drifting fog, door glow) is visible behind the title
+- `src/game/world.js`: `_updateStartDrift` — slow breathing camera drift + yaw/pitch sway during PHASE.START so the fog visibly swirls; cleared on begin
+- `src/ui/styles.css`: `.title--start`, `.title-veil`, `.title-sub`, `.title-controls` blocks + `title-start-in`, `title-flicker`, `subtitle-in` keyframes
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 075a26c

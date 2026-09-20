@@ -309,6 +309,10 @@ export class AudioManager {
     if (!this.ctx) return
     const ctx = this.ctx
     const t0 = ctx.currentTime + when
+    // loop 11: a per-toll bus so the whole voice can feed the echo tail
+    const bus = ctx.createGain()
+    bus.gain.value = 1
+    bus.connect(this.master)
     const partials = [
       { ratio: 0.5, gain: 0.5, tau: 2.8 },
       { ratio: 1, gain: 1, tau: 2.4 },
@@ -322,7 +326,7 @@ export class AudioManager {
       osc.frequency.value = f0 * p.ratio
       const g = this._decayGain(level * p.gain, p.tau, t0, 0.006)
       osc.connect(g)
-      g.connect(this.master)
+      g.connect(bus)
       osc.start(t0)
       osc.stop(t0 + p.tau * 6 + 0.5)
     }
@@ -335,16 +339,39 @@ export class AudioManager {
     const ng = this._decayGain(level * 0.35, 0.03, t0, 0.001)
     noise.connect(strike)
     strike.connect(ng)
-    ng.connect(this.master)
+    ng.connect(bus)
     noise.start(t0)
     noise.stop(t0 + 0.4)
+    // loop 11: double echo tail off the toll bus
+    this._echoTail(bus, 0.21 + Math.random() * 0.06, 0.38 + Math.random() * 0.08, level * 0.5)
   }
 
-  /** The reset sequence: 3 tolls, 0.7s apart. */
+  /** The reset sequence: 3 tolls, 0.7s apart, each with a double echo tail. */
   bellSequence(tolls = 3, spacing = 0.7, f0 = 220) {
     for (let i = 0; i < tolls; i++) {
       this.bellToll(i * spacing, i === tolls - 1 ? f0 * 0.5 : f0, i === tolls - 1 ? 0.6 : 0.45)
     }
+  }
+
+  /**
+   * loop 11: double echo tail — two soft, bright-damped repeats of a voice,
+   * growing further apart and quieter, like stone corridors returning the call.
+   * @param {AudioNode} destination where to patch the echo chain
+   */
+  _echoTail(delayNodeTarget, delayA = 0.23, delayB = 0.41, level = 0.3) {
+    if (!this.ctx) return
+    const ctx = this.ctx
+    const e1 = this._decayGain(level, 0.25, ctx.currentTime + delayA, 0.01)
+    const e2 = this._decayGain(level * 0.55, 0.3, ctx.currentTime + delayA + delayB, 0.01)
+    // gentle lowpass on the echoes — hard surfaces eat the highs first
+    const damp = ctx.createBiquadFilter()
+    damp.type = 'lowpass'
+    damp.frequency.value = 900
+    delayNodeTarget.connect(damp)
+    damp.connect(e1)
+    damp.connect(e2)
+    e1.connect(this.master)
+    e2.connect(this.master)
   }
 
   /** Footstep: bandpassed noise scuff + a low thud. */
