@@ -26,3 +26,4 @@ dist-ssr
 # Oxlint cache (config .oxlintrc.json stays tracked)
 .oxlint-cache/
 node_modules/.cache/
+.vercel
