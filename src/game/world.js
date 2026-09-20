@@ -16,6 +16,11 @@ import {
   SHRINE_IDS,
   APPROACH_YAW,
   cellToWorld,
+  cellKey,
+  chebyshev,
+  DIRS,
+  distanceMap,
+  hasWall,
 } from './maze.js'
 import {
   PHASE,
@@ -313,6 +318,125 @@ function makeFlameSpriteTexture(size = 64) {
   return texture
 }
 
+/**
+ * loop 15: procedural engraved-glyph decals — angular scratched strokes, no
+ * lettering anywhere. Three variants are generated once and shared across the
+ * six wall engravings; per-placement seeds vary height, tilt and which wall.
+ */
+function makeGlyphTexture(seed) {
+  const size = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const rng = mulberry32(seed)
+
+  // one random angular scratch: square-cornered turns with occasional diagonals
+  const scratchPoints = () => {
+    const points = [[0, 0]]
+    let x = 0
+    let y = 0
+    const segments = 2 + Math.floor(rng() * 4)
+    for (let i = 0; i < segments; i++) {
+      const step = 14 + rng() * 26
+      const angle = (Math.floor(rng() * 4) * Math.PI) / 2 + (rng() < 0.3 ? Math.PI / 4 : 0)
+      x += Math.cos(angle) * step
+      y += Math.sin(angle) * step
+      points.push([x, y])
+    }
+    return points
+  }
+  const strokePts = (points, dx, dy, color, width) => {
+    ctx.strokeStyle = color
+    ctx.lineWidth = width
+    ctx.lineCap = 'square'
+    ctx.beginPath()
+    points.forEach(([px, py], i) => {
+      if (i === 0) ctx.moveTo(px + dx, py + dy)
+      else ctx.lineTo(px + dx, py + dy)
+    })
+    ctx.stroke()
+  }
+
+  const glyphs = 2 + Math.floor(rng() * 2)
+  for (let g = 0; g < glyphs; g++) {
+    ctx.save()
+    ctx.translate(40 + rng() * 150, 40 + rng() * 150)
+    ctx.rotate((rng() - 0.5) * 0.9)
+    const points = scratchPoints()
+    // shadow pass first, then the lit scratch on top: reads as carved-in stone
+    strokePts(points, 2.5, 3.5, 'rgba(0,0,0,0.6)', 7)
+    strokePts(points, 0, 0, 'rgba(216,206,178,0.92)', 4.5)
+    // a closing mark: scratch circle or chevron at the end of the walk
+    const end = points[points.length - 1]
+    const roll = rng()
+    if (roll < 0.4) {
+      ctx.strokeStyle = 'rgba(216,206,178,0.92)'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.arc(end[0] + 8, end[1] - 6, 5 + rng() * 4, 0, Math.PI * 2)
+      ctx.stroke()
+    } else if (roll < 0.7) {
+      ctx.strokeStyle = 'rgba(216,206,178,0.92)'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.moveTo(end[0], end[1])
+      ctx.lineTo(end[0] + 12, end[1] - 12)
+      ctx.lineTo(end[0] + 24, end[1])
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+  // grime pits so the decal never reads as a clean sticker
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'
+  for (let i = 0; i < 40; i++) {
+    ctx.fillRect(rng() * size, rng() * size, 1 + rng() * 3, 1 + rng() * 3)
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
+/**
+ * loop 15: a smeared handprint decal — palm blob, five fanned fingers, a low
+ * thumb — then speckle-eroded so only patches survive on the stone.
+ */
+function makeHandprintTexture(seed) {
+  const w = 128
+  const h = 160
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  const rng = mulberry32(seed)
+  ctx.fillStyle = 'rgba(255,255,255,0.95)'
+
+  const blob = (x, y, rx, ry, rot = 0) => {
+    ctx.beginPath()
+    ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  blob(64, 104, 30, 34) // palm
+  for (let i = 0; i < 4; i++) {
+    const angle = -0.34 + i * 0.22
+    const fx = 64 + Math.sin(angle) * 34
+    const fy = 66 - Math.cos(angle) * 18 - rng() * 6
+    blob(fx, fy, 7.5, 20 + rng() * 7, -angle * 0.8)
+  }
+  blob(30, 96, 9, 22, 1.05) // thumb, low and to the side
+  // erosion: punch speckle holes so it reads as a partial print, not a stamp
+  ctx.globalCompositeOperation = 'destination-out'
+  for (let i = 0; i < 260; i++) {
+    ctx.beginPath()
+    ctx.arc(rng() * w, rng() * h, 1 + rng() * 2.6, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.globalCompositeOperation = 'source-over'
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
 // ---------------------------------------------------------------------------
 // the game
 // ---------------------------------------------------------------------------
@@ -365,6 +489,7 @@ export class BellLoopGame {
     this._buildWalls()
     this._buildShrines()
     this._buildDoor()
+    this._buildMicroStory() // loop 15: engravings, handprint, toy boat
 
     // --- player -------------------------------------------------------------
     this.player = new PlayerController(this.camera, this.canvas, {
@@ -703,6 +828,7 @@ export class BellLoopGame {
 
     this._repositionShrines(maze)
     this._positionDoor(maze)
+    this._positionMicroStory(maze)
     this._setDoorOpen(doorOpen, true)
     return maze
   }
@@ -943,6 +1069,7 @@ export class BellLoopGame {
     shrine.candleMaterial.color.copy(this._ivoryColor)
     shrine.candleMaterial.roughness = 0.62
     this.audio?.candleWhoosh()
+    this._vibrate(12) // loop 15: a candle catching, felt in the controller
     if (candlesLit(this.store.get().candles) === SHRINE_IDS.length) {
       // all three are burning: something changed at the centre of the maze
       this.audio?.bellToll(0.25, 330, 0.3)
@@ -1098,6 +1225,231 @@ export class BellLoopGame {
     this.door.group.position.set(center.x, 0, center.z)
     this.door.group.rotation.y = APPROACH_YAW[maze.centerApproach] ?? 0
     this.doorCenter = center
+  }
+
+  // -------------------------------------------------------------------------
+  // micro-story set dressing (loop 15): engravings, a handprint, a toy boat
+  // -------------------------------------------------------------------------
+
+  /**
+   * loop 15: pure set dressing, no text anywhere — six scratched glyphs on
+   * walls the loop pattern makes you retrace (three on the canonical
+   * entrance-to-centre route, one beside each shrine), a barely-visible
+   * handprint on the stone beside the door, and a discarded toy boat in a
+   * dead-end corner. Built once; positioned per layout like the shrines and
+   * re-dressed during the reset's full-black hold.
+   */
+  _buildMicroStory() {
+    this.microGroup = new THREE.Group()
+    this.scene.add(this.microGroup)
+
+    // three shared glyph variants; placement seeds vary height, tilt and wall
+    this.glyphTextures = [
+      makeGlyphTexture(0x61c4),
+      makeGlyphTexture(0x2b9e),
+      makeGlyphTexture(0x9d51),
+    ]
+    this.engravings = []
+    for (let i = 0; i < 6; i++) {
+      const material = new THREE.MeshStandardMaterial({
+        map: this.glyphTextures[i % 3],
+        color: 0xb9b09a,
+        transparent: true,
+        opacity: 0.5,
+        roughness: 1,
+        metalness: 0,
+        depthWrite: false, // a scratch decal, not geometry
+      })
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.58, 0.58), material)
+      plane.renderOrder = 2
+      plane.visible = false
+      this.microGroup.add(plane)
+      this.engravings.push(plane)
+    }
+
+    this._buildHandprint()
+    this._buildBoat()
+  }
+
+  /** The handprint rides the door group so it tracks the approach yaw. */
+  _buildHandprint() {
+    this.handprintTexture = makeHandprintTexture(0x41f2)
+    const material = new THREE.MeshStandardMaterial({
+      map: this.handprintTexture,
+      color: 0x4d2a22, // old blood gone brown in the stone
+      transparent: true,
+      opacity: 0.24,
+      roughness: 1,
+      metalness: 0,
+      depthWrite: false,
+    })
+    const openingHalf = CELL_SIZE / 2 - WALL_THICKNESS / 2
+    const frameZ = -CELL_SIZE / 2
+    const handprint = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.42), material)
+    // on the approach-side jamb face, proud of the stone, facing the corridor
+    handprint.position.set(-(openingHalf + 0.02), 1.34, frameZ - 0.278)
+    handprint.rotation.y = Math.PI
+    handprint.rotation.z = 0.14 // someone pressed it and slipped
+    handprint.renderOrder = 2
+    this.door.group.add(handprint)
+    this.handprint = handprint
+  }
+
+  /** A small weathered toy boat, snapped mast and all, lying where it fell. */
+  _buildBoat() {
+    const weathered = new THREE.MeshStandardMaterial({
+      color: 0x6f6350,
+      roughness: 0.94,
+      metalness: 0.02,
+      bumpMap: this.noiseTexture,
+      bumpScale: 0.02,
+    })
+    const boat = new THREE.Group()
+    const keel = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.2), weathered)
+    keel.position.y = 0.05
+    const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.2), weathered)
+    sideL.position.set(0, 0.1, -0.082)
+    sideL.rotation.x = 0.62
+    const sideR = sideL.clone()
+    sideR.position.z = 0.082
+    sideR.rotation.x = -0.62
+    const stern = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.12, 0.2), weathered)
+    stern.position.set(-0.25, 0.08, 0)
+    const bowL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.2), weathered)
+    bowL.position.set(0.29, 0.065, -0.048)
+    bowL.rotation.y = -0.5
+    const bowR = bowL.clone()
+    bowR.position.z = 0.048
+    bowR.rotation.y = 0.5
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.3, 6), weathered)
+    mast.position.set(-0.05, 0.24, 0)
+    mast.rotation.z = 0.24 // it broke
+    const sailGeometry = new THREE.BufferGeometry()
+    sailGeometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([-0.03, 0.1, 0, -0.03, 0.37, 0, 0.21, 0.13, 0], 3),
+    )
+    sailGeometry.computeVertexNormals()
+    const sail = new THREE.Mesh(
+      sailGeometry,
+      new THREE.MeshStandardMaterial({ color: 0x8b7f66, roughness: 0.9, side: THREE.DoubleSide }),
+    )
+    sail.position.set(-0.05, 0, 0)
+    for (const part of [keel, sideL, sideR, stern, bowL, bowR, mast, sail]) {
+      part.castShadow = true
+      boat.add(part)
+    }
+    boat.visible = false
+    this.microGroup.add(boat)
+    this.boat = boat
+  }
+
+  /**
+   * loop 15: re-dress the set for this layout. Runs inside the reset's
+   * full-black hold, so the decals never visibly pop while the walls glide.
+   */
+  _positionMicroStory(maze) {
+    const rng = mulberry32(0x6e77 + maze.loop * 131)
+    const dist = distanceMap(maze, maze.entrance)
+
+    // the canonical route: walk the BFS distance down from centre to entrance
+    const route = [maze.center]
+    while (route.length < maze.size * maze.size) {
+      const head = route[route.length - 1]
+      const d = dist.get(cellKey(head.r, head.c))
+      if (!d) break // distance 0: reached the entrance
+      let next = null
+      for (const dir of DIRS) {
+        if ((maze.open[head.r][head.c] & dir.bit) === 0) continue
+        if (dist.get(cellKey(head.r + dir.dr, head.c + dir.dc)) === d - 1) {
+          next = { r: head.r + dir.dr, c: head.c + dir.dc }
+          break
+        }
+      }
+      if (!next) break
+      route.push(next)
+    }
+
+    // three engravings along the route (the path you retrace every loop)...
+    const placements = []
+    for (const fraction of [0.3, 0.55, 0.8]) {
+      const index = Math.max(1, Math.min(route.length - 1, Math.round((route.length - 1) * fraction)))
+      placements.push(route[index])
+    }
+    // ...and one beside each shrine cell
+    for (const id of SHRINE_IDS) placements.push(maze.shrineCells[id])
+
+    for (let i = 0; i < this.engravings.length; i++) {
+      const plane = this.engravings[i]
+      let cell = placements[i]
+      let dir = this._pickWalledDir(maze, cell.r, cell.c, rng)
+      if (!dir) {
+        // fully-open junction (extra carves): borrow a walled edge from an
+        // adjacent open cell so the engraving still sits beside the landmark
+        for (const open of DIRS) {
+          if ((maze.open[cell.r][cell.c] & open.bit) === 0) continue
+          const neighbour = { r: cell.r + open.dr, c: cell.c + open.dc }
+          dir = this._pickWalledDir(maze, neighbour.r, neighbour.c, rng)
+          if (dir) {
+            cell = neighbour
+            break
+          }
+        }
+      }
+      if (!dir) {
+        plane.visible = false
+        continue
+      }
+      this._placeWallDecal(plane, cell.r, cell.c, dir, 1.08 + rng() * 0.5, (rng() - 0.5) * 0.16)
+    }
+
+    this._positionBoat(maze, dist, rng)
+  }
+
+  /** Seeded pick of a direction whose edge is walled, for decal placement. */
+  _pickWalledDir(maze, r, c, rng) {
+    const candidates = DIRS.filter((dir) => hasWall(maze, r, c, dir))
+    if (candidates.length === 0) return null
+    return candidates[Math.floor(rng() * candidates.length)]
+  }
+
+  /** Set a decal plane proud of the wall face in `dir`, facing into the cell. */
+  _placeWallDecal(plane, r, c, dir, y, tilt) {
+    const { x, z } = cellToWorld(r, c)
+    const offset = CELL_SIZE / 2 - WALL_THICKNESS / 2 + 0.02
+    plane.position.set(x + dir.dc * offset, y, z + dir.dr * offset)
+    // the decal normal must point back into the cell the wall belongs to
+    plane.rotation.y = Math.atan2(-dir.dc, -dir.dr) + tilt
+    plane.visible = true
+  }
+
+  /** The boat rests in the deepest dead-end corner clear of every landmark. */
+  _positionBoat(maze, dist, rng) {
+    const landmarks = [maze.center, ...SHRINE_IDS.map((id) => maze.shrineCells[id])]
+    const popcount = (mask) =>
+      (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1) + ((mask >> 3) & 1)
+    const deadEnds = []
+    for (let r = 0; r < maze.size; r++) {
+      for (let c = 0; c < maze.size; c++) {
+        if (popcount(maze.open[r][c]) !== 1) continue // dead ends only
+        const d = dist.get(cellKey(r, c))
+        if (d === undefined) continue // unreachable corner
+        if (landmarks.some((lm) => chebyshev(lm, { r, c }) < 2)) continue
+        deadEnds.push({ r, c, d })
+      }
+    }
+    if (deadEnds.length === 0) {
+      this.boat.visible = false
+      return
+    }
+    deadEnds.sort((a, b) => b.d - a.d) // deepest corners first
+    const pick = deadEnds[Math.floor(rng() * Math.min(4, deadEnds.length))]
+    const dir = this._pickWalledDir(maze, pick.r, pick.c, rng)
+    const { x, z } = cellToWorld(pick.r, pick.c)
+    const offset = dir ? CELL_SIZE / 2 - WALL_THICKNESS / 2 - 0.45 : 0
+    this.boat.position.set(x + (dir ? dir.dc * offset : 0), 0.012, z + (dir ? dir.dr * offset : 0))
+    this.boat.rotation.set(-0.07, rng() * Math.PI * 2, 0.05)
+    this.boat.visible = true
   }
 
   /** The closed panel is solid: it blocks the only way into the chamber. */
@@ -1307,6 +1659,7 @@ export class BellLoopGame {
       this.winTolled = true
       this.audio?.bellToll(0, 110, 0.5)
       this.addShake(0.05)
+      this._vibrate([24, 90, 40]) // loop 15: the loop closes against your hand
     }
 
     // the black creeps in only after the chord has had its moment
@@ -1351,6 +1704,7 @@ export class BellLoopGame {
       elapsed >= this.resetTollIndex * RESET_TIMELINE.tollSpacing
     ) {
       this.addShake(0.055)
+      this._vibrate(16) // loop 15: each toll lands in the controller too
       this.resetTollIndex++
     }
 
@@ -1387,6 +1741,20 @@ export class BellLoopGame {
    */
   addShake(amount) {
     this.shake = Math.min(0.14, this.shake + amount)
+  }
+
+  /**
+   * loop 15: controller vibration on the bell and the candles. The Vibration
+   * API is a silent no-op wherever it is unsupported (most desktops, iOS), so
+   * this is guarded and best-effort — pure extra texture where it exists.
+   */
+  _vibrate(pattern) {
+    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return
+    try {
+      navigator.vibrate(pattern)
+    } catch {
+      /* haptics are strictly optional */
+    }
   }
 
   /** loop 11: apply the decaying shake offset after the player's camera write. */
