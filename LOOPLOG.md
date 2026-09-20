@@ -51,3 +51,11 @@ FIXED/CHANGED:
 - Unlit candles read waxy-dead: greyer duller wax (0x57554e), roughness 0.88 vs lit 0.62
 - `_applyShrineStates` / `_lightShrine` / `_updateShrines` updated for the flames array + embers
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: ff46f6c
+
+## LOOP 8 — HUD redesign
+FIXED/CHANGED:
+- `src/ui/Hud.jsx`: candle dots replaced with SVG flame sigils (outline flame + inner core + wick) that ignite with a flicker animation when a shrine is lit
+- Timer bar replaced with a thin failing-heartbeat SVG trace: retracts with the timer, stroke colour interpolates bone→blood red with `danger = 1 - timeFraction`, glow widens, and a `hud__timer--critical` throb (scaleY/opacity pulse) below 18% time
+- Loop counter re-typeset: thin letter-spaced uppercase, negative margin re-centering
+- `src/ui/styles.css`: `.flame-sigil` block, `sigil-flicker` + `heartbeat-throb` keyframes, heartbeat trace styles
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e7fca73

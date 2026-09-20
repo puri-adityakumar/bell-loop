@@ -122,27 +122,171 @@ export class AudioManager {
     lfo.connect(lfoGain)
     lfoGain.connect(filter.frequency)
 
+    // loop 9: sub-bass rumble bed — a 32 Hz sine beating against a 33.3 Hz
+    // triangle, plus brown noise through a 55 Hz lowpass; it shares the drone
+    // bus so it ducks (and stops) with the rest of the ambience
+    const r1 = ctx.createOscillator()
+    r1.type = 'sine'
+    r1.frequency.value = 32
+    const r2 = ctx.createOscillator()
+    r2.type = 'triangle'
+    r2.frequency.value = 33.3
+    const rumbleMix = ctx.createGain()
+    rumbleMix.gain.value = 0.5
+    const rumbleNoise = this._noiseSource()
+    const rumbleLowpass = ctx.createBiquadFilter()
+    rumbleLowpass.type = 'lowpass'
+    rumbleLowpass.frequency.value = 55
+    const rumbleNoiseGain = ctx.createGain()
+    rumbleNoiseGain.gain.value = 0.28
+    rumbleNoise.connect(rumbleLowpass)
+    rumbleLowpass.connect(rumbleNoiseGain)
+    rumbleNoiseGain.connect(rumbleMix)
+    // the bed itself swells and shrinks over ~17s cycles
+    const rumbleLfo = ctx.createOscillator()
+    rumbleLfo.type = 'sine'
+    rumbleLfo.frequency.value = 0.06
+    const rumbleLfoGain = ctx.createGain()
+    rumbleLfoGain.gain.value = 0.18
+    rumbleLfo.connect(rumbleLfoGain)
+    rumbleLfoGain.connect(rumbleMix.gain)
+    r1.connect(rumbleMix)
+    r2.connect(rumbleMix)
+    rumbleMix.connect(bus)
+
     a.start()
     b.start()
     lfo.start()
-    this.ambient = { a, b, lfo, bus, filter }
+    r1.start()
+    r2.start()
+    rumbleLfo.start()
+    rumbleNoise.start()
+    this.ambient = { a, b, lfo, r1, r2, rumbleLfo, rumbleNoise, bus, filter }
     this.ambientGain = bus.gain
+
+    // loop 9: the corridor beyond the drone — scheduled one-shot events
+    this._ambientTimers = []
+    this._scheduleAmbient(() => this._windGust(), 4, 12)
+    this._scheduleAmbient(() => this._distantClang(), 9, 22)
+    this._scheduleAmbient(() => this._waterDrip(), 2.5, 8)
+  }
+
+  /** Schedule an ambience one-shot to repeat every min..max seconds. */
+  _scheduleAmbient(fn, min, max) {
+    const tick = () => {
+      if (!this.ambient) return
+      fn()
+      const timer = setTimeout(tick, (min + Math.random() * (max - min)) * 1000)
+      this._ambientTimers.push(timer)
+    }
+    const timer = setTimeout(tick, (min + Math.random() * (max - min)) * 1000)
+    this._ambientTimers.push(timer)
   }
 
   stopAmbient() {
     if (!this.ambient) return
-    const { a, b, lfo, bus } = this.ambient
+    const { a, b, lfo, r1, r2, rumbleLfo, rumbleNoise, bus } = this.ambient
     const now = this.ctx.currentTime
     bus.gain.setTargetAtTime(0.0001, now, 0.4)
-    for (const node of [a, b, lfo]) {
+    for (const node of [a, b, lfo, r1, r2, rumbleLfo]) {
       try {
         node.stop(now + 3)
       } catch {
         /* already stopped */
       }
     }
+    try {
+      rumbleNoise.stop(now + 3)
+    } catch {
+      /* already stopped */
+    }
     this.ambient = null
     this.ambientGain = null
+    if (this._ambientTimers) {
+      for (const timer of this._ambientTimers) clearTimeout(timer)
+      this._ambientTimers = []
+    }
+  }
+
+  /**
+   * Wind gust: filtered noise whose bandpass sweeps upward and whose gain
+   * swells then collapses — as if a draft found its way through the corridors.
+   */
+  _windGust() {
+    if (!this.ctx) return
+    const ctx = this.ctx
+    const t0 = ctx.currentTime
+    const duration = 2.5 + Math.random() * 2.5
+    const noise = this._noiseSource()
+    const band = ctx.createBiquadFilter()
+    band.type = 'bandpass'
+    band.frequency.setValueAtTime(240 + Math.random() * 140, t0)
+    band.frequency.exponentialRampToValueAtTime(700 + Math.random() * 500, t0 + duration * 0.6)
+    band.Q.value = 1.1
+    const g = ctx.createGain()
+    g.gain.setValueAtTime(0.0001, t0)
+    g.gain.linearRampToValueAtTime(0.035 + Math.random() * 0.025, t0 + duration * 0.45)
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration)
+    noise.connect(band)
+    band.connect(g)
+    g.connect(this.ambient ? this.ambient.bus : this.master)
+    noise.start(t0)
+    noise.stop(t0 + duration + 0.1)
+  }
+
+  /**
+   * Distant metallic clang: the bell's partial recipe, detuned, muffled by a
+   * lowpass and pushed far back in the mix. You never see its source.
+   */
+  _distantClang() {
+    if (!this.ctx) return
+    const ctx = this.ctx
+    const t0 = ctx.currentTime
+    const f0 = (165 + Math.random() * 90) * (Math.random() < 0.5 ? 0.5 : 1)
+    const muffle = ctx.createBiquadFilter()
+    muffle.type = 'lowpass'
+    muffle.frequency.value = 420 + Math.random() * 260
+    muffle.connect(this.ambient ? this.ambient.bus : this.master)
+    const partials = [
+      { ratio: 1, gain: 1, tau: 1.6 },
+      { ratio: 1.51, gain: 0.4, tau: 1.1 },
+      { ratio: 2.32, gain: 0.3, tau: 0.8 },
+    ]
+    for (const p of partials) {
+      const osc = ctx.createOscillator()
+      osc.type = 'sine'
+      osc.frequency.value = f0 * p.ratio
+      const g = this._decayGain(0.05 * p.gain, p.tau, t0, 0.004)
+      osc.connect(g)
+      g.connect(muffle)
+      osc.start(t0)
+      osc.stop(t0 + p.tau * 5 + 0.3)
+    }
+  }
+
+  /** A single drip: pitch-gliding sine blip plus a faint high plink. */
+  _waterDrip() {
+    if (!this.ctx) return
+    const ctx = this.ctx
+    const t0 = ctx.currentTime
+    const blip = ctx.createOscillator()
+    blip.type = 'sine'
+    blip.frequency.setValueAtTime(1050 + Math.random() * 500, t0)
+    blip.frequency.exponentialRampToValueAtTime(280, t0 + 0.09)
+    const g = this._decayGain(0.07, 0.02, t0, 0.001)
+    blip.connect(g)
+    g.connect(this.ambient ? this.ambient.bus : this.master)
+    blip.start(t0)
+    blip.stop(t0 + 0.2)
+    // the faint plink an echo distance away
+    const echo = ctx.createOscillator()
+    echo.type = 'sine'
+    echo.frequency.value = 1400 + Math.random() * 600
+    const eg = this._decayGain(0.02, 0.015, t0 + 0.18 + Math.random() * 0.15, 0.002)
+    echo.connect(eg)
+    eg.connect(this.ambient ? this.ambient.bus : this.master)
+    echo.start(t0 + 0.3)
+    echo.stop(t0 + 0.6)
   }
 
   /** Cut the drone back to a whisper (used when the win chord lands). */
