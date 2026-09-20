@@ -93,3 +93,44 @@ VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 2809529
 FIXED/CHANGED:
 - `src/game/world.js`: `PHASE.WON` no longer a frozen no-op — `_updateWin` runs the choreography: deep 110 Hz final toll + small shake at 0.9 s, fade held at 0 until 1.6 s then eased to black by 4.2 s, `stopAmbient` fires 0.4 s after full black
 VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 6ef0596
+
+## LOOP 14 — Performance audit
+NOTE: logged late — its code landed in commit 8de1efd before this entry could be appended (session interruption); behaviour shipped exactly as planned below.
+FIXED/CHANGED:
+- `src/game/world.js`: renderer devicePixelRatio clamped at 1.5 (high-DPI panels stop overspending fill rate); rolling FPS meter samples frames over 0.5 s windows and mirrors into the store only while visible
+- Hidden FPS counter toggled with F: store `showFps` flag + small fixed readout in `src/ui/Hud.jsx` + `.hud__fps` styles in `src/ui/styles.css`
+- Rebuild path confirmed allocation-free per loop: walls stay two reused InstancedMeshes re-composited in place, no stale geometry
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: 8de1efd
+
+## LOOP 15 — Micro-story set dressing + final polish
+FIXED/CHANGED:
+- Micro-story (roadmap 14), all in `src/game/world.js`, no text anywhere: six engraved-glyph wall decals from three shared procedural canvas variants (angular scratched strokes with a shadow pass so they read carved-in) placed on loop-pattern-relevant walls — three on the canonical entrance-to-centre BFS route at 30/55/80 %, one beside each shrine cell — with a fallback to an adjacent cell's wall when a cell is a fully-open junction; seeded per loop (`mulberry32(0x6e77 + loop*131)`) and re-dressed inside the reset's full-black hold so nothing pops while walls glide
+- A barely-visible handprint (speckle-eroded canvas, opacity 0.24) on the door's approach-side jamb, parented to the door group so it tracks the approach yaw every loop
+- A discarded toy boat (weathered hull slabs, snapped mast, triangle sail) resting in the deepest dead-end corner, clear of every landmark
+- Final polish (roadmap 15): `index.html` OG/Twitter meta, description, color-scheme; `public/favicon.svg` replaced with a bell glyph (bone bell + brass clapper on a cellar-dark tile); guarded `_vibrate()` — Vibration API no-op-safe, hooked on each reset toll (16 ms), the win's final toll ([24,90,40]) and candle lighting (12 ms)
+- Placement math validated headlessly across 200 generated loops (route always reaches the entrance; every shrine placement resolvable; a boat corner always exists)
+VERIFY: PASS (33/33) | BUILD: PASS | COMMIT: e366d60
+
+## ALL 15 LOOPS COMPLETE
+
+Final state: `node verify.mjs` 33/33 PASS, production build PASS, everything pushed to `origin/main`.
+
+| # | Loop | Commit |
+|---|------|--------|
+| 1 | Atmosphere pass — fog/grain/vignette/palette | 48e21d5 |
+| 2 | Shrine models — stone pedestals + wax candles | 63a30e3 |
+| 3 | The Door — arched frame, banded double door, ajar + leak | 6ea0d66 |
+| 4 | Wall materials — procedural brick map/bump + per-instance tint | e759cf2 |
+| 5 | Floor & ceiling — cobblestone, planks, beams, hanging chains | c8d1b9c |
+| 6 | Flashlight rework — warm penumbra cone, battery brown-outs | dd5ade3 |
+| 7 | Candle flames — layered sprites, breathing light, embers | ff46f6c |
+| 8 | UI redesign — flame-sigil candles, failing-heartbeat timer | e7fca73 |
+| 9 | Start overlay title screen (roadmap item 9) | 075a26c |
+| 10 | Bell transition cinematics — shake, echo tail, gliding walls (roadmap item 10) | 152818f |
+| 11 | Audio depth — whispers, footstep variation, distant second bell (roadmap item 11; its ambience half landed early in loop 9, e8bc846) | 2809529 |
+| 12 | Win sequence choreography (roadmap item 12) | 6ef0596 |
+| 13 | Performance audit — DPR clamp, hidden FPS counter (roadmap item 13) | 8de1efd |
+| 14 | Micro-story set dressing — engravings, handprint, toy boat (roadmap item 14) | e366d60 |
+| 15 | Final polish — OG/meta, bell favicon, guarded haptics (roadmap item 15) | e366d60 |
+
+All 15 roadmap items delivered across 15 verification-gated loops; game mechanics untouched throughout.
