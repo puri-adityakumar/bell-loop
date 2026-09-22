@@ -499,6 +499,9 @@
 }
 
 .brass-button {
+  /* positioned so it paints above the .title-veil, which otherwise covers
+     the whole overlay and swallows the click */
+  position: relative;
   font-family: var(--serif);
   font-size: 13px;
   letter-spacing: 0.34em;

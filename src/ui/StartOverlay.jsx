@@ -20,7 +20,7 @@ export default function StartOverlay({ onBegin }) {
         <span className="title-sub__rule" />
       </div>
       <button type="button" className="brass-button" onClick={onBegin} autoFocus>
-        CLICK TO WAKE UP
+        START
       </button>
       <div className="title-controls" aria-hidden="true">
         <span className="title-controls__key">W A S D</span>
