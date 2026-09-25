@@ -56,6 +56,10 @@ import {
   streamAt,
   mulberry32 as mulberry32V2,
 } from './src/game/hash.js'
+// v2 slice 02. Imported as a namespace because GRID, BLOCK and the BFS helper
+// names all collide with v1's maze.js exports; slice 16 removes that overlap for
+// good, and until then the v2 world reads `hood.*` beside v1's flat names.
+import * as hood from './src/game/neighborhood.js'
 import {
   LOOP_SECONDS,
   PHASE,
@@ -296,6 +300,256 @@ test('chunk streams are independent of the order they are generated in', () => {
   const base = streamAt(1, 0, 0)
   const other = streamAt(2, 0, 0)
   assert.notEqual(base(), other(), 'two seeds produced the same first value')
+})
+
+// ---------------------------------------------------------------------------
+// v2 slice 02 — chunks, wrap, street graph
+// ---------------------------------------------------------------------------
+
+section('Neighborhood chunks + wrap (v2 slice 02)')
+
+test('the slice 02 constants match the design', () => {
+  assert.equal(hood.GRID, 7, 'GAMEDESIGN.md §3.1 fixes a 7 x 7 block grid')
+  assert.equal(hood.BLOCK, 64, 'GAMEDESIGN.md §3.1 fixes 64 m blocks')
+  assert.equal(hood.WORLD_EXTENT, 448)
+  assert.equal(hood.WORLD_HALF, 224)
+  assert.equal(hood.CHUNKS, 49)
+  assert.equal(hood.INTERSECTIONS, 49)
+  assert.equal(hood.DISTRICTS, 4)
+  assert.equal(hood.SIDE_NAMES.length, 4)
+  assert.equal(hood.streetEdgeCount(), 98, '49 nodes x 4 neighbours / 2')
+})
+
+test('wrap folds negatives and multiples into range', () => {
+  assert.equal(hood.wrap(-1, 7), 6, 'plain % would return -1 here')
+  assert.equal(hood.wrap(-7, 7), 0)
+  assert.equal(hood.wrap(-8, 7), 6)
+  assert.equal(hood.wrap(7, 7), 0)
+  for (let v = -50; v <= 50; v++) {
+    const folded = hood.wrap(v, 7)
+    assert.ok(folded >= 0 && folded < 7, `wrap(${v}, 7) = ${folded} is out of range`)
+    assert.equal(hood.wrap(folded, 7), folded, 'wrapping twice must be stable')
+    // normalised, because `(0 - 7) % 7` is -0 and assert.strictEqual compares
+    // with Object.is, under which -0 and 0 are different values
+    assert.equal(
+      ((folded - v) % hood.GRID + hood.GRID) % hood.GRID,
+      0,
+      `wrap(${v}, 7) is not congruent to the input`,
+    )
+  }
+})
+
+test('the same (seed, cx, cz) always yields the same signature', () => {
+  const forward = new Array(hood.CHUNKS)
+  for (let cx = 0; cx < hood.GRID; cx++) {
+    for (let cz = 0; cz < hood.GRID; cz++) {
+      forward[cz * hood.GRID + cx] = hood.chunkAt(1337, cx, cz).signature
+    }
+  }
+  // regenerate all 49 in reverse, interleaved with other seeds, so a stream
+  // accidentally shared between chunks would show up as drift
+  const backward = new Array(hood.CHUNKS)
+  for (let cx = hood.GRID - 1; cx >= 0; cx--) {
+    for (let cz = hood.GRID - 1; cz >= 0; cz--) {
+      hood.chunkAt(999, cx, cz)
+      hood.chunkAt(42, cx, 0)
+      backward[cz * hood.GRID + cx] = hood.chunkAt(1337, cx, cz).signature
+    }
+  }
+  assert.equal(new Set(forward).size, hood.CHUNKS, 'two chunks in one seed shared a signature')
+  assert.deepEqual(backward, forward, 'regenerating a chunk produced different content')
+})
+
+test('chunk generation order cannot affect any chunk', () => {
+  const reference = new Map()
+  for (let cx = 0; cx < hood.GRID; cx++) {
+    for (let cz = 0; cz < hood.GRID; cz++) reference.set(`${cx},${cz}`, hood.chunkAt(7, cx, cz).signature)
+  }
+  // visit every chunk in a stride-5 permutation of the flattened index, twice,
+  // so nothing can depend on being generated first
+  const order = []
+  for (let k = 0; k < hood.CHUNKS; k++) order.push((k * 5) % hood.CHUNKS)
+  assert.equal(new Set(order).size, hood.CHUNKS, 'the stride permutation must visit every chunk once')
+  for (let pass = 0; pass < 2; pass++) {
+    for (const index of order) {
+      const cx = Math.floor(index / hood.GRID)
+      const cz = index % hood.GRID
+      assert.equal(
+        hood.chunkAt(7, cx, cz).signature,
+        reference.get(`${cx},${cz}`),
+        `chunk ${cx},${cz} changed on pass ${pass}`,
+      )
+    }
+  }
+})
+
+test('out-of-range coordinates generate deterministically and never depend on wrap state', () => {
+  // the same block, reached two ways: the folded parts must agree
+  const negative = hood.chunkAt(1337, -1, 5)
+  const positive = hood.chunkAt(1337, 6, 5)
+  assert.equal(negative.key, positive.key, 'cx = -1 must name the same block as cx = 6')
+  assert.equal(negative.district, positive.district)
+  assert.deepEqual(negative.corners, positive.corners)
+  assert.deepEqual(negative.centre, positive.centre)
+  // ...but they are DIFFERENT chunks with different streams. This is the
+  // contract that makes deferred streaming a one-line change: when the world
+  // stops wrapping, -1 becomes a real chunk beside 0 instead of a copy of it.
+  assert.notEqual(negative.signature, positive.signature, 'unfolded coordinates must not share a stream')
+
+  for (const [cx, cz] of [[-1, 5], [-21, -21], [27, 13], [1000000, -1000000], [-99999, 99999]]) {
+    assert.equal(
+      hood.chunkAt(1337, cx, cz).signature,
+      hood.chunkAt(1337, cx, cz).signature,
+      `chunk ${cx},${cz} is not reproducible`,
+    )
+    assert.equal(
+      hood.chunkKey(cx, cz),
+      hood.chunkKey(cx + hood.GRID, cz - hood.GRID),
+      'folding must be periodic in both axes',
+    )
+  }
+
+  // every coordinate in a wide band folds to the block it names
+  for (let cx = -21; cx <= 27; cx++) {
+    for (let cz = -21; cz <= 27; cz++) {
+      const chunk = hood.chunkAt(1337, cx, cz)
+      const key = hood.resolveChunk(cx, cz)
+      assert.equal(chunk.key, key.cx * hood.GRID + key.cz, `chunk ${cx},${cz} has the wrong key`)
+      assert.equal(chunk.district, hood.districtOf(cx, cz), `chunk ${cx},${cz} is in the wrong district`)
+      assert.equal(chunk.cx, cx, 'chunkAt must report the coordinate it was asked for')
+      assert.equal(chunk.cz, cz)
+    }
+  }
+})
+
+test('the street graph is connected across the wrap seam in all four directions', () => {
+  // the four seam crossings exist as real edges, in both directions, everywhere
+  for (let i = 0; i < hood.GRID; i++) {
+    const last = hood.streetNodeId(hood.GRID - 1, i)
+    const first = hood.streetNodeId(0, i)
+    assert.ok(hood.STREET_ADJ[last].includes(first), `no east seam edge on row ${i}`)
+    assert.ok(hood.STREET_ADJ[first].includes(last), `no west seam edge on row ${i}`)
+    const lastCol = hood.streetNodeId(i, hood.GRID - 1)
+    const firstCol = hood.streetNodeId(i, 0)
+    assert.ok(hood.STREET_ADJ[lastCol].includes(firstCol), `no south seam edge on column ${i}`)
+    assert.ok(hood.STREET_ADJ[firstCol].includes(lastCol), `no north seam edge on column ${i}`)
+  }
+  // one connected component, from every start. Note this alone does NOT prove
+  // the wrap: a plain 7 x 7 grid is 49/49 reachable too. The distance test below
+  // is what actually proves it. Both stay, because they fail for different
+  // reasons — a missing seam edge breaks this, a missing fold breaks that.
+  for (let start = 0; start < hood.INTERSECTIONS; start++) {
+    assert.equal(
+      hood.reachableIntersections(start).size,
+      hood.INTERSECTIONS,
+      `node ${start} cannot reach the whole map`,
+    )
+  }
+  // crossing a seam costs exactly one step, in every direction
+  const at = (ax, az) => ({ ax, az })
+  assert.equal(hood.streetPathLength(at(0, 0), at(6, 0)), 1, 'east seam')
+  assert.equal(hood.streetPathLength(at(6, 0), at(0, 0)), 1, 'west seam')
+  assert.equal(hood.streetPathLength(at(0, 0), at(0, 6)), 1, 'south seam')
+  assert.equal(hood.streetPathLength(at(0, 6), at(0, 0)), 1, 'north seam')
+  // a diagonal that needs BOTH seams at once
+  assert.equal(hood.streetPathLength(at(6, 6), at(0, 0)), 2, 'both seams')
+  assert.equal(hood.streetPathLength(at(0, 0), at(3, 3)), 6, 'opposite corner of the torus')
+  assert.equal(hood.hasStreetPath(at(6, 6), at(0, 0)), true)
+})
+
+test('the wrap is real: the map is 6 steps across, not 12', () => {
+  // An unwrapped 7 x 7 grid is 12 steps corner to corner. A wrapped one is
+  // floor(7/2) + floor(7/2) = 6. If the fold ever breaks, this says so — and
+  // unlike a visual check, it cannot be missed in a screenshot.
+  let worst = 0
+  for (let start = 0; start < hood.INTERSECTIONS; start++) {
+    const dist = hood.streetDistanceMap(start)
+    assert.ok(
+      Array.from(dist).every((d) => d >= 0),
+      `node ${start} cannot reach part of the map`,
+    )
+    worst = Math.max(worst, ...dist)
+  }
+  assert.equal(worst, 6, 'the world is not wrapping — far corners are further apart than the torus allows')
+})
+
+test('world and chunk coordinates round trip', () => {
+  for (let cx = 0; cx < hood.GRID; cx++) {
+    for (let cz = 0; cz < hood.GRID; cz++) {
+      const centre = hood.blockCentre(cx, cz)
+      const back = hood.chunkAtWorld(centre.x, centre.z)
+      assert.equal(back.cx, cx, `block ${cx},${cz} centre resolves to ${back.cx},${back.cz}`)
+      assert.equal(back.cz, cz)
+      // and so does any point inside the block, which is what the renderer
+      // relies on when it works out which chunk a moving player is in
+      for (const d of [-hood.BLOCK / 2 + 1, -1, 0, 1, hood.BLOCK / 2 - 1]) {
+        const inner = hood.chunkAtWorld(centre.x + d, centre.z + d)
+        assert.equal(inner.cx, cx, `point ${d} inside block ${cx},${cz} resolved elsewhere`)
+        assert.equal(inner.cz, cz)
+      }
+    }
+  }
+  // the unfolded centre of the last block sits exactly one period past the fold
+  assert.equal(hood.blockCentre(hood.GRID - 1, hood.GRID - 1).x, hood.WORLD_HALF)
+  assert.equal(hood.blockCentre(hood.GRID - 1, hood.GRID - 1).z, hood.WORLD_HALF)
+})
+
+test('the BFS helpers agree with each other', () => {
+  for (let from = 0; from < hood.INTERSECTIONS; from++) {
+    const dist = hood.streetDistanceMap(from)
+    const seen = hood.reachableIntersections(from)
+    for (let to = 0; to < hood.INTERSECTIONS; to++) {
+      const length = hood.streetPathLength(from, to)
+      assert.equal(length, dist[to], `pathLength(${from},${to}) disagrees with distanceMap`)
+      assert.equal(hood.hasStreetPath(from, to), length >= 0)
+      assert.equal(seen.has(to), dist[to] >= 0)
+    }
+  }
+  assert.equal(hood.streetPathLength({ ax: 3, az: 3 }, { ax: 3, az: 3 }), 0, 'a node is zero steps from itself')
+  assert.equal(hood.streetNodeId(9, 9), hood.streetNodeId(2, 2), 'node ids must fold')
+  assert.deepEqual(hood.streetNodeCoords(hood.streetNodeId(9, 9)), { ax: 2, az: 2 })
+  assert.equal(hood.streetEdgeCount(), 98)
+})
+
+test('every block fronts streets, and the four districts cover the world', () => {
+  const counts = new Array(hood.DISTRICTS).fill(0)
+  for (let cx = 0; cx < hood.GRID; cx++) {
+    for (let cz = 0; cz < hood.GRID; cz++) {
+      const chunk = hood.chunkAt(1337, cx, cz)
+      counts[chunk.district] += 1
+      assert.equal(chunk.corners.length, 4)
+      assert.equal(new Set(chunk.corners).size, 4, `block ${cx},${cz} has a repeated corner`)
+      // all four corners reach each other, so every side fronts a real street
+      for (const corner of chunk.corners) {
+        for (const other of chunk.corners) {
+          assert.ok(hood.hasStreetPath(corner, other), `corner ${corner} cannot reach ${other}`)
+        }
+      }
+      // lots sit strictly inside their block — that is what makes the slice 04
+      // rule "no fixture on a street cell" easy to state and to assert
+      assert.equal(chunk.lots.length, 4)
+      for (const lot of chunk.lots) {
+        assert.ok(hood.LOT_KINDS.includes(lot.kind), `unknown lot kind ${lot.kind}`)
+        assert.ok(lot.tint >= 0 && lot.tint < 4, `tint ${lot.tint} is out of range`)
+        assert.ok(
+          Math.abs(lot.x - chunk.centre.x) + lot.w / 2 <= hood.BLOCK / 2,
+          `lot ${lot.side} pokes outside block ${cx},${cz} on x`,
+        )
+        assert.ok(
+          Math.abs(lot.z - chunk.centre.z) + lot.d / 2 <= hood.BLOCK / 2,
+          `lot ${lot.side} pokes outside block ${cx},${cz} on z`,
+        )
+      }
+    }
+  }
+  assert.equal(
+    counts.reduce((a, b) => a + b, 0),
+    hood.CHUNKS,
+    'every block must belong to exactly one district',
+  )
+  for (let d = 0; d < hood.DISTRICTS; d++) {
+    assert.ok(counts[d] > 0, `district ${d} has no blocks`)
+  }
 })
 
 // ---------------------------------------------------------------------------
