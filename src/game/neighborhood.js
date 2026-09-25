@@ -80,7 +80,24 @@ export const SIDE_NAMES = Object.freeze(['N', 'E', 'S', 'W'])
 export const SETBACK = 9
 
 /** How far a lot extends back from its front face. */
-export const LOT_DEPTH = 20
+export const LOT_DEPTH = 10
+
+/**
+ * How wide a lot runs along its street.
+ *
+ * This is not a taste decision, it is a hard geometric limit. The four lots of a
+ * block meet at the corners, and two adjacent lots overlap unless
+ *
+ *     LOT_WIDTH <= BLOCK - 2 * SETBACK - 2 * LOT_DEPTH
+ *
+ * With the previous LOT_WIDTH of 46 (the whole block minus two setbacks) and a
+ * depth of 20, every adjacent pair of lots overlapped by 400 m², and fixtures
+ * placed on neighbouring lots could land inside one another — four of 346 did.
+ * Sizing the width to exactly that bound is the widest lot that tiles the block
+ * without sharing ground, and the value is derived rather than typed so the
+ * constraint cannot drift when BLOCK or SETBACK change.
+ */
+export const LOT_WIDTH = BLOCK - 2 * SETBACK - 2 * LOT_DEPTH
 
 /** What a lot is built as. Drawn from the chunk's own stream. */
 export const LOT_KINDS = Object.freeze(['house', 'garage', 'shed'])
@@ -302,7 +319,7 @@ export const CHUNKS = GRID * GRID
  */
 function buildLots(rng, centre) {
   const half = BLOCK / 2
-  const along = BLOCK - 2 * SETBACK // extent parallel to the street
+  const along = LOT_WIDTH
   const deep = LOT_DEPTH / 2
   const lots = []
   for (const side of SIDE_NAMES) {
@@ -603,6 +620,243 @@ export function placeObjectives(seed, loopNumber = 1) {
     all: ANCHOR_IDS.map((id) => byId[id]),
   }
   return { ...result, signature: objectivesSignature(result) }
+}
+
+
+// ---------------------------------------------------------------------------
+// the per-loop fixture pass (§3.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fixture kinds, split by the one thing that differs between them: whether the
+ * player can walk through them. A structural fixture rebuilds the collider set
+ * at reset; a decorative one costs nothing, which is why the two churn freely
+ * while only the structural half has to respect the clearance rules.
+ */
+export const STRUCTURAL_KINDS = Object.freeze([
+  Object.freeze({ kind: 'hedge', w: 8.0, d: 1.2 }),
+  Object.freeze({ kind: 'car', w: 4.6, d: 2.0 }),
+  Object.freeze({ kind: 'bin', w: 0.8, d: 0.8 }),
+  Object.freeze({ kind: 'fence', w: 6.0, d: 0.3 }),
+  Object.freeze({ kind: 'shed', w: 3.0, d: 2.5 }),
+])
+
+export const DECORATIVE_KINDS = Object.freeze([
+  Object.freeze({ kind: 'window', w: 1.2, d: 0.2 }),
+  Object.freeze({ kind: 'porchLight', w: 0.4, d: 0.4 }),
+  Object.freeze({ kind: 'stake', w: 0.3, d: 0.3 }),
+  Object.freeze({ kind: 'cone', w: 0.4, d: 0.4 }),
+])
+
+/** Half the road width. Rule 1: no fixture may come within this of a centreline. */
+export const STREET_HALF_WIDTH = 6
+
+/** Width of the walkable approach from the street to a lot's anchor point. */
+export const APPROACH_WIDTH = 3
+
+/** Chance a given slot receives a fixture at all. */
+export const FIXTURE_DENSITY = 0.75
+
+/** Blocks within this Chebyshev radius of spawn are kept clear of fixtures. */
+export const SPAWN_CLEARANCE_BLOCKS = 1
+
+/**
+ * loopSalt — decorrelate adjacent loops.
+ *
+ * Fixtures are keyed `hash32(seed ^ loopSalt(loop), cx, cz)`, so if adjacent
+ * loops produced similar salts the world would barely change between them, and
+ * "the fixture pass actually does something" would be a lie. Multiplying by a
+ * large odd constant before the final xor means loop N and loop N+1 land in
+ * unrelated salts, which slice 04's checks verify directly.
+ */
+export function loopSalt(loopNumber) {
+  return (Math.imul(loopNumber + 1, 0x85ebca6b) ^ 0x27d4eb2f) >>> 0
+}
+
+/**
+ * lotSlots — the three positions on a lot a fixture may occupy, spread along
+ * the lot's long axis at its centre depth. The middle one is the approach slot:
+ * it sits on the line from the street to the anchor, which is what makes rule 3
+ * a real constraint rather than a formality.
+ */
+export function lotSlots(lot) {
+  const alongX = lot.w >= lot.d
+  // thirds, not quarters: the widest fixture is an 8 m hedge, and two of them on
+  // the same lot must not touch, so slot spacing has to exceed 8 m. LOT_WIDTH / 3
+  // is 8.67 m, which clears it; LOT_WIDTH / 4 would be 6.5 m and would collide.
+  const offset = Math.max(lot.w, lot.d) / 3
+  if (alongX) {
+    return [
+      { slot: 0, x: lot.x - offset, z: lot.z },
+      { slot: 1, x: lot.x, z: lot.z },
+      { slot: 2, x: lot.x + offset, z: lot.z },
+    ]
+  }
+  return [
+    { slot: 0, x: lot.x, z: lot.z - offset },
+    { slot: 1, x: lot.x, z: lot.z },
+    { slot: 2, x: lot.x, z: lot.z + offset },
+  ]
+}
+
+/** The middle slot — the one on the approach to the lot's anchor. */
+export const APPROACH_SLOT = 1
+
+/**
+ * lotApproach — the corridor from the street to a lot's anchor point, as an
+ * axis-aligned rectangle. Rule 3 is stated against this shape, and asserted by
+ * footprint overlap rather than by slot index, so growing a fixture or adding a
+ * slot in the corridor is caught even though the slot index check would not.
+ */
+export function lotApproach(lot) {
+  const half = APPROACH_WIDTH / 2
+  if (lot.w >= lot.d) {
+    // long axis is x, so the approach runs along z from the front face inwards
+    const front = lot.side === 'N' ? lot.z - lot.d / 2 : lot.z
+    const back = lot.side === 'N' ? lot.z : lot.z + lot.d / 2
+    return { x0: lot.x - half, x1: lot.x + half, z0: front, z1: back }
+  }
+  const front = lot.side === 'W' ? lot.x - lot.w / 2 : lot.x
+  const back = lot.side === 'W' ? lot.x : lot.x + lot.w / 2
+  return { x0: front, x1: back, z0: lot.z - half, z1: lot.z + half }
+}
+
+/** True when two axis-aligned rectangles overlap (touching does not count). */
+export function rectsOverlap(a, b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.z0 < b.z1 && b.z0 < a.z1
+}
+
+
+/**
+ * Chebyshev ring distance between two chunks, folded across the wrap — the
+ * number of blocks you must cross in the worst axis to get from one to the
+ * other. Max of the two per-axis folded distances, NOT min: taking the min
+ * would make almost every block "adjacent" and silently clear a third of the map.
+ */
+function blockRingDistance(cx, cz, ox, oz) {
+  const dx = Math.abs(wrap(cx - ox, GRID))
+  const dz = Math.abs(wrap(cz - oz, GRID))
+  return Math.max(Math.min(dx, GRID - dx), Math.min(dz, GRID - dz))
+}
+
+/** Rule 2: the spawn clearance zone, where the player must never be obstructed. */
+export function inSpawnClearance(cx, cz) {
+  return blockRingDistance(cx, cz, SPAWN.cx, SPAWN.cz) <= SPAWN_CLEARANCE_BLOCKS
+}
+
+/**
+ * reservedLots — the lots that must stay clear, as `cx,cz,side` keys.
+ *
+ * Rule 2 and rule 4 together: every objective anchor sits on one of these lots,
+ * and so does every lot in the spawn clearance zone. Keyed by side rather than by
+ * coordinates so that the *lot* is protected, not merely the single point an
+ * anchor happens to occupy — a car beside the portal is as good as a car on it.
+ */
+export function reservedLots(objectives) {
+  const reserved = new Set()
+  for (const anchor of objectives.all) {
+    reserved.add(`${anchor.chunk.cx},${anchor.chunk.cz},${anchor.lot.side}`)
+  }
+  for (let cx = 0; cx < GRID; cx++) {
+    for (let cz = 0; cz < GRID; cz++) {
+      if (!inSpawnClearance(cx, cz)) continue
+      for (const side of SIDE_NAMES) reserved.add(`${cx},${cz},${side}`)
+    }
+  }
+  return reserved
+}
+
+/**
+ * chunkFixtures — the fixture pass for one chunk on one loop.
+ *
+ * Pure and random-access, keyed `hash32(seed ^ loopSalt(loop), cx, cz)`: nothing
+ * outside this chunk is read, so slice 09 can build the blocks near the player
+ * without generating the whole neighbourhood first.
+ *
+ * @param {number} seed
+ * @param {number} loopNumber 1-based; changing it changes the whole world dressing
+ * @param {number} cx
+ * @param {number} cz
+ * @param {Set<string>} reserved from `reservedLots`
+ * @returns {object[]} fixtures, in a stable order
+ */
+export function chunkFixtures(seed, loopNumber, cx, cz, reserved) {
+  const chunk = chunkAt(seed, cx, cz)
+  const rng = streamAt((seed ^ loopSalt(loopNumber)) >>> 0, cx, cz)
+  const fixtures = []
+  for (const lot of chunk.lots) {
+    const isReserved = reserved.has(`${cx},${cz},${lot.side}`)
+    // fixtures lie along their lot's long axis, so a hedge runs parallel to the
+    // street it was placed against rather than sticking out into the block
+    const alongX = lot.w >= lot.d
+    for (const anchor of lotSlots(lot)) {
+      // rule 2: a reserved lot keeps its whole footprint free of fixtures
+      if (isReserved) continue
+      if (rng() >= FIXTURE_DENSITY) continue
+      // the two classes are drawn independently, so a loop can be mostly
+      // decorative and the next one mostly solid
+      const structural = rng() < 0.5
+      const table = structural ? STRUCTURAL_KINDS : DECORATIVE_KINDS
+      const spec = table[Math.floor(rng() * table.length)]
+      const w = alongX ? spec.w : spec.d
+      const d = alongX ? spec.d : spec.w
+      fixtures.push({
+        id: `${cx},${cz},${lot.side},${anchor.slot}`,
+        cls: structural ? 'structural' : 'decorative',
+        kind: spec.kind,
+        collides: structural,
+        chunk: { cx, cz },
+        lot: lot.side,
+        slot: anchor.slot,
+        x: anchor.x,
+        z: anchor.z,
+        w,
+        d,
+        loop: loopNumber,
+      })
+    }
+  }
+  return fixtures
+}
+
+/**
+ * fixturePass — the whole neighbourhood's dressing for one loop.
+ *
+ * A discrete event at reset, not a per-frame cost, which is why v1's existing
+ * reset path absorbs it without modification (§3.6). The geometry it dresses is
+ * NOT loop-dependent: streets, lots and objective anchors are fixed for the run,
+ * so this is the only part of the world that churns.
+ *
+ * @param {number} seed
+ * @param {number} [loopNumber] 1-based
+ * @returns {object} the pass
+ */
+export function fixturePass(seed, loopNumber = 1) {
+  const objectives = placeObjectives(seed, loopNumber)
+  const reserved = reservedLots(objectives)
+  const fixtures = []
+  for (let cx = 0; cx < GRID; cx++) {
+    for (let cz = 0; cz < GRID; cz++) {
+      fixtures.push(...chunkFixtures(seed, loopNumber, cx, cz, reserved))
+    }
+  }
+  const result = {
+    seed,
+    loop: loopNumber,
+    salt: loopSalt(loopNumber),
+    reserved,
+    objectives,
+    chunks: CHUNKS,
+    fixtures,
+  }
+  return { ...result, signature: fixtureSignature(result) }
+}
+
+/** Stable fingerprint of a whole fixture pass. */
+export function fixtureSignature(pass) {
+  return pass.fixtures
+    .map((fixture) => `${fixture.id}:${fixture.cls}:${fixture.kind}`)
+    .join('|')
 }
 
 

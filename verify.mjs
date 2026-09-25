@@ -751,6 +751,295 @@ test('placement is deterministic per seed and varies between seeds', () => {
 })
 
 // ---------------------------------------------------------------------------
+// v2 slice 04 — fixtures and the four rules
+// ---------------------------------------------------------------------------
+
+section('Fixture pass (v2 slice 04)')
+
+/** 1 m occupancy grid over one block, with structural fixtures solid. */
+function blockWalkability(pass, cx, cz) {
+  const step = 1
+  const centre = hood.blockCentre(cx, cz)
+  const n = Math.round(hood.BLOCK / step)
+  const originX = centre.x - hood.BLOCK / 2
+  const originZ = centre.z - hood.BLOCK / 2
+  const solid = new Uint8Array(n * n)
+  for (const fixture of pass.fixtures) {
+    if (!fixture.collides) continue
+    if (fixture.chunk.cx !== cx || fixture.chunk.cz !== cz) continue
+    const i0 = Math.max(0, Math.floor((fixture.x - fixture.w / 2 - originX) / step))
+    const i1 = Math.min(n - 1, Math.ceil((fixture.x + fixture.w / 2 - originX) / step))
+    const j0 = Math.max(0, Math.floor((fixture.z - fixture.d / 2 - originZ) / step))
+    const j1 = Math.min(n - 1, Math.ceil((fixture.z + fixture.d / 2 - originZ) / step))
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) solid[j * n + i] = 1
+    }
+  }
+  return { n, step, originX, originZ, solid }
+}
+
+function cellOf(grid, x, z) {
+  return [
+    Math.min(grid.n - 1, Math.max(0, Math.floor((x - grid.originX) / grid.step))),
+    Math.min(grid.n - 1, Math.max(0, Math.floor((z - grid.originZ) / grid.step))),
+  ]
+}
+
+/** The outermost cell on the lot's own street frontage — arriving from the road. */
+function streetEdgeCell(grid, lot) {
+  const c = cellOf(grid, lot.x, lot.z)
+  if (lot.side === 'N') return [c[0], 0]
+  if (lot.side === 'S') return [c[0], grid.n - 1]
+  if (lot.side === 'W') return [0, c[1]]
+  return [grid.n - 1, c[1]]
+}
+
+/** 4-connected BFS over free cells. */
+function walkReaches(grid, from, to) {
+  const { n, solid } = grid
+  const start = from[1] * n + from[0]
+  const goal = to[1] * n + to[0]
+  if (solid[start] || solid[goal]) return false
+  const seen = new Uint8Array(n * n)
+  const queue = [start]
+  seen[start] = 1
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head]
+    if (cur === goal) return true
+    const i = cur % n
+    const j = (cur - i) / n
+    if (i + 1 < n) push(i + 1, j)
+    if (i > 0) push(i - 1, j)
+    if (j + 1 < n) push(i, j + 1)
+    if (j > 0) push(i, j - 1)
+  }
+  return false
+
+  function push(i, j) {
+    const next = j * n + i
+    if (seen[next] || solid[next]) return
+    seen[next] = 1
+    queue.push(next)
+  }
+}
+
+/** Closest approach of a world point to any road centreline, in metres. */
+function roadClearance(x, z) {
+  return (
+    Math.min(Math.abs(x / hood.BLOCK - Math.round(x / hood.BLOCK)), Math.abs(z / hood.BLOCK - Math.round(z / hood.BLOCK))) *
+    hood.BLOCK
+  )
+}
+
+test('the fixture constants and slot geometry are self-consistent', () => {
+  assert.equal(hood.FIXTURE_DENSITY, 0.75)
+  assert.equal(hood.SPAWN_CLEARANCE_BLOCKS, 1)
+  assert.equal(hood.APPROACH_SLOT, 1)
+  // the lot-width limit is derived, so changing BLOCK or SETBACK cannot break it
+  assert.equal(hood.LOT_WIDTH, hood.BLOCK - 2 * hood.SETBACK - 2 * hood.LOT_DEPTH)
+  // adjacent loops must get unrelated salts, or the world barely changes
+  const salts = [1, 2, 3, 4, 5, 6, 7, 8].map((loop) => hood.loopSalt(loop))
+  assert.equal(new Set(salts).size, 8, 'two loops share a salt')
+  assert.equal(new Set([1, 2].map((loop) => hood.loopSalt(loop))).size, 2)
+
+  const chunk = hood.chunkAt(1337, 0, 0)
+  for (const lot of chunk.lots) {
+    const slots = hood.lotSlots(lot)
+    assert.equal(slots.length, 3)
+    assert.equal(slots[hood.APPROACH_SLOT].x, lot.x, 'the approach slot is the lot centre')
+    assert.equal(slots[hood.APPROACH_SLOT].z, lot.z)
+    // slot spacing must clear the widest fixture, or two hedges collide
+    const spacing = Math.abs(slots[2].x - slots[0].x) || Math.abs(slots[2].z - slots[0].z)
+    const widest = Math.max(...hood.STRUCTURAL_KINDS.map((spec) => Math.max(spec.w, spec.d)))
+    assert.ok(spacing > widest, `slot spacing ${spacing.toFixed(2)}m does not clear a ${widest}m fixture`)
+    // and the approach corridor really contains the middle slot
+    const approach = hood.lotApproach(lot)
+    assert.ok(hood.rectsOverlap({ x0: slots[1].x - 0.1, x1: slots[1].x + 0.1, z0: slots[1].z - 0.1, z1: slots[1].z + 0.1 }, approach))
+  }
+})
+
+test('the pass is deterministic per (seed, loop, chunk)', () => {
+  assert.equal(hood.fixturePass(1337, 3).signature, hood.fixturePass(1337, 3).signature)
+  const first = hood.fixturePass(42, 2)
+  // regenerate every chunk in reverse, interleaved with other seeds and loops
+  const second = []
+  for (let cx = hood.GRID - 1; cx >= 0; cx--) {
+    for (let cz = hood.GRID - 1; cz >= 0; cz--) {
+      hood.fixturePass(999, 1)
+      hood.fixturePass(42, 7)
+      second.push(...hood.chunkFixtures(42, 2, cx, cz, first.reserved))
+    }
+  }
+  // compared in a canonical order, because the rebuild visits chunks backwards
+  // and the two lists are otherwise the same fixtures in a different order
+  const byId = (list) => list.slice().sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  const rebuilt = byId(second)
+  assert.equal(rebuilt.length, first.fixtures.length, 'the rebuilt pass has a different fixture count')
+  assert.equal(rebuilt[0].id, byId(first.fixtures)[0].id)
+  assert.equal(
+    rebuilt.map((fixture) => `${fixture.id}:${fixture.cls}:${fixture.kind}`).join('|'),
+    byId(first.fixtures).map((fixture) => `${fixture.id}:${fixture.cls}:${fixture.kind}`).join('|'),
+    'regenerating a chunk in a different order changed its fixtures',
+  )
+  assert.equal(hood.fixturePass(42, 2).signature, first.signature)
+})
+
+
+test('rule 1: no fixture ever occupies a street cell', () => {
+  for (let loop = 1; loop <= 8; loop++) {
+    const pass = hood.fixturePass(1337, loop)
+    assert.ok(pass.fixtures.length > 200, `loop ${loop} dressed only ${pass.fixtures.length} fixtures`)
+    for (const fixture of pass.fixtures) {
+      const centre = hood.blockCentre(fixture.chunk.cx, fixture.chunk.cz)
+      // strictly inside its own block...
+      assert.ok(
+        Math.abs(fixture.x - centre.x) + fixture.w / 2 <= hood.BLOCK / 2 + 1e-9,
+        `loop ${loop}: ${fixture.id} pokes out of its block on x`,
+      )
+      assert.ok(
+        Math.abs(fixture.z - centre.z) + fixture.d / 2 <= hood.BLOCK / 2 + 1e-9,
+        `loop ${loop}: ${fixture.id} pokes out of its block on z`,
+      )
+      // ...and clear of the carriageway on every side it touches
+      assert.ok(
+        roadClearance(fixture.x, fixture.z) - Math.max(fixture.w, fixture.d) / 2 >= hood.STREET_HALF_WIDTH,
+        `loop ${loop}: ${fixture.id} stands in the road`,
+      )
+    }
+  }
+})
+
+test('rule 2: reserved anchors and the spawn clearance stay clear', () => {
+  const pass = hood.fixturePass(1337, 1)
+  // 9 clearance blocks x 4 lots, plus one lot per objective, none overlapping
+  assert.equal(pass.reserved.size, 41)
+  let clearanceBlocks = 0
+  for (let cx = 0; cx < hood.GRID; cx++) {
+    for (let cz = 0; cz < hood.GRID; cz++) if (hood.inSpawnClearance(cx, cz)) clearanceBlocks++
+  }
+  assert.equal(clearanceBlocks, 9, 'the spawn clearance is the wrong size')
+
+  for (let loop = 1; loop <= 8; loop++) {
+    const current = hood.fixturePass(1337, loop)
+    // the spawn block itself is always protected (rule 4: never spawn on you)
+    assert.ok(current.reserved.has('0,0,N'))
+    for (const fixture of current.fixtures) {
+      const key = `${fixture.chunk.cx},${fixture.chunk.cz},${fixture.lot}`
+      assert.ok(!current.reserved.has(key), `loop ${loop}: fixture ${fixture.id} is on a reserved lot`)
+    }
+    // and the five objective lots stay reserved in every loop, because anchors do
+    // not move (§7.1) while fixtures do
+    for (const anchor of current.objectives.all) {
+      assert.ok(
+        current.reserved.has(`${anchor.chunk.cx},${anchor.chunk.cz},${anchor.lot.side}`),
+        `loop ${loop}: ${anchor.id}'s lot is not reserved`,
+      )
+    }
+  }
+})
+
+test('rule 3: a walk from the street reaches every anchor, loops 1..8', () => {
+  // BFS rather than a rectangle overlap, so a fixture anywhere on the route is
+  // caught — not only one sitting on the anchor's own lot
+  let checked = 0
+  for (let loop = 1; loop <= 8; loop++) {
+    const pass = hood.fixturePass(1337, loop)
+    for (const anchor of pass.objectives.all) {
+      const grid = blockWalkability(pass, anchor.chunk.cx, anchor.chunk.cz)
+      const lot = hood.chunkAt(1337, anchor.chunk.cx, anchor.chunk.cz).lots.find((l) => l.side === anchor.lot.side)
+      const from = streetEdgeCell(grid, lot)
+      const to = cellOf(grid, anchor.position.x, anchor.position.z)
+      assert.ok(
+        walkReaches(grid, from, to),
+        `loop ${loop}: ${anchor.id} at ${anchor.chunk.cx},${anchor.chunk.cz} is walled off from the street`,
+      )
+      checked += 1
+    }
+  }
+  assert.equal(checked, 40, 'five anchors across eight loops')
+})
+
+
+test('the two fixture classes never leak into each other', () => {
+  const structural = new Map(hood.STRUCTURAL_KINDS.map((spec) => [spec.kind, spec]))
+  const decorative = new Map(hood.DECORATIVE_KINDS.map((spec) => [spec.kind, spec]))
+  assert.equal(new Set([...structural.keys(), ...decorative.keys()]).size, 9, 'a kind appears in both classes')
+  for (let loop = 1; loop <= 8; loop++) {
+    const pass = hood.fixturePass(1337, loop)
+    let solid = 0
+    let ghost = 0
+    for (const fixture of pass.fixtures) {
+      if (fixture.cls === 'structural') {
+        assert.ok(structural.has(fixture.kind), `${fixture.kind} is not a structural kind`)
+        assert.equal(fixture.collides, true, `${fixture.kind} must collide`)
+        solid += 1
+      } else {
+        assert.equal(fixture.cls, 'decorative')
+        assert.ok(decorative.has(fixture.kind), `${fixture.kind} is not a decorative kind`)
+        assert.equal(fixture.collides, false, `${fixture.kind} must not collide`)
+        ghost += 1
+      }
+      assert.ok(fixture.w > 0 && fixture.d > 0, `${fixture.id} has no footprint`)
+      assert.equal(fixture.loop, loop, 'a fixture carries the wrong loop')
+    }
+    assert.ok(solid > 50, `loop ${loop} had only ${solid} structural fixtures`)
+    assert.ok(ghost > 50, `loop ${loop} had only ${ghost} decorative fixtures`)
+  }
+})
+
+test('the pass changes between loops, including adjacent ones', () => {
+  const signatures = []
+  for (let loop = 1; loop <= 8; loop++) signatures.push(hood.fixturePass(1337, loop).signature)
+  assert.equal(new Set(signatures).size, 8, 'two loops produced the same layout')
+  for (let loop = 2; loop <= 8; loop++) {
+    assert.notEqual(signatures[loop - 1], signatures[loop - 2], `loops ${loop - 1} and ${loop} are identical`)
+  }
+  // and they change substantially, not just by one prop. Measured churn between
+  // adjacent loops runs about 90%, so 50% is a floor that still means "rebuilt".
+  const describe = (pass) => pass.fixtures.map((fixture) => `${fixture.id}:${fixture.cls}:${fixture.kind}`)
+  for (const seed of [1, 1337, 90210]) {
+    for (let loop = 2; loop <= 8; loop++) {
+      const before = new Set(describe(hood.fixturePass(seed, loop - 1)))
+      const after = describe(hood.fixturePass(seed, loop))
+      const changed = after.filter((entry) => !before.has(entry)).length
+      assert.ok(changed / after.length > 0.5, `seed ${seed} loop ${loop}: only ${changed}/${after.length} fixtures changed`)
+    }
+  }
+})
+
+test('fixtures never overlap each other', () => {
+  // Regression guard. Slice 02's lots were 46 m wide on a 64 m block, so all four
+  // adjacent pairs shared 400 m² and fixtures on neighbouring lots could land
+  // inside one another — 21 of 2814 did, across 8 seeds and 8 loops.
+  const footprint = (fixture) => ({
+    x0: fixture.x - fixture.w / 2,
+    x1: fixture.x + fixture.w / 2,
+    z0: fixture.z - fixture.d / 2,
+    z1: fixture.z + fixture.d / 2,
+  })
+  let total = 0
+  const collisions = []
+  for (const seed of [1, 7, 1337]) {
+    for (let loop = 1; loop <= 8; loop++) {
+      const pass = hood.fixturePass(seed, loop)
+      for (let i = 0; i < pass.fixtures.length; i++) {
+        for (let j = i + 1; j < pass.fixtures.length; j++) {
+          if (hood.rectsOverlap(footprint(pass.fixtures[i]), footprint(pass.fixtures[j]))) {
+            collisions.push(`seed ${seed} loop ${loop}: ${pass.fixtures[i].id} overlaps ${pass.fixtures[j].id}`)
+          }
+        }
+      }
+      total += pass.fixtures.length
+    }
+  }
+  // collected rather than asserted inline: the message is built per pair, and
+  // there are well over a million of them
+  assert.deepEqual(collisions.slice(0, 5), [], `${collisions.length} fixtures overlap something else`)
+  assert.equal(collisions.length, 0)
+  assert.ok(total > 2000, `only ${total} fixtures were overlap-checked`)
+})
+
+// ---------------------------------------------------------------------------
 // PRNG + determinism (the learnable pattern)
 // ---------------------------------------------------------------------------
 
