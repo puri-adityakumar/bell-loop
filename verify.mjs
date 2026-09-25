@@ -60,6 +60,9 @@ import {
 // names all collide with v1's maze.js exports; slice 16 removes that overlap for
 // good, and until then the v2 world reads `hood.*` beside v1's flat names.
 import * as hood from './src/game/neighborhood.js'
+// v2 slice 05. Namespace again: `breath`, `portals` and friends are game-state
+// names as well as rule names, and flat imports would read ambiguously.
+import * as rules from './src/game/rules.js'
 import {
   LOOP_SECONDS,
   PHASE,
@@ -1037,6 +1040,336 @@ test('fixtures never overlap each other', () => {
   assert.deepEqual(collisions.slice(0, 5), [], `${collisions.length} fixtures overlap something else`)
   assert.equal(collisions.length, 0)
   assert.ok(total > 2000, `only ${total} fixtures were overlap-checked`)
+})
+
+// ---------------------------------------------------------------------------
+// v2 slice 05 — portal verb, breath, persistence
+// ---------------------------------------------------------------------------
+
+section('Portal verb, breath, persistence (v2 slice 05)')
+
+const DT = 1 / 60
+
+test('the slice 05 constants match the design', () => {
+  assert.equal(rules.PORTAL_SHUT_SECONDS, 1.2)
+  assert.equal(rules.PORTAL_NOISE_THRESHOLD, 0.5, '§5.2: silent first half, loud second half')
+  assert.equal(rules.PORTAL_SOUND_RADIUS, 25, '§6.2: second loudest thing in the game')
+  assert.equal(rules.EXIT_WIN_RADIUS, 1.15, 'must match v1 DOOR_WIN_RADIUS')
+  assert.ok(rules.BREATH_RECOVERY_THRESHOLD > 0, 'hysteresis needs a threshold above zero')
+  assert.ok(rules.BREATH_RECOVERY_THRESHOLD < 1, 'a threshold of 1 would never lift')
+  assert.ok(rules.BREATH_DRAIN_PER_SEC > rules.BREATH_RECOVER_PER_SEC, 'recovery must be slower than drain')
+})
+
+test('the portal hold is silent below the midpoint and loud above it', () => {
+  let progress = 0
+  let firstLoud = null
+  let frames = 0
+  for (; frames < 600 && progress < 1; frames++) {
+    const result = rules.portalShutProgress(progress, DT, true)
+    // the invariant, asserted every single frame rather than at one sample
+    assert.equal(
+      result.soundEmitted,
+      result.progress >= rules.PORTAL_NOISE_THRESHOLD,
+      `frame ${frames}: sound ${result.soundEmitted} at progress ${result.progress}`,
+    )
+    if (result.soundEmitted && firstLoud === null) firstLoud = result.progress
+    progress = result.progress
+  }
+  assert.equal(progress, 1, 'the hold never completed')
+  assert.ok(firstLoud >= rules.PORTAL_NOISE_THRESHOLD, 'the shutdown was audible before the midpoint')
+  // and it is genuinely silent for a real stretch of time first
+  const quietSeconds = (rules.PORTAL_SHUT_SECONDS * rules.PORTAL_NOISE_THRESHOLD)
+  assert.ok(quietSeconds > 0.5, 'the silent half is too short to be a decision')
+  // the first half is committed silence, so a creature arriving there is free
+  assert.equal(rules.portalShutProgress(0, DT * 10, true).soundEmitted, false)
+})
+
+test('the portal hold clamps at exactly 1.0 and completes on one frame only', () => {
+  let progress = 0
+  let completions = 0
+  for (let i = 0; i < 600; i++) {
+    const result = rules.portalShutProgress(progress, DT, true)
+    if (result.completed) completions += 1
+    assert.ok(result.progress <= 1, `progress overshot to ${result.progress}`)
+    assert.ok(result.progress >= 0, 'progress went negative')
+    progress = result.progress
+  }
+  assert.equal(progress, 1, 'progress should saturate at exactly 1')
+  assert.equal(completions, 1, `a held portal completed ${completions} times`)
+  // a single huge timestep must not skip past the threshold silently
+  const jump = rules.portalShutProgress(0, 99, true)
+  assert.equal(jump.progress, 1)
+  assert.equal(jump.completed, true)
+  assert.equal(jump.soundEmitted, true)
+})
+
+test('releasing the hold decays progress and stops the sound', () => {
+  const before = rules.portalShutProgress(0.8, DT, true)
+  assert.equal(before.soundEmitted, true, '0.8 should be loud')
+  const after = rules.portalShutProgress(before.progress, DT, false)
+  assert.ok(after.progress < before.progress, 'releasing must decay progress')
+  assert.equal(after.soundEmitted, false, 'releasing must stop the noise immediately')
+  assert.equal(after.completed, false)
+  // aborting is free: it bleeds to nothing and never completes
+  let progress = 0.8
+  for (let i = 0; i < 600; i++) {
+    const result = rules.portalShutProgress(progress, DT, false)
+    assert.equal(result.completed, false, 'an abandoned hold completed a portal')
+    progress = result.progress
+  }
+  assert.equal(progress, 0, 'progress should bleed all the way back to zero')
+  // and decay is faster than the fill, so re-committing is responsive
+  assert.ok(rules.PORTAL_RELEASE_DECAY > 1, 'decay should outrun the fill')
+})
+
+
+test('breath drains monotonically, recovers, and locks out with hysteresis', () => {
+  let breath = 1
+  let exhausted = false
+  let previous = breath
+  for (let i = 0; i < 600 && !exhausted; i++) {
+    const result = rules.breathStep(breath, exhausted, true, DT)
+    assert.ok(result.breath <= previous, `breath rose while sprinting: ${previous} -> ${result.breath}`)
+    previous = result.breath
+    breath = result.breath
+    exhausted = result.exhausted
+  }
+  assert.equal(exhausted, true, 'sprinting forever never exhausted the player')
+  assert.equal(breath, 0, 'exhaustion should land exactly on zero')
+
+  // the lockout lifts at the threshold, not at zero, and NOT while sprinting.
+  // Compared against the POST-step value, since that is what the rule inspects.
+  let frames = 0
+  while (exhausted && frames < 600) {
+    const result = rules.breathStep(breath, exhausted, true, DT) // sprint key still down
+    assert.equal(
+      result.exhausted,
+      result.breath < rules.BREATH_RECOVERY_THRESHOLD,
+      `lockout disagrees with the threshold at breath ${result.breath}`,
+    )
+    breath = result.breath
+    exhausted = result.exhausted
+    frames += 1
+  }
+  assert.equal(exhausted, false, 'the lockout never lifted')
+  assert.ok(breath >= rules.BREATH_RECOVERY_THRESHOLD, `lockout lifted at breath ${breath}`)
+
+  // recovery: walking refills, and never past full
+  let walking = breath
+  for (let i = 0; i < 3000; i++) {
+    const result = rules.breathStep(walking, false, false, DT)
+    assert.ok(result.breath >= walking, 'breath fell while walking')
+    assert.ok(result.breath <= 1, `breath overfilled to ${result.breath}`)
+    walking = result.breath
+  }
+  assert.equal(walking, 1, 'breath should refill to full')
+
+  // THE hysteresis case. Bobbing means mashing the sprint key on and off, not
+  // resting: while locked out the key must be IGNORED, so the meter can never
+  // dip. Without the lockout the flag would flicker every frame and the player
+  // would get an infinite sprint out of two alternating inputs.
+  // ...and bobbing must not PREVENT recovery either: the lockout still lifts
+  // once the threshold is reached, roughly on schedule. Measured from where the
+  // meter actually starts, which is just under the threshold, not from zero.
+  const BOB_START = 0.34
+  let bobBreath = BOB_START
+  let bobExhausted = true
+  let everDipped = false
+  let liftedAt = null
+  for (let i = 0; i < 120; i++) {
+    const wasExhausted = bobExhausted
+    const result = rules.breathStep(bobBreath, bobExhausted, i % 2 === 0, DT)
+    // only a step that BEGAN locked out is allowed to prove the point; once the
+    // lockout legitimately lifts, sprinting drains again and a dip is correct
+    if (wasExhausted && result.breath < bobBreath) everDipped = true
+    if (wasExhausted && !result.exhausted && liftedAt === null) liftedAt = i
+    bobBreath = result.breath
+    bobExhausted = result.exhausted
+  }
+  assert.equal(everDipped, false, 'bobbing the sprint key drained breath while locked out')
+  assert.ok(liftedAt !== null, 'bobbing the sprint key kept the player locked out forever')
+  const framesToLift = (rules.BREATH_RECOVERY_THRESHOLD - BOB_START) / rules.BREATH_RECOVER_PER_SEC / DT
+  assert.ok(
+    Math.abs(liftedAt - framesToLift) < 2,
+    `lockout lifted at frame ${liftedAt}, expected about ${Math.round(framesToLift)}`,
+  )
+
+  // and the lockout has a floor: it lasts exactly as long as it takes to reach
+  // the threshold, not one frame
+  let lockBreath = 0
+  let lockExhausted = true
+  let elapsed = 0
+  while (lockExhausted && elapsed < 100) {
+    const result = rules.breathStep(lockBreath, lockExhausted, true, DT)
+    lockBreath = result.breath
+    lockExhausted = result.exhausted
+    elapsed += DT
+  }
+  const expected = rules.BREATH_RECOVERY_THRESHOLD / rules.BREATH_RECOVER_PER_SEC
+  assert.ok(
+    Math.abs(elapsed - expected) < DT * 2,
+    `lockout lasted ${elapsed.toFixed(3)}s, expected about ${expected.toFixed(3)}s`,
+  )
+})
+
+test('exhaustion makes you louder', () => {
+  // §7.3: the rule is not "sprinting costs stamina", it is that being out of
+  // breath raises your sound radius
+  assert.equal(rules.breathSoundRadius(9, false), 9, 'walking is 9 m (§6.2)')
+  assert.equal(rules.breathSoundRadius(22, false), 22, 'sprinting is 22 m (§6.2)')
+  assert.equal(rules.breathSoundRadius(9, true), 9 + rules.EXHAUSTED_BREATH_SOUND_BONUS)
+  assert.equal(rules.EXHAUSTED_BREATH_SOUND_BONUS, 6)
+  // Exhausted sprinting is 28 m: louder than a portal shutdown (25) and louder
+  // than walking (9), but the hammer toll is still 30 and still the loudest
+  // thing in the game. That ordering is the point - being spent is a liability,
+  // but the hammer stays the player's own weapon.
+  assert.equal(rules.breathSoundRadius(22, true), 28)
+  assert.ok(rules.breathSoundRadius(22, true) > rules.PORTAL_SOUND_RADIUS, 'exhaustion should out-shout a portal')
+  assert.ok(rules.breathSoundRadius(22, true) < 30, 'exhaustion must not out-shout the hammer toll (§6.2)')
+  assert.ok(rules.breathSoundRadius(9, true) > rules.breathSoundRadius(9, false))
+})
+
+
+test('every row of the capture table behaves as §9.1 says', () => {
+  assert.equal(rules.CAPTURE_TABLE.length, 10)
+  const keep = rules.CAPTURE_TABLE.filter((row) => row.mutation === 'keep').map((row) => row.field)
+  assert.deepEqual(keep, ['portals', 'hammerHeld', 'banishCount', 'finale', 'dusk'])
+
+  // a state where every field is deliberately at a non-default value
+  const dirty = {
+    portals: { A: true, B: true, C: false },
+    hammerHeld: true,
+    banishCount: 3,
+    finale: true,
+    dusk: 0.66,
+    loop: 5,
+    player: { x: 500, z: 500 },
+    prompt: 'shutdown',
+    creature: { state: 'chase', reemergenceCount: 4, awareness: 0.8 },
+    sounds: [{ radius: 9 }],
+  }
+  for (const row of rules.CAPTURE_TABLE) {
+    assert.ok(row.field in dirty, `the table mentions ${row.field}, which the test does not dirty`)
+  }
+
+  const before = { ...rules.createInitialState(hood.placeObjectives(1337, 1)), ...dirty }
+  const after = rules.applyCapture(before)
+
+  for (const row of rules.CAPTURE_TABLE) {
+    const from = rules.readField(before, row.field)
+    const to = rules.readField(after, row.field)
+    if (row.mutation === 'keep') {
+      assert.equal(JSON.stringify(to), JSON.stringify(from), `${row.field} should survive a capture`)
+    } else if (row.mutation === 'increment') {
+      assert.equal(to, from + 1, `${row.field} should increment by one`)
+    } else {
+      assert.notEqual(JSON.stringify(to), JSON.stringify(from), `${row.field} should reset on capture`)
+    }
+  }
+  // the two named consequences, spelled out because they are the whole point
+  assert.equal(after.player.x, hood.SPAWN.position.x, 'the player must be returned to spawn')
+  assert.equal(after.player.z, hood.SPAWN.position.z)
+  assert.equal(after.creature.state, 'stalk', 'a player holding the hammer returns to STALK')
+  assert.equal(after.creature.reemergenceCount, 0, 'the aggression ladder restarts')
+  // and the table is frozen, so a caller cannot quietly rewrite the rules
+  assert.equal(Object.isFrozen(rules.CAPTURE_TABLE), true)
+})
+
+test('a shut portal ignores the verb and stays shut across a capture', () => {
+  let state = rules.createInitialState(hood.placeObjectives(1337, 1))
+  for (let i = 0; i < 200 && !state.portals.A; i++) state = rules.applyPortalHold(state, 'A', DT, true)
+  assert.equal(state.portals.A, true, 'holding never shut portal A')
+
+  // holding it again changes nothing at all — no double completion, no progress
+  const held = rules.applyPortalHold(state, 'A', DT, true)
+  assert.equal(held, state, 'a dead portal was not inert')
+  assert.ok(held.progress.A > 0, 'a shut portal lost its progress')
+  assert.deepEqual(rules.portalShutProgress(0.4, DT, true, true), {
+    progress: 1,
+    soundEmitted: false,
+    completed: false,
+  })
+  assert.equal(rules.applyPortalHold(state, 'Z', DT, true), state, 'an unknown portal id was invented')
+
+  // permanence: A survives any number of captures (§5.3). This run started fresh,
+  // so loop 1 plus five captures is loop 6 and only portal A is shut.
+  for (let i = 0; i < 5; i++) state = rules.applyCapture(state)
+  assert.equal(state.portals.A, true, 'a shut portal was undone by dying')
+  assert.equal(state.portals.B, false, 'an untouched portal was shut for free')
+  assert.equal(state.loop, 6, 'five captures from loop 1 is loop 6')
+  assert.equal(state.dusk, 1 / 3, 'dusk followed the progress, not the deaths')
+  assert.equal(state.hammerHeld, false, 'the hammer was never picked up in this run')
+  assert.equal(state.banishCount, 0, 'nothing was banished in this run')
+  assert.equal(state.finale, false, 'the finale is not open after one portal')
+})
+
+test('the third portal opens the finale, and only the third', () => {
+  let state = rules.createInitialState(hood.placeObjectives(42, 1))
+  for (const id of ['A', 'B']) {
+    for (let i = 0; i < 200 && !state.portals[id]; i++) state = rules.applyPortalHold(state, id, DT, true)
+    assert.equal(state.portals[id], true, `portal ${id} did not shut`)
+    assert.equal(state.finale, false, `the finale opened on portal ${id}`)
+    assert.equal(state.dusk, rules.portalsShut(state.portals) / 3)
+  }
+  for (let i = 0; i < 200 && !state.portals.C; i++) state = rules.applyPortalHold(state, 'C', DT, true)
+  assert.equal(state.finale, true, 'the third portal did not open the finale')
+  assert.equal(state.dusk, 1, 'dusk should be full with every portal shut')
+  assert.equal(rules.portalsShut(state.portals), 3)
+  assert.equal(rules.duskForPortals({ A: true, B: true, C: true }), 1)
+  assert.equal(rules.duskForPortals({ A: false, B: false, C: false }), 0)
+  // dusk is a function of progress alone, so it can never be a death spiral
+  assert.equal(rules.applyCapture(state).dusk, 1, 'dusk fell when the player died')
+})
+
+test('isInsideExit mirrors v1 isInsideChamber, negatives included', () => {
+  assert.equal(rules.EXIT_WIN_RADIUS, DOOR_WIN_RADIUS)
+  const cases = [
+    [{ x: 0, z: 0 }, { x: 0, z: 0 }, 1.15],
+    [{ x: 1.1, z: 0 }, { x: 0, z: 0 }, 1.15],
+    [{ x: 1.2, z: 0 }, { x: 0, z: 0 }, 1.15],
+    [{ x: -1.15, z: 0 }, { x: 0, z: 0 }, 1.15],
+    [{ x: 0, z: -1.15 }, { x: 0, z: 0 }, 1.15],
+    [{ x: 0.8, z: 0.8 }, { x: 0, z: 0 }, 1.15],
+    [{ x: 0.81, z: 0.81 }, { x: 0, z: 0 }, 1.15],
+    [{ x: 900, z: -900 }, { x: 0, z: 0 }, 1.15],
+    [null, { x: 0, z: 0 }, 1.15],
+    [{ x: 0, z: 0 }, null, 1.15],
+    [{ x: 0, z: 0 }, undefined, 1.15],
+    [null, null, 1.15],
+    [{ x: 3, z: 4 }, { x: 3, z: 4 }, 5],
+    [{ x: 8, z: 4 }, { x: 3, z: 4 }, 5],
+  ]
+  for (const [position, centre, radius] of cases) {
+    assert.equal(
+      rules.isInsideExit(position, centre, radius),
+      isInsideChamber(position, centre, radius),
+      `isInsideExit disagreed with isInsideChamber at ${JSON.stringify(position)}`,
+    )
+  }
+  assert.equal(
+    rules.isInsideExit({ x: 0, z: 0 }, { x: 0, z: 0 }),
+    isInsideChamber({ x: 0, z: 0 }, { x: 0, z: 0 }),
+  )
+  assert.equal(rules.isInsideExit({ x: 2, z: 0 }, { x: 0, z: 0 }), false)
+  assert.equal(rules.isInsideExit(null, { x: 0, z: 0 }), false)
+})
+
+test('winning needs the finale as well as the geometry', () => {
+  const objectives = hood.placeObjectives(1337, 1)
+  let state = rules.createInitialState(objectives)
+  const exit = objectives.exit.position
+  const inside = { x: exit.x, z: exit.z }
+  // standing in the exit before the third portal does nothing
+  assert.equal(rules.isInsideExit(inside, exit), true, 'the geometry should already be satisfied')
+  assert.equal(rules.checkExitWin(state, inside), false, 'won without triggering the finale')
+  for (const id of ['A', 'B', 'C']) {
+    for (let i = 0; i < 200 && !state.portals[id]; i++) state = rules.applyPortalHold(state, id, DT, true)
+  }
+  assert.equal(state.finale, true)
+  assert.equal(rules.checkExitWin(state, inside), true, 'standing in the exit did not win')
+  assert.equal(rules.checkExitWin(state, { x: exit.x + 50, z: exit.z }), false, 'won from across the map')
+  // the finale is a flag, not a new PHASE: the state still reads as playing
+  assert.equal(typeof state.finale, 'boolean')
 })
 
 // ---------------------------------------------------------------------------
