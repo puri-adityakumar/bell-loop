@@ -28,7 +28,7 @@ pure_checks: 35
 world_checks: 23
 build: pass
 deployed_url: "https://bell-loop-m7xph7s6z-project-by-aditya.vercel.app"
-screenshots: ["cycle30-title.png", "cycle30-entry.png", "cycle30-shrine.png", "cycle30-open-door.png", "cycle30-reset.png", "cycle30-pause.png", "cycle30-win.png", "cycle30-short-landscape.png", "cycle24-entry.png", "cycle20-door.png", "cycle18-reset.png", "cycle22-pause.png"]
+screenshots: ["cycle30-title.png", "cycle30-entry.png", "lit-candle.png", "cycle30-shrine.png", "cycle30-open-door.png", "cycle30-reset.png", "cycle30-pause.png", "cycle30-win.png", "cycle30-short-landscape.png", "cycle24-entry.png", "cycle20-door.png", "cycle18-reset.png", "cycle22-pause.png"]
 ---
 
 # THE BELL LOOP — STEALTH / SPACE-BUNNY
@@ -134,7 +134,7 @@ Each pass used a read-only council, a bounded implementation, a quality gate, an
     <td><img loading="lazy" src="benchmark/site/screenshots/cycle30-entry.png" alt="Entry corridor"><br>Entry</td>
   </tr>
   <tr>
-    <td><img loading="lazy" src="benchmark/site/screenshots/cycle30-shrine.png" alt="Candle shrine"><br>Shrine</td>
+    <td><img loading="lazy" src="benchmark/site/screenshots/lit-candle.png" alt="Best lit-candle visual"><br>Lit candle</td>
     <td><img loading="lazy" src="benchmark/site/screenshots/cycle30-open-door.png" alt="Open center door"><br>Open door</td>
   </tr>
   <tr>
