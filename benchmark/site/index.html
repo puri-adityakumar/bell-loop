@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#080a0f">
+    <meta name="description" content="A benchmark catalog for autonomous models improving The Bell Loop.">
+    <title>Bell Loop Benchmark Index</title>
+    <link rel="stylesheet" href="catalog.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="eyebrow">BELL LOOP / AUTONOMOUS MODEL BENCHMARK</div>
+      <h1>One task. Many minds.</h1>
+      <p>Every branch is a model result built from the same deterministic base. Compare workflow, implementation deltas, quality gates, captures, and cost.</p>
+      <div class="header-meta">
+        <span>Base branch: <strong>base</strong></span>
+        <span>Catalog branch: <strong>index</strong></span>
+        <span id="generated">Loading catalog…</span>
+      </div>
+    </header>
+    <main>
+      <section class="toolbar" aria-label="Catalog controls">
+        <label for="filter">Filter results</label>
+        <select id="filter">
+          <option value="all">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="candidate">Candidate</option>
+          <option value="verified">Verified</option>
+          <option value="archived">Archived</option>
+        </select>
+        <span id="count">0 results</span>
+      </section>
+      <section id="results" class="results" aria-live="polite"></section>
+      <section id="empty" class="empty" hidden>No result branches match this filter.</section>
+    </main>
+    <footer>
+      <span>Static catalog source: <code>benchmark/site</code></span>
+      <span>Result READMEs are the source of truth.</span>
+    </footer>
+    <script type="module" src="catalog.js"></script>
+  </body>
+</html>

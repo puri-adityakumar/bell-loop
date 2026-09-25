@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "oxlint",
     "verify": "node verify.mjs",
+    "benchmark:catalog": "node benchmark/build-catalog.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
