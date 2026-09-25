@@ -48,6 +48,14 @@ import {
   S,
   APPROACH_YAW,
 } from './src/game/maze.js'
+// v2 slice 01. `maze.js` still exports its own `mulberry32` for v1 and that is
+// untouched until slice 16 deletes it, so the two are imported under distinct
+// names here — the temporary duplication stays visible instead of silent.
+import {
+  hash32,
+  streamAt,
+  mulberry32 as mulberry32V2,
+} from './src/game/hash.js'
 import {
   LOOP_SECONDS,
   PHASE,
@@ -94,6 +102,201 @@ function test(name, fn) {
     current.tests.push({ name, ok: false, error: error.message })
   }
 }
+
+/** Population count of `a ^ b` — how many of the 32 bits differ. */
+function hamming32(a, b) {
+  let x = (a ^ b) >>> 0
+  let count = 0
+  while (x) {
+    x &= x - 1
+    count += 1
+  }
+  return count
+}
+
+function mean(values) {
+  return values.reduce((a, b) => a + b, 0) / values.length
+}
+
+// ---------------------------------------------------------------------------
+// v2 slice 01 — random-access hashing
+// ---------------------------------------------------------------------------
+
+section('Random-access hashing (v2 slice 01)')
+
+test('hash32 is reproducible and stays an unsigned 32-bit integer', () => {
+  for (let seed = 0; seed < 32; seed++) {
+    for (let cx = 0; cx < 8; cx++) {
+      for (let cz = 0; cz < 8; cz++) {
+        const first = hash32(seed, cx, cz)
+        assert.equal(hash32(seed, cx, cz), first, `hash32(${seed},${cx},${cz}) is not reproducible`)
+        assert.equal(hash32(seed, cx, cz), first, 'a third call drifted')
+        assert.ok(Number.isInteger(first), 'hash32 must return an integer')
+        assert.ok(first >= 0 && first <= 0xffffffff, `out of range: ${first}`)
+      }
+    }
+  }
+})
+
+test('hash32 is well distributed across both the high and the low bits', () => {
+  // A weak mix usually avalanches the top bits and leaves the bottom ones
+  // nearly untouched, so both ends get their own bucket test. Uniformity is
+  // asserted with a chi-square statistic rather than a hand-tuned per-bucket
+  // tolerance: 16 buckets is 15 degrees of freedom, where 30.6 is p < 0.01.
+  //
+  // Measured against weaker alternatives at this threshold, so the test is not
+  // merely passing its own output: the additive hash scores 20.3, the XOR
+  // combiner 146.0, a single fmix32 round 112.8, and `seed ^ cx ^ cz` 122880.
+  const STRIDES = [1, 7, 13, 101, 4096, 65537]
+  const CHI2_LIMIT = 30.6 // 15 df, p < 0.01
+  for (const stride of STRIDES) {
+    const high = new Array(16).fill(0)
+    const low = new Array(16).fill(0)
+    let samples = 0
+    for (let seed = 0; seed < 8; seed++) {
+      for (let cx = 0; cx < 32; cx++) {
+        for (let cz = 0; cz < 32; cz++) {
+          const h = hash32(seed * stride, cx, cz)
+          high[(h >>> 28) & 15] += 1
+          low[h & 15] += 1
+          samples += 1
+        }
+      }
+    }
+    // per stride, not cumulative: each pass is its own 8192-sample experiment
+    assert.equal(samples, 8192)
+    const expected = samples / 16
+    const chiSquare = (buckets) =>
+      buckets.reduce((sum, n) => sum + ((n - expected) * (n - expected)) / expected, 0)
+    for (const [name, buckets] of [['high', high], ['low', low]]) {
+      const stat = chiSquare(buckets)
+      assert.ok(
+        stat < CHI2_LIMIT,
+        `${name} bits are not uniform at stride ${stride}: chi-square ${stat.toFixed(1)} over 15 df`,
+      )
+    }
+  }
+})
+
+test('the same (seed, cx, cz) always yields the same stream', () => {
+  const coords = [
+    [0, 0, 0],
+    [1, 3, 4],
+    [1337, 6, 6],
+    [0xffffffff, 12, 40],
+    [-1, -2, -3],
+  ]
+  for (const [seed, cx, cz] of coords) {
+    const a = streamAt(seed, cx, cz)
+    const b = streamAt(seed, cx, cz)
+    for (let i = 0; i < 1000; i++) {
+      const value = a()
+      assert.equal(value, b(), `stream ${i} diverged for (${seed},${cx},${cz})`)
+      assert.ok(value >= 0 && value < 1, `out of range: ${value}`)
+    }
+  }
+  // the exported generator is the same one streamAt drives
+  const direct = mulberry32V2(hash32(1337, 6, 6))
+  const viaStream = streamAt(1337, 6, 6)
+  for (let i = 0; i < 64; i++) assert.equal(direct(), viaStream())
+})
+
+test('distinct chunk coordinates yield distinct streams', () => {
+  const seen = new Map()
+  let checked = 0
+  // negative coordinates included: the wrap in §3.3 folds them into range
+  for (let seed = 0; seed < 4; seed++) {
+    for (let cx = -4; cx < 8; cx++) {
+      for (let cz = -4; cz < 8; cz++) {
+        const rng = streamAt(seed, cx, cz)
+        const signature = Array.from({ length: 6 }, () => rng().toFixed(12)).join(',')
+        const key = `${seed}:${cx}:${cz}`
+        assert.ok(!seen.has(signature), `collision between ${seen.get(signature)} and ${key}`)
+        seen.set(signature, key)
+        checked += 1
+      }
+    }
+  }
+  assert.equal(checked, 4 * 12 * 12)
+  assert.equal(seen.size, checked, 'every coordinate must have its own stream')
+})
+
+test('adjacent cx values avalanche instead of clustering', () => {
+  // THE test for this slice. A weak mix leaves neighbouring chunks a couple of
+  // bits apart, which reads in game as visibly repeating streets down every row.
+  // Two independent 32-bit values differ in 16 bits on average.
+  const distances = []
+  for (let seed = 0; seed < 16; seed++) {
+    for (let cz = 0; cz < 16; cz++) {
+      for (let cx = 0; cx < 32; cx++) {
+        distances.push(hamming32(hash32(seed, cz * 7919, cx), hash32(seed, cz * 7919, cx + 1)))
+      }
+    }
+  }
+  const average = mean(distances)
+  const closest = Math.min(...distances)
+  const farthest = Math.max(...distances)
+  assert.equal(distances.length, 16 * 16 * 32)
+  assert.ok(average > 12, `adjacent chunks average only ${average.toFixed(2)} bits apart — clustering`)
+  assert.ok(average < 20, `adjacent chunks average ${average.toFixed(2)} bits apart — implausibly diffuse`)
+  assert.ok(closest >= 4, `the closest adjacent pair is only ${closest} bits apart`)
+  assert.ok(farthest <= 28, `the furthest adjacent pair is ${farthest} bits apart`)
+})
+
+test('adjacent streams diverge as fast as unrelated streams do', () => {
+  // The bit-level test above could pass while the streams themselves stayed
+  // correlated, so compare neighbours against a control population of streams
+  // that are deliberately far apart. Two independent uniforms differ by 1/3 on
+  // average; a clustering hash pulls the adjacent figure under the control.
+  const adjacent = []
+  const control = []
+  for (let cz = 0; cz < 32; cz++) {
+    for (let cx = 0; cx < 32; cx++) {
+      const here = streamAt(7, cx, cz)
+      const next = streamAt(7, cx + 1, cz)
+      const far = streamAt(7, cx + 32, cz)
+      adjacent.push(Math.abs(here() - next()))
+      control.push(Math.abs(here() - far()))
+    }
+  }
+  const adjacentMean = mean(adjacent)
+  const controlMean = mean(control)
+  assert.ok(controlMean > 0.25 && controlMean < 0.42, `control mean looks wrong: ${controlMean}`)
+  assert.ok(
+    adjacentMean > controlMean * 0.8,
+    `neighbouring streams differ by ${adjacentMean.toFixed(4)} vs control ${controlMean.toFixed(4)} — clustering`,
+  )
+  assert.ok(
+    adjacentMean < controlMean * 1.2,
+    `neighbouring streams differ by ${adjacentMean.toFixed(4)} vs control ${controlMean.toFixed(4)} — implausible`,
+  )
+})
+
+test('chunk streams are independent of the order they are generated in', () => {
+  // The property that makes deferred streaming a change to `resolveChunk`
+  // instead of a rewrite: nothing is shared between chunks.
+  const signature = (seed, cx, cz) => {
+    const rng = streamAt(seed, cx, cz)
+    return Array.from({ length: 8 }, () => rng().toFixed(12)).join(',')
+  }
+  const forward = []
+  for (let cx = 0; cx < 16; cx++) {
+    for (let cz = 0; cz < 16; cz++) forward.push(signature(1337, cx, cz))
+  }
+  // `forward` is filled cx-outer/cz-inner, so its index is cx * 16 + cz
+  const backward = new Array(forward.length)
+  for (let cx = 15; cx >= 0; cx--) {
+    for (let cz = 15; cz >= 0; cz--) backward[cx * 16 + cz] = signature(1337, cx, cz)
+  }
+  assert.equal(forward.length, 256)
+  assert.equal(new Set(forward).size, 256, 'two chunks shared a stream')
+  assert.deepEqual(backward, forward, 'generating chunks in a different order changed their content')
+
+  // and a different seed is a different world rather than a shifted one
+  const base = streamAt(1, 0, 0)
+  const other = streamAt(2, 0, 0)
+  assert.notEqual(base(), other(), 'two seeds produced the same first value')
+})
 
 // ---------------------------------------------------------------------------
 // PRNG + determinism (the learnable pattern)
