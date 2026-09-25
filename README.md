@@ -1,8 +1,8 @@
 # THE BELL LOOP — MODEL BENCHMARK
 
-`main` is the canonical checkpoint. Each model branches from `main`, improves the deterministic Bell Loop experience, and records the complete run in its own result README.
+`main` is the shared starting point for every model run. Each model branches from this checkpoint, works on the same deterministic Bell Loop game, and leaves a record of what changed, how it was tested, and where it can be played.
 
-Read [`AGENTS.md`](AGENTS.md) for the benchmark workflow and [`benchmark/README.md`](benchmark/README.md) for the result contract.
+Read [`AGENTS.md`](AGENTS.md) for the workflow and [`benchmark/README.md`](benchmark/README.md) for the result format.
 
 ## Results
 
