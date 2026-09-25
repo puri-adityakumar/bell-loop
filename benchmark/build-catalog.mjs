@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const outputPath = resolve(root, 'benchmark/site/catalog.json')
-const repository = process.env.BENCHMARK_REPOSITORY ?? 'https://github.com/zeke-cmd/bell-loop'
+const repository = process.env.BENCHMARK_REPOSITORY ?? 'https://github.com/puri-adityakumar/bell-loop'
 
 function parseValue(value) {
   const trimmed = value.trim()
@@ -58,7 +58,7 @@ function readResult(branch) {
   for (const key of required) {
     if (metadata[key] === undefined || metadata[key] === '') throw new Error(`${branch}: missing README frontmatter field ${key}`)
   }
-  if (metadata.base_branch !== 'base') throw new Error(`${branch}: base_branch must be base`)
+  if (metadata.base_branch !== 'main') throw new Error(`${branch}: base_branch must be main`)
   return {
     ...metadata,
     repository,
@@ -69,7 +69,7 @@ function readResult(branch) {
 }
 
 const entries = getBranches()
-  .filter((branch) => branch !== 'base' && branch !== 'index' && branch !== 'main')
+  .filter((branch) => branch !== 'main')
   .map((branch) => readResult(branch))
   .filter(Boolean)
   .sort((a, b) => a.result_id.localeCompare(b.result_id))
@@ -77,7 +77,7 @@ const entries = getBranches()
 const catalog = {
   schemaVersion: 1,
   generated_at: new Date().toISOString(),
-  base_branch: 'base',
+  base_branch: 'main',
   entries,
 }
 

@@ -1,16 +1,11 @@
-# Benchmark index site
+# Local benchmark gallery
 
-This directory is the static catalog for the `index` branch.
+This directory contains an optional local gallery generated from result branch READMEs. There is no separate catalog branch; `main` is the checkpoint and each result branch carries its own README and approved captures.
 
-Publish this directory as the GitHub Pages source with:
-
-- Branch: `index`
-- Folder: `/benchmark/site`
-
-`catalog.json` is generated from result branch READMEs with:
+Generate the local catalog with:
 
 ```bash
 npm run benchmark:catalog
 ```
 
-The site is intentionally dependency-free. It uses the catalog JSON at runtime and does not need a build step.
+The static files are dependency-free and can be opened from a local web server.

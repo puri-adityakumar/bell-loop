@@ -1,87 +1,87 @@
-# Benchmark Catalog
+# Bell Loop Model Benchmark
 
-This repository is a model benchmark built around one deterministic task. The `index` branch is the catalog and default branch. The `base` branch is the frozen template. Each result branch contains one model's implementation, run card, captures, and deployment metadata.
+`main` is the canonical checkpoint. Every model creates a provider/model branch from `main`, improves the same deterministic task, and records the complete run in that branch's root `README.md`.
+
+The first reference result is `stealth/space-bunny`. It is an example of the expected workflow, not a separate template branch.
 
 ## Branch contract
 
-| Branch | Role | Rule |
-| --- | --- | --- |
-| `index` | Static catalog | Contains the published benchmark index and generated catalog data. |
-| `base` | Template | Shared starting point, evaluator, task contract, and baseline behavior. |
-| `stealth/<model>` | Result | One model submission. |
-| `claude/<model>` | Result | One model submission. |
-| `<provider>/<model>` | Result | Additional model submissions follow the same contract. |
+| Branch | Role |
+| --- | --- |
+| `main` | Canonical checkpoint, shared task, and reference implementation. |
+| `provider/model` | One model result created from `main`. |
 
-Result pull requests target `base`. Catalog changes are generated from result branch READMEs and land on `index` through a catalog pull request or CI job.
+Result pull requests target `main`. There is no separate catalog, base, or index branch.
 
 ## Result README contract
 
-The root `README.md` on every result branch is the canonical run card. It must contain YAML frontmatter so the catalog can be generated without interpreting arbitrary prose.
+The root `README.md` on every result branch is the durable run card. YAML frontmatter makes the metadata machine-readable while the body remains the human report.
 
 ```yaml
 ---
 benchmark: bell-loop
-result_id: stealth/space-bunny
-provider: opencode
-model: space-bunny-free
-variant: max
-branch: stealth/space-bunny
-base_branch: base
-base_commit: 148c75c
+result_id: provider/model
+provider: provider
+model: model-name
+variant: default
+branch: provider/model
+base_branch: main
+base_commit: main-commit-sha
 status: candidate
 run_count: 1
-pass_count: 30
-task_calls: 127
-persisted_agents: 123
-general_agents: 109
-explore_agents: 14
-wall_time_ms: 137620751
-active_agent_time_ms: 54834840
-input_tokens: 20377902
-output_tokens: 951504
-reasoning_tokens: 2747996
-cache_read_tokens: 502587723
+pass_count: 0
+task_calls: 0
+persisted_agents: 0
+general_agents: 0
+explore_agents: 0
+wall_time_ms: 0
+active_agent_time_ms: 0
+input_tokens: 0
+output_tokens: 0
+reasoning_tokens: 0
+cache_read_tokens: 0
 cache_write_tokens: 0
-non_cache_tokens: 24077402
-total_tokens: 524665125
+non_cache_tokens: 0
+total_tokens: 0
 cost_usd: 0
-pure_checks: 35
-world_checks: 23
-build: pass
-screenshots: ["cycle30-title.png", "cycle30-entry.png"]
+pure_checks: 0
+world_checks: 0
+build: not-run
+screenshots: []
 ---
 ```
 
-The body must include the model summary, stats table, workflow diagram, pass ledger, twelve-capture gallery, delta from `base`, reproduction commands, and known debt.
+The body must include the run summary, stats, Mermaid workflow, pass ledger, twelve-capture gallery, delta from `main`, reproduction commands, and known debt.
 
-## Generate the catalog
+## Workflow
 
-Install dependencies and run:
+1. Create `provider/model` from the current `main`.
+2. Run bounded passes with a read-only council and one writer.
+3. Run `npm run check` after every meaningful pass.
+4. Capture the required visual states.
+5. Copy `benchmark/templates/result-readme.md` to the root README and fill it in.
+6. Record the exact `main` commit used as the starting checkpoint.
+7. Push the result branch for comparison.
 
-```bash
-npm run benchmark:catalog
-```
+## Local reporting
 
-The generator reads result branch READMEs with `git show`, validates the required frontmatter, and writes `benchmark/site/catalog.json`. Run it from a checkout that has the result branches available locally or as fetched refs.
-
-## Publish
-
-Serve `benchmark/site` as the static site for the `index` branch. The site has no build dependency and reads only `catalog.json`. Each card links to the result README, branch, and deployment URL when one exists.
+`npm run benchmark:catalog` can generate a local `benchmark/site/catalog.json` from available result branches. It is optional tooling; the repository has no hosted catalog branch.
 
 ## Result rules
 
-- Keep `base` unchanged while a benchmark run is active.
-- Use deterministic seeds, the same task, and the same quality gate for every model.
-- Keep generated screenshots and local logs out of the catalog branch; publish only approved captures.
-- Record both non-cache tokens and cache reads so provider accounting is unambiguous.
+- Keep `main` stable while a model run is active.
+- Use the same deterministic task and quality expectations for every model.
+- Keep local logs and unpublished captures out of the checkpoint.
+- Record non-cache tokens and cache reads separately.
 - Use an immutable result tag after a candidate is finalized.
+- Do not merge model-specific changes into `main` unless they become the next intentional checkpoint.
 
-## Local quality gate
+## Quality gate
 
-Every result branch must pass:
+Every result must pass:
 
 ```bash
 npm run check
 ```
 
-The evaluator currently reports pure logic checks, Three.js world checks, lint, and production build status. The result README should record the final counts rather than copying stale numbers from the template.
+The result README should record the final pure-check count, world-check count, build status, and any known warnings.

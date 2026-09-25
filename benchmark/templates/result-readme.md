@@ -5,8 +5,8 @@ provider: provider
 model: model-name
 variant: default
 branch: provider/model-name
-base_branch: base
-base_commit: base-commit-sha
+base_branch: main
+base_commit: main-commit-sha
 status: draft
 run_count: 0
 pass_count: 0
@@ -64,7 +64,7 @@ Describe the model, provider, variant, task prompt, and final result in one para
 
 ```mermaid
 flowchart LR
-  B[Base commit] --> C[Council debate]
+  B[main checkpoint] --> C[Council debate]
   C --> P[Passes]
   P --> I[Implementation]
   I --> G[Quality gate]
@@ -92,7 +92,7 @@ Use six rows with two screenshots per row.
   <tr><td><img src="benchmark/site/screenshots/detail-c.png" alt="Detail C"><br>Detail C</td><td><img src="benchmark/site/screenshots/detail-d.png" alt="Detail D"><br>Detail D</td></tr>
 </table>
 
-## Delta from `base`
+## Delta from `main`
 
 ### Logic
 
