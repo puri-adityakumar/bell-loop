@@ -67,6 +67,12 @@ import * as rules from './src/game/rules.js'
 // `sounds` and `captured` are all frame fields *and* all rule names, and the
 // creature's states would sit next to v1's PHASE table looking like one thing.
 import * as beast from './src/game/creature.js'
+// v2 slice 08. The first-person controller. It is in the pure harness because
+// slice 08 removed its `three` import, which is the only thing that ever made it
+// unimportable here (§15.1 lists it as a pure module). Imported flat: it exports
+// exactly one class and no rule names that collide.
+import { PlayerController } from './src/game/player.js'
+import { readFileSync } from 'node:fs'
 import {
   LOOP_SECONDS,
   PHASE,
@@ -2873,6 +2879,511 @@ test('§11.3: less exposure and more threat, sampled across a run', () => {
   assert.ok(beast.balanceTrend(1).length === 1)
   assert.ok(beast.balanceTrend(0).length >= 1, 'a zero-encounter run still samples')
 })
+
+// ---------------------------------------------------------------------------
+// v2 slice 08 — the player: breath, the lockout, and the two verbs
+// ---------------------------------------------------------------------------
+
+section('Player breath and the two verbs (v2 slice 08)')
+
+const PLAYER_SOURCE = readFileSync(new URL('./src/game/player.js', import.meta.url), 'utf8')
+
+/** `_applyCamera` writes to `position.set` / `rotation.set` and nothing else. */
+function stubCamera() {
+  return { position: { set() {} }, rotation: { set() {} } }
+}
+
+/**
+ * A headless PlayerController. No DOM element, no renderer, no clock — and the same
+ * `pressKey` / `pressButton` door the browser listeners use, so a check cannot pass
+ * against a path the game does not take.
+ */
+function makePlayer(options = {}) {
+  return new PlayerController(stubCamera(), null, options)
+}
+
+/**
+ * Run a player for `frames` at 60 Hz and collect every §6.2 sound event it emitted.
+ *
+ * @param {PlayerController} player
+ * @param {number} frames
+ * @param {(frame: number, player: PlayerController) => void} [hold] input per frame
+ */
+function collectSounds(player, frames, hold = () => {}) {
+  const events = []
+  for (let frame = 0; frame < frames; frame += 1) {
+    hold(frame, player)
+    player.update(DT)
+    events.push(...player.drainSounds())
+  }
+  return events
+}
+
+function distinct(values) {
+  return [...new Set(values)]
+}
+
+test('player.js is in the pure harness: no three, and no DOM outside the browser methods', () => {
+  // The only reason player.js could not be imported here before was `three`, for
+  // two vector objects. If that import comes back, this is the check that says so —
+  // a renderer stack has no business in the pure gate.
+  assert.equal(/from ['"]three['"]/.test(PLAYER_SOURCE), false, 'player.js imports three again')
+  // and the rules it needs are the shared ones, not local copies
+  assert.match(PLAYER_SOURCE, /import \{ breathStep \} from '\.\/rules\.js'/)
+  assert.match(PLAYER_SOURCE, /import \{ soundRadius, SOUND_EVENT_SECONDS \} from '\.\/creature\.js'/)
+
+  // Nothing above the class may touch the browser: module-scope code is what a node
+  // import actually executes, so that is the line that has to hold.
+  const head = PLAYER_SOURCE.slice(0, PLAYER_SOURCE.indexOf('export class PlayerController'))
+  for (const global of ['window', 'document', 'navigator', 'requestAnimationFrame']) {
+    assert.equal(head.includes(global), false, `${global} is reachable at module scope`)
+  }
+  // the browser surface is the three methods, and the game still calls all of them
+  for (const method of ['attach', 'dispose', 'requestLock']) {
+    assert.ok(
+      new RegExp(`\\n  ${method}\\(`).test(PLAYER_SOURCE),
+      `player.js no longer has a ${method}() for the game to call`,
+    )
+  }
+  // the module really is constructible here, which is the live version of all of
+  // the above: no renderer, no document, no canvas
+  const player = makePlayer()
+  assert.equal(player.breath, 1)
+  assert.equal(player.exhausted, false)
+  assert.equal(player.sounds.length, 0)
+  assert.equal(player.pos.clone().z, 0, 'pos must still be clonable — world.js clones it')
+  player.teleport(4, -7, 0.5)
+  assert.equal(player.pos.z, -7)
+})
+
+test('breath integration is rules.breathStep, not a second copy of it', () => {
+  // The structural half. §7.3's numbers are defined once, in rules.js; a second copy
+  // here would be a tuning change that silently applies to half the game.
+  for (const name of [
+    'BREATH_DRAIN_PER_SEC',
+    'BREATH_RECOVER_PER_SEC',
+    'BREATH_RECOVERY_THRESHOLD',
+    'EXHAUSTED_BREATH_SOUND_BONUS',
+  ]) {
+    // a *declaration* is the duplication. Naming a constant in a comment is not.
+    assert.equal(
+      new RegExp(`(const|let|var)\\s+${name}\\b`).test(PLAYER_SOURCE),
+      false,
+      `player.js re-declares ${name}`,
+    )
+  }
+
+  // The behavioural half, which is the one that counts. Drive the controller and
+  // integrate the rule independently, over a script that sprints, recovers, locks
+  // out and locks back in — the two must agree on every frame, to the bit.
+  const player = makePlayer({ breath: 1 })
+  let rule = { breath: 1, exhausted: false }
+  let sawLockout = false
+  let sawRecovery = false
+  for (let frame = 0; frame < 1200; frame += 1) {
+    const wantsSprint = frame % 120 < 80 // 1.3 s of sprint, 0.67 s of walking
+    if (wantsSprint) player.pressKey('ShiftLeft')
+    else player.releaseKey('ShiftLeft')
+    player.update(DT)
+
+    // the same integration, written out here against rules.js rather than reusing
+    // whatever the controller thinks the answer was
+    const effective = wantsSprint && !rule.exhausted
+    rule = rules.breathStep(rule.breath, rule.exhausted, effective, DT)
+    assert.equal(player.breath, rule.breath, `breath drifted on frame ${frame}`)
+    assert.equal(player.exhausted, rule.exhausted, `the lockout drifted on frame ${frame}`)
+    if (player.exhausted) sawLockout = true
+    if (sawLockout && !player.exhausted) sawRecovery = true
+  }
+  // ...and the script has to have actually exercised both, or the equality above is
+  // an equality between two things that never moved
+  assert.equal(sawLockout, true, 'the script never exhausted the player')
+  assert.equal(sawRecovery, true, 'the script never recovered from a lockout')
+  assert.ok(player.breath <= 1 && player.breath >= 0, `breath left [0, 1]: ${player.breath}`)
+
+  // a disabled player is not running a meter at all — pause, the reset wipe and the
+  // death freeze all freeze the breath along with everything else
+  const frozen = makePlayer({ breath: 0.5 })
+  frozen.enabled = false
+  for (let frame = 0; frame < 120; frame += 1) frozen.update(DT)
+  assert.equal(frozen.breath, 0.5, 'breath drained while the player was disabled')
+  assert.equal(frozen.commandSpeed, 0)
+})
+
+test('sprint lockout cannot be bypassed by holding the key', () => {
+  const player = makePlayer({ breath: 0.05 })
+  player.pressKey('ShiftLeft') // and it stays down for the whole check
+
+  let framesToLock = 0
+  while (!player.exhausted && framesToLock < 60) {
+    player.update(DT)
+    framesToLock += 1
+  }
+  assert.equal(player.exhausted, true, 'sprinting on almost no breath never locked out')
+  const expectedFrames = Math.ceil(0.05 / (rules.BREATH_DRAIN_PER_SEC * DT))
+  assert.equal(
+    framesToLock,
+    expectedFrames,
+    `lockout took ${framesToLock} frames, expected ${expectedFrames} at the §7.3 drain rate`,
+  )
+  assert.equal(player.sprinting, false, 'the frame the meter empties still bought a sprint')
+
+  // From here on, holding the key down buys nothing at all. Each of these is a way a
+  // careless implementation leaks the lockout: the flag is still true, the speed is
+  // still the sprint speed, or the meter is quietly draining again.
+  const atLockout = player.breath
+  let breach = null
+  for (let frame = 0; frame < 300; frame += 1) {
+    player.update(DT)
+    if (!player.exhausted) continue
+    if (player.sprinting) breach ??= `frame ${frame}: still sprinting`
+    if (player.commandSpeed > player.walkSpeed) breach ??= `frame ${frame}: sprinting at ${player.commandSpeed} m/s`
+    if (player.breath < atLockout - 1e-12) breach ??= `frame ${frame}: breath fell to ${player.breath}`
+  }
+  assert.equal(breach, null, `holding the key beat the lockout — ${breach}`)
+
+  // The lockout is state, not key state: what decides whether it has lifted is where
+  // the meter is, and nothing else.
+  assert.equal(
+    player.exhausted,
+    player.breath < rules.BREATH_RECOVERY_THRESHOLD,
+    'the lockout and the recovery threshold disagree',
+  )
+
+  // And the speed really was gated, not just the flag: with the key released the
+  // player settles at a walk and never at a sprint.
+  player.releaseKey('ShiftLeft')
+  player.pressKey('KeyW')
+  for (let frame = 0; frame < 180; frame += 1) player.update(DT)
+  const settled = Math.hypot(player.vel.x, player.vel.y)
+  assert.ok(Math.abs(settled - player.walkSpeed) < 1e-3, `settled at ${settled.toFixed(3)} m/s`)
+  assert.ok(settled < player.sprintSpeed, 'a locked-out player still moved at sprint speed')
+})
+
+test('sprint-bobbing at the bottom of the meter does not buy a sprint (§7.3)', () => {
+  // Without hysteresis, mashing the key at 0.01 breath flickers the lockout every
+  // frame and hands the player an unlimited sprint out of two alternating inputs.
+  // The lockout has to ignore the key until the threshold.
+  const player = makePlayer({ breath: 0.34, exhausted: true })
+  const startBreath = player.breath
+  let drained = null
+  let liftedAt = null
+  for (let frame = 0; frame < 180; frame += 1) {
+    if (frame % 2 === 0) player.pressKey('ShiftLeft')
+    else player.releaseKey('ShiftLeft')
+    player.update(DT)
+    if (player.exhausted && player.breath < startBreath - 1e-12) drained ??= frame
+    if (!player.exhausted && liftedAt === null) liftedAt = frame
+  }
+  assert.equal(drained, null, `bobbing drained the meter during the lockout on frame ${drained}`)
+  assert.equal(player.sprinting, false, 'bobbing was sprinting')
+  // ...and bobbing must not prevent recovery either. Measured from where the meter
+  // actually starts, which is under the threshold, not from zero.
+  assert.ok(liftedAt !== null, 'bobbing kept the player locked out forever')
+  const expected =
+    (rules.BREATH_RECOVERY_THRESHOLD - startBreath) / rules.BREATH_RECOVER_PER_SEC / DT
+  assert.ok(
+    Math.abs(liftedAt - expected) < 2,
+    `bobbing lifted the lockout on frame ${liftedAt}, expected about ${Math.round(expected)}`,
+  )
+  // The same is true with the key never touched at all: the lock is not a key state.
+  const alone = makePlayer({ breath: 0, exhausted: true })
+  let held = 0
+  while (alone.exhausted && held < 600) {
+    alone.update(DT)
+    held += 1
+  }
+  const seconds = rules.BREATH_RECOVERY_THRESHOLD / rules.BREATH_RECOVER_PER_SEC
+  assert.ok(
+    Math.abs(held * DT - seconds) < DT * 2,
+    `an idle lockout lasted ${(held * DT).toFixed(3)}s, expected about ${seconds.toFixed(3)}s`,
+  )
+})
+
+test('standing still emits no footstep sound event', () => {
+  // §6.2: "standing perfectly still emits nothing, so 'kill your footsteps and let it
+  // lose you' is a real, learnable strategy." This is the check that the strategy is
+  // available at all.
+  let audioCalls = 0
+  const idle = makePlayer({
+    onFootstep: () => {
+      audioCalls += 1
+    },
+  })
+  const events = collectSounds(idle, 600) // ten seconds
+  assert.equal(events.length, 0, 'ten seconds of standing still produced sound events')
+  assert.equal(audioCalls, 0, 'ten seconds of standing still produced footsteps')
+  assert.equal(idle.travelled, 0, 'a still player should not accumulate stride distance')
+  assert.equal(idle.speedRatio, 0)
+  assert.equal(idle.pos.x, 0)
+  assert.equal(idle.pos.z, 0)
+
+  // Leaning on something is the same case, and the one a player will actually hit:
+  // the key is down, the intent is movement, and the world says no.
+  const walled = makePlayer()
+  walled.setColliders([{ cx: 0, cz: -2, hx: 8, hz: 0.5 }]) // a wall across −Z, yaw 0 faces it
+  const wallFace = -2 + 0.5 + walled.radius
+  walled.pressKey('KeyW')
+  const blocked = collectSounds(walled, 600)
+  assert.equal(blocked.length, 0, 'a player pressed against a wall is not silent')
+  assert.ok(walled.pos.z >= wallFace, `the wall was walked through: z=${walled.pos.z}`)
+  assert.ok(walled.pos.z < -1, 'the player never reached the wall')
+  walled.releaseKey('KeyW')
+
+  // ...and stopping is silence, once the glide to a halt is over. Sprint, release,
+  // wait: the coast may stride, because the feet really are still moving, but a
+  // player standing still afterwards is the case §6.2 is about.
+  const runner = makePlayer()
+  const sprinting = collectSounds(runner, 60, (frame, player) => {
+    player.pressKey('KeyW')
+    player.pressKey('ShiftLeft')
+  })
+  assert.ok(sprinting.length > 0, 'a sprinting player made no sound at all')
+  runner.releaseKey('ShiftLeft')
+  runner.releaseKey('KeyW')
+  const coasting = collectSounds(runner, 90)
+  const stopped = collectSounds(runner, 300)
+  assert.equal(stopped.length, 0, 'a stopped player kept making noise')
+  assert.ok(Math.hypot(runner.vel.x, runner.vel.y) < 1e-3, 'the player never actually stopped')
+  assert.ok(coasting.length <= sprinting.length, 'the glide out-loudened the sprint')
+})
+
+test('footsteps and exhausted breathing are priced by the creature sound table', () => {
+  // Every radius the player emits is `soundRadius(kind, { exhausted })` — the
+  // creature's own table, which is `rules.breathSoundRadius` applied to the §6.2
+  // rows. If these ever stop matching, the player and the AI disagree about how loud
+  // the player is, and nothing else in the game can catch that.
+  const walking = collectSounds(makePlayer(), 120, (frame, player) => player.pressKey('KeyW'))
+  assert.ok(walking.length > 0, 'walking produced no footsteps')
+  assert.deepEqual(distinct(walking.map((event) => event.kind)), ['walk'])
+  assert.deepEqual(distinct(walking.map((event) => event.radius)), [beast.SOUND_RADII.walk])
+  assert.equal(walking[0].radius, rules.breathSoundRadius(beast.SOUND_RADII.walk, false))
+
+  const sprinting = collectSounds(makePlayer(), 120, (frame, player) => {
+    player.pressKey('KeyW')
+    player.pressKey('ShiftLeft')
+  })
+  assert.ok(sprinting.length > 0, 'sprinting produced no footsteps')
+  assert.deepEqual(distinct(sprinting.map((event) => event.kind)), ['sprint'])
+  assert.deepEqual(distinct(sprinting.map((event) => event.radius)), [beast.SOUND_RADII.sprint])
+  assert.equal(sprinting[0].radius, rules.breathSoundRadius(beast.SOUND_RADII.sprint, false))
+
+  // §7.3: the same gait, six metres louder, because the state is the punishment.
+  // One second, so the player is still locked out at the end of it: 0.18 m/s of
+  // recovery from zero is still under the 0.35 threshold, so this is one continuous
+  // exhausted second rather than a window that straddles the recovery.
+  const spent = makePlayer({ breath: 0, exhausted: true })
+  const spentWalk = collectSounds(spent, 60, (frame, player) => player.pressKey('KeyW'))
+  assert.ok(spentWalk.length > 0, 'an exhausted walk produced no sound')
+  assert.equal(spent.exhausted, true, 'the player recovered out of the lockout mid-check')
+  assert.deepEqual(distinct(spentWalk.map((event) => event.kind)).sort(), ['still', 'walk'])
+  for (const event of spentWalk) {
+    assert.equal(event.exhausted, true)
+    assert.equal(event.radius, beast.soundRadius(event.kind, { exhausted: true }))
+  }
+  assert.ok(
+    spentWalk.some(
+      (event) => event.radius === beast.SOUND_RADII.walk + rules.EXHAUSTED_BREATH_SOUND_BONUS,
+    ),
+    'the exhausted walk is not six metres louder',
+  )
+  // The breath event is a different row, not a quieter footstep: a *gait* step while
+  // exhausted is never quieter than the same step fresh.
+  const spentGait = spentWalk.filter((event) => event.kind !== 'still')
+  assert.ok(spentGait.length > 0, 'an exhausted walk emitted no footsteps at all')
+  assert.ok(
+    !spentGait.some((event) => event.radius < beast.SOUND_RADII.walk),
+    'exhaustion made the footsteps quieter, which is the opposite of §7.3',
+  )
+
+  // Standing still while spent is the case the design is built around: you have
+  // stopped to listen, and it can still hear you.
+  const hiding = makePlayer({ breath: 0, exhausted: true })
+  const gasps = collectSounds(hiding, 60)
+  assert.ok(gasps.length > 0, 'hiding out of breath emitted nothing')
+  assert.deepEqual(distinct(gasps.map((event) => event.kind)), ['still'], 'a still player emitted a footstep')
+  for (const event of gasps) {
+    assert.equal(event.radius, beast.soundRadius('still', { exhausted: true }))
+    assert.equal(event.radius, rules.EXHAUSTED_BREATH_SOUND_BONUS, 'the last row of §6.2 is +6 m')
+    assert.equal(event.radius, rules.breathSoundRadius(0, true))
+  }
+
+  // A continuous source emits one event per integration window, not one per frame.
+  const windows = Math.floor((60 * DT) / beast.SOUND_EVENT_SECONDS)
+  assert.ok(gasps.length >= windows - 1, `only ${gasps.length} gasps in ${windows} windows`)
+  assert.ok(gasps.length <= windows + 1, `${gasps.length} gasps in ${windows} windows`)
+
+  // Fresh, the same standing player is at a radius of zero — which is why nothing is
+  // queued at all, and why the table has a 0 in it and not a 1.
+  assert.equal(beast.soundRadius('still', { exhausted: false }), 0)
+
+  // The event carries no distance. Only the listener knows where it is, and a
+  // player-side distance would be a lie the moment the creature moves.
+  for (const event of [...walking, ...sprinting, ...gasps]) {
+    assert.equal(event.distance, undefined, 'the player must not invent a distance')
+    assert.equal(typeof event.position.x, 'number')
+    assert.equal(typeof event.position.z, 'number')
+  }
+
+  // The radii a player can ever emit, exhaustively: the three §6.2 rows that belong
+  // to the player, fresh and spent. Nothing else is reachable.
+  const reachable = new Set()
+  for (const kind of ['walk', 'sprint', 'still']) {
+    for (const exhausted of [false, true]) reachable.add(beast.soundRadius(kind, { exhausted }))
+  }
+  for (const event of [...walking, ...sprinting, ...spentWalk, ...gasps]) {
+    assert.equal(reachable.has(event.radius), true, `unreachable radius ${event.radius}`)
+  }
+  assert.deepEqual([...reachable].sort((a, b) => a - b), [0, 6, 9, 15, 22, 28])
+})
+
+test('E interacts and LMB swings: two verbs, two keys (§5.2)', () => {
+  const player = makePlayer()
+
+  // E is a hold, and it is never a swing.
+  player.pressKey('KeyE')
+  assert.equal(player.interactHeld(), true)
+  assert.equal(player.swingHeld(), false)
+  assert.equal(player.consumeSwing(), false, 'E produced a swing')
+  for (let frame = 0; frame < 120; frame += 1) player.update(DT) // hold it through the verb
+  assert.equal(player.consumeSwing(), false, 'holding E produced a swing')
+  player.releaseKey('KeyE')
+  assert.equal(player.interactHeld(), false)
+
+  // LMB is a press, and it is never an interact hold.
+  player.pressButton(0)
+  assert.equal(player.swingHeld(), true, 'button 0 did not map to the swing verb')
+  assert.equal(player.interactHeld(), false, 'LMB produced an interact hold')
+  assert.equal(player.consumeSwing(), true)
+  assert.equal(player.consumeSwing(), false, 'one press produced two swings')
+
+  // Holding the button is not more swings, and neither is keyboard auto-repeat
+  for (let frame = 0; frame < 60; frame += 1) {
+    player.pressKey('Mouse0')
+    player.update(DT)
+  }
+  assert.equal(player.consumeSwing(), false, 'holding LMB kept swinging')
+  player.releaseButton(0)
+  assert.equal(player.swingHeld(), false)
+  player.pressButton(0)
+  assert.equal(player.consumeSwing(), true, 'a second press is a second swing')
+  player.releaseButton(0)
+
+  // The two verbs are independent, which is §5.2's whole point: a player committed
+  // to a shutdown can still choose to swing, and a player who swings cannot
+  // accidentally be holding an interact.
+  player.pressKey('KeyE')
+  player.pressButton(0)
+  assert.equal(player.interactHeld(), true)
+  assert.equal(player.swingHeld(), true)
+  assert.equal(player.consumeSwing(), true)
+  player.releaseKey('KeyE')
+  player.releaseButton(0)
+
+  // The callback fires once per consumed swing, and not before it is consumed.
+  let swings = 0
+  const hooked = makePlayer({
+    onSwing: () => {
+      swings += 1
+    },
+  })
+  hooked.pressButton(0)
+  hooked.pressButton(0)
+  hooked.pressButton(0) // three repeat events, one intent
+  assert.equal(swings, 0, 'the swing fired on the press instead of on consumption')
+  assert.equal(hooked.consumeSwing(), true)
+  assert.equal(swings, 1)
+  assert.equal(hooked.consumeSwing(), false)
+  assert.equal(swings, 1, 'the swing fired twice for one press')
+
+  // the other mouse buttons are not the verb
+  const other = makePlayer()
+  other.pressButton(1)
+  other.pressButton(2)
+  assert.equal(other.swingHeld(), false, 'the right button swung the hammer')
+  assert.equal(other.interactHeld(), false)
+  assert.equal(other.consumeSwing(), false)
+
+  // and no movement key grew a third verb
+  for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ArrowUp']) {
+    const walker = makePlayer()
+    walker.pressKey(code)
+    assert.equal(walker.interactHeld(), false, `${code} raised the interact verb`)
+    assert.equal(walker.swingHeld(), false, `${code} raised the swing verb`)
+    assert.equal(walker.consumeSwing(), false, `${code} raised the swing verb`)
+  }
+})
+
+test('scripted run: the same input script produces the same trace (§15.3)', () => {
+  // A 510-frame script that walks, sprints into the lockout, stops to listen while
+  // out of breath, walks it off, strafes, swings, and stands still again. §15.3
+  // wants a scripted-run assertion per subsystem: non-determinism in a benchmark
+  // game is a correctness bug even when it looks fine on screen, and this is the
+  // trace the balance simulation in slice 15 will lean on.
+  const SCRIPT = [
+    { frames: 30, keys: ['KeyW'] },
+    { frames: 60, keys: ['KeyW', 'ShiftLeft'] },
+    { frames: 30, keys: [] }, // stop: half a second of recovery
+    { frames: 200, keys: ['KeyW', 'ShiftLeft'] }, // long enough to empty the meter
+    { frames: 30, keys: [] }, // out of breath and standing still: the gasping case
+    { frames: 60, keys: ['KeyW'] }, // walk it off, and let the lockout lift
+    { frames: 30, keys: ['KeyW', 'KeyD'] },
+    { frames: 40, keys: [] },
+    { frames: 30, keys: ['KeyW'] }, // one swing, pressed on this step's first frame
+  ]
+
+  const play = () => {
+    const player = makePlayer()
+    const trace = []
+    for (const step of SCRIPT) {
+      for (const code of step.keys) player.pressKey(code)
+      for (let frame = 0; frame < step.frames; frame += 1) {
+        if (frame === 0 && step.keys.includes('KeyW')) player.pressButton(0)
+        player.update(DT)
+        player.consumeSwing()
+        for (const event of player.drainSounds()) {
+          trace.push(`SOUND ${event.kind}@${event.radius} ${event.exhausted ? 'spent' : 'fresh'}`)
+        }
+        trace.push(
+          `FRAME ${player.pos.x.toFixed(9)} ${player.pos.z.toFixed(9)} ${player.breath.toFixed(12)} ` +
+            `${player.exhausted ? 1 : 0} ${player.sprinting ? 1 : 0} ${player.commandSpeed.toFixed(6)}`,
+        )
+      }
+      for (const code of step.keys) player.releaseKey(code)
+    }
+    return trace
+  }
+
+  const first = play()
+  assert.equal(play().join('\n'), first.join('\n'), 'a replayed input script diverged')
+  const soundLines = first.filter((line) => line.startsWith('SOUND'))
+  const frameLines = first.filter((line) => line.startsWith('FRAME'))
+  assert.equal(frameLines.length, 510, 'the script did not run 510 frames')
+
+  // the script has to have exercised the parts that matter, or the equality above is
+  // an equality between two traces that never moved
+  assert.ok(soundLines.length > 20, `only ${soundLines.length} sound events in the script`)
+  assert.ok(soundLines.includes('SOUND walk@9 fresh'), 'never heard a fresh walk')
+  assert.ok(soundLines.includes('SOUND sprint@22 fresh'), 'never heard a fresh sprint')
+  assert.ok(soundLines.includes('SOUND walk@15 spent'), 'never heard an exhausted walk')
+  assert.ok(soundLines.includes('SOUND still@6 spent'), 'never heard the exhausted player breathe')
+  assert.ok(frameLines.some((line) => line.endsWith(' 0 1 6.000000')), 'never sprinted')
+  assert.ok(frameLines.some((line) => line.endsWith(' 0 0 3.600000')), 'never walked')
+  assert.ok(frameLines.some((line) => line.includes(' 1 0 3.600000')), 'never was locked out and walking')
+  // no frame may be both locked out and sprinting, in any replay
+  assert.equal(
+    frameLines.some((line) => line.includes(' 1 1 ')),
+    false,
+    'a frame was locked out and sprinting',
+  )
+  // the run starts at spawn, on a full meter, walking — and ends somewhere else
+  assert.ok(
+    frameLines[0].endsWith(' 1.000000000000 0 0 3.600000'),
+    `the script did not start at spawn on a full meter: ${frameLines[0]}`,
+  )
+  assert.notEqual(frameLines[frameLines.length - 1], frameLines[0], 'the run ended where it began')
+})
+
 
 // ---------------------------------------------------------------------------
 // PRNG + determinism (the learnable pattern)

@@ -50,6 +50,37 @@ Branch: `cline/space-bunny-alpha`
 | 05 rules.js portal/breath/persistence | 62238eb | 78/78 | tmux server died twice (container reaping); resumed via --id again |
 | 06 creature.js awareness + state machine | 1411e29 | 101/101 | non-interactive background cline per slice (no tmux); 7 states incl. STAGGER/REPOSITION; awareness held by sight |
 | 07 pathing + the two ladders | (this commit) | 115/115 | BFS on the 49-node street graph; §7.4 ladder 8→24 capped; §11.2 aggression strictly up, delay strictly down; §8.2 phase-out at 12 s; §8.3 placement cascade; §11.3 pure trend |
+| 08 player breath + two verbs | (this commit) | 123/123 | +8 checks; `player.js` lost its `three` import (Vec3/Vec2) so §15.1's "pure, importable by verify.mjs" is now literally true; E=interact hold, LMB=swing edge; exhausted breath is a continuous `still` event on the creature's table |
+
+### Slice 08 decisions (recorded for the next slice)
+
+- **`player.js` is now genuinely pure** and `verify.mjs` imports it directly. The only
+  thing that ever blocked that was `import * as THREE from 'three'`, needed for two
+  vector objects; `Vec3`/`Vec2` replaced them. Outward API checked against callers first:
+  `world.js` reads only `pos.x` / `pos.z`, `verify-world.mjs` uses `pos.clone()` and
+  `keys.add/delete` — all preserved, so v1 wiring is untouched. The browser surface is
+  confined to `attach` / `dispose` / `requestLock`; DOM events are translated into
+  `pressKey` / `pressButton`, and that is the same door the pure checks use.
+- **One sprint flag, two gates.** `sprinting = wantsSprint && !exhausted` is computed
+  *before* `breathStep` and re-checked *after* it, so neither the pre-existing flag nor a
+  held Shift key can buy a single frame of sprint speed. Dropping either gate alone is
+  survivable; dropping both is caught by the gate (mutation-tested).
+- **Exhausted breathing is a continuous `still` event**, emitted once per
+  `SOUND_EVENT_SECONDS` window via `creature.soundRadius('still', …)` (= +6 m), *in
+  addition to* the per-stride gait event that already carries the +6. The alternative —
+  folding the bonus into the gait event only — was rejected: it would leave a spent
+  player standing behind a hedge in silence, which is the exact moment §7.3 is about.
+  The reachable radius set is asserted exhaustively: `{0, 6, 9, 15, 22, 28}`.
+- **Breath survives a capture.** §9.1's reset column is short on purpose and breath is
+  in neither column, so `teleport()` does not touch it. Slice 09 wires `applyCapture`.
+- **World harness, run by hand:** `node verify-world.mjs` still exits 1, unchanged from
+  the base commit — `TypeError: ctx.beginPath is not a function` at
+  `makeCobbleTexture (src/game/world.js:182:11)` ← `new BellLoopGame
+  (src/game/world.js:482:26)` ← `verify-world.mjs:133`. Not touched; slice 14 owns it.
+- **The new checks were mutation-tested**, because a check that cannot fail is worse than
+  no check: leaking the lockout into the speed, hard-coding a sound radius, re-declaring
+  `BREATH_DRAIN_PER_SEC`, dropping the stride gate, and emitting a footstep per frame
+  are each caught (the last two by the sound-table and standing-still checks).
 
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
@@ -59,6 +90,6 @@ Branch: `cline/space-bunny-alpha`
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 08–16 in order (08 player breath, 09 THE SWAP, 10 creature view, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures+cleanup+result README).
+- Slices 09–16 in order (09 THE SWAP, 10 creature view, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures+cleanup+result README).
 - Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.
