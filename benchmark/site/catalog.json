@@ -1,6 +1,55 @@
 {
   "schemaVersion": 1,
-  "generated_at": null,
-  "base_branch": "base",
-  "entries": []
+  "generated_at": "2026-09-25T15:18:24.315Z",
+  "base_branch": "main",
+  "entries": [
+    {
+      "benchmark": "bell-loop",
+      "result_id": "stealth/space-bunny",
+      "provider": "opencode",
+      "model": "space-bunny-free",
+      "variant": "max",
+      "branch": "stealth/space-bunny",
+      "base_branch": "main",
+      "base_commit": "2820b72cab594000e426ed5084aa095dea57626c",
+      "status": "candidate",
+      "run_count": 1,
+      "pass_count": 30,
+      "task_calls": 127,
+      "persisted_agents": 123,
+      "general_agents": 109,
+      "explore_agents": 14,
+      "wall_time_ms": 137620751,
+      "active_agent_time_ms": 54834840,
+      "input_tokens": 20377902,
+      "output_tokens": 951504,
+      "reasoning_tokens": 2747996,
+      "cache_read_tokens": 502587723,
+      "cache_write_tokens": 0,
+      "non_cache_tokens": 24077402,
+      "total_tokens": 524665125,
+      "cost_usd": 0,
+      "pure_checks": 35,
+      "world_checks": 23,
+      "build": "pass",
+      "deployed_url": "",
+      "screenshots": [
+        "screenshots/cycle30-title.png",
+        "screenshots/cycle30-entry.png",
+        "screenshots/cycle30-shrine.png",
+        "screenshots/cycle30-open-door.png",
+        "screenshots/cycle30-reset.png",
+        "screenshots/cycle30-pause.png",
+        "screenshots/cycle30-win.png",
+        "screenshots/cycle30-short-landscape.png",
+        "screenshots/cycle24-entry.png",
+        "screenshots/cycle20-door.png",
+        "screenshots/cycle18-reset.png",
+        "screenshots/cycle22-pause.png"
+      ],
+      "repository": "https://github.com/puri-adityakumar/bell-loop",
+      "readme_url": "https://github.com/puri-adityakumar/bell-loop/blob/stealth/space-bunny/README.md",
+      "branch_url": "https://github.com/puri-adityakumar/bell-loop/tree/stealth/space-bunny"
+    }
+  ]
 }

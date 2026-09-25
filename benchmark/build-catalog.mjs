@@ -39,7 +39,7 @@ function getBranches() {
     cwd: root,
     encoding: 'utf8',
   })
-  return [...new Set(output.trim().split('\n').filter(Boolean).map((branch) => branch.replace(/^origin\//, '')))]
+  return [...new Set(output.trim().split('\n').filter(Boolean).filter((branch) => branch !== 'origin/HEAD').map((branch) => branch.replace(/^origin\//, '')))]
 }
 
 function readResult(branch) {
