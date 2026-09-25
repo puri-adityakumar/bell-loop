@@ -8,7 +8,7 @@ Read [`AGENTS.md`](AGENTS.md) for the workflow and [`benchmark/README.md`](bench
 
 | Screenshot | Result |
 | --- | --- |
-| [![Space Bunny lit candle](benchmark/screenshots/space-bunny/lit-candle.png)](benchmark/screenshots/space-bunny/lit-candle.png) | **Branch:** [`stealth/space-bunny`](https://github.com/puri-adityakumar/bell-loop/tree/stealth/space-bunny)<br>**Model:** OpenCode `space-bunny-free` / `max`<br>**Deployment:** [Vercel production](https://bell-loop-m7xph7s6z-project-by-aditya.vercel.app) |
-| [![Grok 4.7 lit candle](benchmark/screenshots/grok-4.7/lit-candle.png)](benchmark/screenshots/grok-4.7/lit-candle.png) | **Branch:** [`main`](https://github.com/puri-adityakumar/bell-loop/tree/main)<br>**Model:** Grok 4.7<br>**Deployment:** pending |
+| [![Space Bunny lit candle](benchmark/screenshots/space-bunny/lit-candle.png)](benchmark/screenshots/space-bunny/lit-candle.png) | **Branch:** [`stealth/space-bunny`](https://github.com/puri-adityakumar/bell-loop/tree/stealth/space-bunny)<br>**Model:** OpenCode `space-bunny-free` / `max`<br>**Deployment:** [Vercel production](https://space-bunny.vercel.app) |
+| [![Grok 4.7 lit candle](benchmark/screenshots/grok-4.7/lit-candle.png)](benchmark/screenshots/grok-4.7/lit-candle.png) | **Branch:** [`main`](https://github.com/puri-adityakumar/bell-loop/tree/main)<br>**Model:** Grok 4.7<br>**Deployment:** [Vercel production](https://bell-loop.vercel.app) |
 
 Latest 45-second two-candle capture: [side-by-side video](benchmark/media/grok-4.7-vs-space-bunny.mp4) · [still](benchmark/media/grok-4.7-vs-space-bunny.png)
