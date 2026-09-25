@@ -35,6 +35,8 @@ export class PlayerController {
     this.bobAmount = options.bobAmount ?? 0.035
     this.stepDistance = options.stepDistance ?? 1.7
     this.onFootstep = options.onFootstep ?? null
+    this.onLockChange = options.onLockChange ?? null
+    this.onLockError = options.onLockError ?? null
 
     this.pos = new THREE.Vector3(0, 0, 0) // y unused (the floor is flat)
     this.vel = new THREE.Vector2(0, 0)
@@ -45,15 +47,42 @@ export class PlayerController {
     this.travelled = 0 // metres since the last footstep
     this.bobPhase = 0
     this.speedRatio = 0
+    this.stepPulse = 0
+    this.baseFov = options.fov ?? 72
+    this.reducedMotion = options.reducedMotion ?? false
+    this.keyboardLook = options.keyboardLook ?? true
 
     this.keys = new Set()
     this.colliders = [] // pre-expanded XZ AABBs
+    this.pendingLockRequest = null
+    this.pendingLockFallback = null
     this._onKeyDown = (e) => this.keys.add(e.code)
     this._onKeyUp = (e) => this.keys.delete(e.code)
     this._onMouseMove = (e) => this._look(e)
     this._onLockChange = () => {
+      const wasLocked = this.locked
+      const requestId = this.pendingLockRequest
+      this.pendingLockRequest = null
+      this.pendingLockFallback = null
       this.locked = document.pointerLockElement === this.dom
+      if (this.locked && requestId === null) {
+        this.locked = false
+        document.exitPointerLock?.()
+      }
       if (!this.locked) this.vel.set(0, 0)
+      this.onLockChange?.(this.locked, wasLocked, requestId)
+    }
+    this._onLockError = () => {
+      const requestId = this.pendingLockRequest
+      const fallback = this.pendingLockFallback
+      if (requestId === null) return
+      if (fallback) {
+        this.pendingLockFallback = null
+        fallback()
+        return
+      }
+      this.pendingLockRequest = null
+      this.onLockError?.(requestId)
     }
     this._bound = false
   }
@@ -64,40 +93,69 @@ export class PlayerController {
     window.addEventListener('keyup', this._onKeyUp)
     window.addEventListener('mousemove', this._onMouseMove)
     document.addEventListener('pointerlockchange', this._onLockChange)
+    document.addEventListener('pointerlockerror', this._onLockError)
     this._bound = true
   }
 
   dispose() {
+    this.resetMotion()
     if (!this._bound) return
     window.removeEventListener('keydown', this._onKeyDown)
     window.removeEventListener('keyup', this._onKeyUp)
     window.removeEventListener('mousemove', this._onMouseMove)
     document.removeEventListener('pointerlockchange', this._onLockChange)
+    document.removeEventListener('pointerlockerror', this._onLockError)
     this._bound = false
   }
 
-  /** Pointer lock must be requested from a user gesture (a click). */
-  requestLock() {
+  requestLock(requestId = null) {
     const el = this.dom
-    try {
-      const result = el.requestPointerLock?.({ unadjustedMovement: true })
-      if (result && typeof result.catch === 'function') {
-        // some browsers reject unadjustedMovement — fall back to the plain API
-        result.catch(() => {
-          try {
-            el.requestPointerLock()
-          } catch {
-            /* pointer lock unavailable (embedded/headless) — mouse look stays off */
-          }
-        })
-      }
-    } catch {
+    if (this.locked && document.pointerLockElement === this.dom) return null
+    this.locked = false
+    const id = requestId ?? Symbol('pointer-lock')
+    this.pendingLockRequest = id
+    if (typeof el.requestPointerLock !== 'function') {
+      this.pendingLockRequest = null
+      this.onLockError?.(id)
+      return id
+    }
+    let fallbackStarted = false
+    const fail = () => {
+      if (this.pendingLockRequest !== id) return
+      this.pendingLockRequest = null
+      this.pendingLockFallback = null
+      this.onLockError?.(id)
+    }
+    const fallback = () => {
+      if (this.pendingLockRequest !== id || fallbackStarted) return
+      fallbackStarted = true
+      this.pendingLockFallback = null
       try {
-        el.requestPointerLock()
+        const result = el.requestPointerLock()
+        if (result && typeof result.catch === 'function') {
+          result.catch(fail)
+        }
       } catch {
-        /* ignore */
+        fail()
       }
     }
+    this.pendingLockFallback = fallback
+    try {
+      const result = el.requestPointerLock({ unadjustedMovement: true })
+      if (result && typeof result.catch === 'function') {
+        result.catch(fallback)
+      }
+    } catch {
+      fallback()
+    }
+    return id
+  }
+
+  cancelLockRequest() {
+    this.pendingLockRequest = null
+    this.pendingLockFallback = null
+    this.locked = false
+    if (document.pointerLockElement === this.dom) document.exitPointerLock?.()
   }
 
   /** Rebuild the collider list from the maze wall segments (plain data). */
@@ -117,7 +175,28 @@ export class PlayerController {
     this.pitch = 0
     this.bobPhase = 0
     this.travelled = 0
+    this.stepPulse = 0
+    this.speedRatio = 0
     this._applyCamera()
+  }
+
+  resetMotion() {
+    this.keys.clear()
+    this.vel.set(0, 0)
+    this.speedRatio = 0
+    this.stepPulse = 0
+    this.bobPhase = 0
+    this.travelled = 0
+    this._applyCamera()
+  }
+
+  _keyboardLook(dt) {
+    if (!this.keyboardLook || !this.enabled) return
+    const turn = (this.keys.has('KeyJ') ? 1 : 0) - (this.keys.has('KeyL') ? 1 : 0)
+    const tilt = (this.keys.has('KeyI') ? 1 : 0) - (this.keys.has('KeyK') ? 1 : 0)
+    if (turn === 0 && tilt === 0) return
+    this.yaw -= turn * 1.8 * dt
+    this.pitch = Math.max(-Math.PI / 2 + 0.08, Math.min(Math.PI / 2 - 0.08, this.pitch + tilt * 1.2 * dt))
   }
 
   _look(e) {
@@ -163,9 +242,15 @@ export class PlayerController {
   }
 
   _moveAxis(dx, dz) {
-    this.pos.x += dx
-    this.pos.z += dz
-    this._resolvePenetration(1)
+    const distance = Math.hypot(dx, dz)
+    const steps = Math.max(1, Math.ceil(distance / (this.radius * 0.5)))
+    const stepX = dx / steps
+    const stepZ = dz / steps
+    for (let i = 0; i < steps; i++) {
+      this.pos.x += stepX
+      this.pos.z += stepZ
+      this._resolvePenetration(1)
+    }
   }
 
   /**
@@ -173,9 +258,11 @@ export class PlayerController {
    * @returns {number} metres travelled this frame
    */
   update(dt) {
+    this.stepPulse *= Math.exp(-9 * dt)
     const startX = this.pos.x
     const startZ = this.pos.z
     let sprinting = false
+    this._keyboardLook(dt)
 
     if (this.enabled) {
       const forward = (this._pressed(KEY_FORWARD) ? 1 : 0) - (this._pressed(KEY_BACK) ? 1 : 0)
@@ -211,6 +298,7 @@ export class PlayerController {
         this.travelled += moved
         if (this.onFootstep && this.travelled >= this.stepDistance) {
           this.travelled -= this.stepDistance
+          this.stepPulse = 1
           this.onFootstep(sprinting)
         }
       }
@@ -223,13 +311,20 @@ export class PlayerController {
   }
 
   _applyCamera() {
-    const bob = Math.sin(this.bobPhase) * this.bobAmount * this.speedRatio
-    const sway = Math.cos(this.bobPhase * 0.5) * this.bobAmount * 0.4 * this.speedRatio
+    const motion = this.reducedMotion ? 0 : 1
+    const bob = Math.sin(this.bobPhase) * this.bobAmount * this.speedRatio * motion
+    const sway = Math.cos(this.bobPhase * 0.5) * this.bobAmount * 0.4 * this.speedRatio * motion
+    const stepDip = this.stepPulse * 0.012 * motion
+    const roll = (Math.cos(this.bobPhase * 0.5) * this.bobAmount * 0.08 * this.speedRatio + this.stepPulse * 0.004) * motion
     const sin = Math.sin(this.yaw)
     const cos = Math.cos(this.yaw)
-    // sway runs along the player's right-hand axis so it reads as a real step
-    this.camera.position.set(this.pos.x + sway * cos, this.eyeHeight + bob, this.pos.z - sway * sin)
-    this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ')
+    this.camera.position.set(this.pos.x + sway * cos, this.eyeHeight + bob - stepDip, this.pos.z - sway * sin)
+    this.camera.rotation.set(this.pitch, this.yaw, roll, 'YXZ')
+    const targetFov = this.baseFov + (this.reducedMotion ? 0 : this.speedRatio * 2.4)
+    if (Math.abs(this.camera.fov - targetFov) > 0.02) {
+      this.camera.fov = targetFov
+      this.camera.updateProjectionMatrix()
+    }
   }
 }
 

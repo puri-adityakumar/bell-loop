@@ -7,30 +7,44 @@
  */
 export default function StartOverlay({ onBegin }) {
   return (
-    <div className="overlay overlay--start">
+    <div
+      className="overlay overlay--start"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="start-title"
+    >
       <div className="title-veil" aria-hidden="true" />
-      <h1 className="title title--start">
+      <h1 id="start-title" className="title title--start">
         <span>THE</span>
         <span>BELL</span>
         <span>LOOP</span>
       </h1>
-      <div className="title-sub" aria-hidden="true">
-        <span className="title-sub__rule" />
-        <span className="title-sub__text">the corridors will not remember you</span>
+      <div className="title-sub">
+        <div className="title-sub__rule" />
+        <span className="title-sub__text">light all three shrines · the door waits for the next bell</span>
         <span className="title-sub__rule" />
       </div>
       <button type="button" className="brass-button" onClick={onBegin} autoFocus>
         START
       </button>
-      <div className="title-controls" aria-hidden="true">
+      <div className="title-controls">
         <span className="title-controls__key">W A S D</span>
         <span className="title-controls__word">move</span>
         <span className="title-controls__dot" />
         <span className="title-controls__key">MOUSE</span>
         <span className="title-controls__word">look</span>
         <span className="title-controls__dot" />
-        <span className="title-controls__key">E</span>
-        <span className="title-controls__word">light candles</span>
+        <span className="title-controls__key">E / CLICK</span>
+        <span className="title-controls__word">light candle</span>
+        <span className="title-controls__dot" />
+        <span className="title-controls__key">SHIFT</span>
+        <span className="title-controls__word">sprint</span>
+        <span className="title-controls__dot" />
+        <span className="title-controls__key">J L I K</span>
+        <span className="title-controls__word">look</span>
+        <span className="title-controls__dot" />
+        <span className="title-controls__key">P</span>
+        <span className="title-controls__word">pause</span>
       </div>
     </div>
   )

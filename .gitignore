@@ -27,3 +27,4 @@ dist-ssr
 .oxlint-cache/
 node_modules/.cache/
 .vercel
+.review-artifacts/

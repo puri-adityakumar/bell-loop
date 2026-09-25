@@ -17,6 +17,7 @@ export const PHASE = Object.freeze({
   PLAYING: 'playing', // player walks, timer runs
   RESET: 'reset', // bell tolling, walls swap, fade at full black
   WON: 'won', // "THE BELL STOPPED."
+  PAUSED: 'paused', // pointer lock released; active loop is waiting
 })
 
 /**
@@ -27,8 +28,8 @@ export const RESET_TIMELINE = Object.freeze({
   fadeOut: 0.6, // black creeps in, old walls sink into the floor
   hold: 0.45, // fully black — the maze swaps here
   rise: 1.0, // new walls rise, staggered by distance from the entrance
-  fadeIn: 0.9, // black lifts, player can move again
-  total: 2.35,
+  fadeIn: 1.55, // black lifts as the reset hands control back
+  total: 2.6,
   tolls: 3, // 3 bell tolls, spaced 0.7s
   tollSpacing: 0.7,
 })
@@ -51,9 +52,12 @@ export function createInitialState(loopNumber = 1, phase = PHASE.PLAYING) {
     timeLeft: LOOP_SECONDS,
     candles: { A: false, B: false, C: false },
     doorOpen: false,
-    fade: phase === PHASE.START ? 1 : 0,
+    fade: 0,
     prompt: null, // 'light' while an unlit shrine is in reach
+    pauseReason: null,
+    resumePhase: null,
     fps: 0, // loop 14: hidden perf counter (toggled with F)
+    renderStats: { drawCalls: 0, triangles: 0, geometries: 0, textures: 0 },
     showFps: false,
   }
 }
@@ -86,6 +90,30 @@ export function advanceTimer(timeLeft, dt) {
   return Math.max(0, timeLeft - dt)
 }
 
+export function pauseGame(state, reason = 'pointer-lock') {
+  if (state.phase === PHASE.PAUSED || state.phase === PHASE.START || state.phase === PHASE.WON) {
+    return state
+  }
+  return {
+    ...state,
+    phase: PHASE.PAUSED,
+    resumePhase: state.phase,
+    pauseReason: reason,
+    prompt: null,
+  }
+}
+
+export function resumeGame(state) {
+  if (state.phase !== PHASE.PAUSED) return state
+  return {
+    ...state,
+    phase: state.resumePhase === PHASE.RESET ? PHASE.RESET : PHASE.PLAYING,
+    resumePhase: null,
+    pauseReason: null,
+    prompt: null,
+  }
+}
+
 /**
  * How close to the chamber centre counts as "walked through the door".
  * Smaller than half a cell (1.5m) so it can only trigger from inside the
@@ -112,6 +140,8 @@ export function beginLoop(state, nextLoop, phase = PHASE.PLAYING) {
     phase,
     doorOpen: shouldDoorOpenAtLoopStart(state.candles),
     prompt: null,
+    pauseReason: null,
+    resumePhase: null,
   }
 }
 
@@ -144,6 +174,12 @@ export function resetFade(elapsed) {
 }
 
 /** Progress of one wall rising out of the floor after the swap (0..1). */
+export function wallSinkProgress(elapsed, sink = RESET_TIMELINE.fadeOut) {
+  if (elapsed <= 0) return 1
+  if (elapsed >= sink) return 0
+  return 1 - easeInOut(elapsed / sink)
+}
+
 export function wallRiseProgress(elapsed, delay = 0, rise = RESET_TIMELINE.rise) {
   const t = (elapsed - RESET_SWAP_AT - delay) / rise
   if (t <= 0) return 0
@@ -220,7 +256,10 @@ export function hudSnapshot(state) {
     doorOpen: state.doorOpen,
     fade: state.fade,
     prompt: state.prompt,
+    pauseReason: state.pauseReason ?? null,
+    resumePhase: state.resumePhase ?? null,
     fps: state.fps ?? 0, // loop 14: hidden perf counter, toggled with F
+    renderStats: { ...(state.renderStats ?? { drawCalls: 0, triangles: 0, geometries: 0, textures: 0 }) },
     showFps: state.showFps ?? false,
   }
 }

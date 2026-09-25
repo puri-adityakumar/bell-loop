@@ -8,6 +8,9 @@
     "build": "vite build",
     "lint": "oxlint",
     "verify": "node verify.mjs",
+    "verify:world": "node verify-world.mjs",
+    "check": "npm run lint && npm run verify && npm run verify:world && npm run build",
+    "benchmark:catalog": "node benchmark/build-catalog.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -13,12 +13,18 @@ export class AudioManager {
   constructor() {
     this.ctx = null
     this.master = null
+    this.transientBus = null
     this.compressor = null
     this.ambient = null
     this.ambientGain = null
     this.noiseBuffer = null
     this.muted = false
     this.volume = 0.9
+    this.audioPaused = false
+    this.audioDesiredPaused = false
+    this.audioTransition = Promise.resolve()
+    this._ambientTimers = []
+    this._tension = 0
   }
 
   get ready() {
@@ -27,9 +33,72 @@ export class AudioManager {
 
   /** Call from a real user gesture. Safe to call repeatedly. */
   unlock() {
-    if (!this.ctx) this._build()
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {})
+    try {
+      if (!this.ctx) this._build()
+      if (this.ctx?.state === 'suspended') this.resume()
+    } catch {
+      this.ctx = null
+      this.master = null
+      this.transientBus = null
+      this.compressor = null
+    }
     return this.ctx
+  }
+
+  dispose() {
+    this.stopAmbient()
+    if (this._ambientTimers) {
+      for (const timer of this._ambientTimers) clearTimeout(timer)
+      this._ambientTimers = []
+    }
+    this.transientBus?.disconnect()
+    this.master?.disconnect()
+    this.compressor?.disconnect()
+    const ctx = this.ctx
+    this.ctx = null
+    this.master = null
+    this.transientBus = null
+    this.compressor = null
+    this.ambient = null
+    this.ambientGain = null
+    this.noiseBuffer = null
+    if (ctx && ctx.state !== 'closed') ctx.close?.().catch?.(() => {})
+  }
+
+  silence() {
+    if (!this.transientBus) return
+    this.transientBus.disconnect()
+    this.transientBus = this.ctx.createGain()
+    this.transientBus.gain.value = 1
+    this.transientBus.connect(this.master)
+  }
+
+  suspend() {
+    this.audioDesiredPaused = true
+    this.audioPaused = true
+    const operation = this.audioTransition.then(() => {
+      if (this.ctx?.state === 'running') return this.ctx.suspend()
+    })
+    this.audioTransition = operation.catch(() => {})
+    return operation.catch(() => {
+      if (this.audioDesiredPaused) this.audioPaused = true
+    })
+  }
+
+  resume() {
+    this.audioDesiredPaused = false
+    const operation = this.audioTransition.then(() => {
+      if (this.ctx?.state === 'suspended') return this.ctx.resume()
+    })
+    this.audioTransition = operation.catch(() => {})
+    return operation.then(
+      () => {
+        if (!this.audioDesiredPaused) this.audioPaused = false
+      },
+      () => {
+        if (!this.audioDesiredPaused) this.audioPaused = true
+      },
+    )
   }
 
   _build() {
@@ -44,6 +113,9 @@ export class AudioManager {
     this.compressor.release.value = 0.24
     this.master = this.ctx.createGain()
     this.master.gain.value = this.muted ? 0 : this.volume
+    this.transientBus = this.ctx.createGain()
+    this.transientBus.gain.value = 1
+    this.transientBus.connect(this.master)
     this.master.connect(this.compressor)
     this.compressor.connect(this.ctx.destination)
   }
@@ -51,6 +123,36 @@ export class AudioManager {
   setMuted(muted) {
     this.muted = muted
     if (this.master) this.master.gain.setTargetAtTime(muted ? 0 : this.volume, this.ctx.currentTime, 0.05)
+  }
+
+  setTension(level) {
+    if (!this.ctx || !this.ambient) return
+    const value = Math.max(0, Math.min(1, Number(level) || 0))
+    if (Math.abs(value - this._tension) < 0.01) return
+    this._tension = value
+    const frequency = value < 0.5 ? 180 + value * 240 : 300 + (value - 0.5) * 700
+    const now = this.ctx.currentTime
+    this.ambient.filter.frequency.setTargetAtTime(frequency, now, 0.8)
+    this.ambient.bus.gain.setTargetAtTime(0.045 + value * 0.015, now, 0.8)
+  }
+
+  setListener(x, y, z, forwardX, forwardY, forwardZ) {
+    if (!this.ctx?.listener) return
+    const listener = this.ctx.listener
+    if (listener.positionX) {
+      listener.positionX.value = x
+      listener.positionY.value = y
+      listener.positionZ.value = z
+      listener.forwardX.value = forwardX
+      listener.forwardY.value = forwardY
+      listener.forwardZ.value = forwardZ
+      listener.upX.value = 0
+      listener.upY.value = 1
+      listener.upZ.value = 0
+    } else {
+      listener.setPosition?.(x, y, z)
+      listener.setOrientation?.(forwardX, forwardY, forwardZ, 0, 1, 0)
+    }
   }
 
   /** 2 seconds of white noise, reused by every noise-based voice. */
@@ -87,6 +189,7 @@ export class AudioManager {
 
   startAmbient() {
     if (!this.ctx || this.ambient) return
+    this._tension = 0
     const ctx = this.ctx
     const bus = ctx.createGain()
     bus.gain.value = 0.045
@@ -184,7 +287,7 @@ export class AudioManager {
   _buildWhisper() {
     if (!this.ctx) return null
     const ctx = this.ctx
-    const target = this.ambient ? this.ambient.bus : this.master
+    const target = this.ambient ? this.ambient.bus : this.transientBus
     const noise = this._noiseSource()
     // sibilance: thin hiss band that carries the "shh"
     const sib = ctx.createBiquadFilter()
@@ -246,7 +349,7 @@ export class AudioManager {
     const bus = ctx.createGain()
     bus.gain.value = 0.11
     bus.connect(muffle)
-    muffle.connect(this.ambient ? this.ambient.bus : this.master)
+    muffle.connect(this.ambient ? this.ambient.bus : this.transientBus)
     const partials = [
       { ratio: 0.5, gain: 0.5, tau: 2.2 },
       { ratio: 1, gain: 1, tau: 1.9 },
@@ -273,16 +376,23 @@ export class AudioManager {
   /** Schedule an ambience one-shot to repeat every min..max seconds. */
   _scheduleAmbient(fn, min, max) {
     const tick = () => {
+      this._ambientTimers = this._ambientTimers.filter((timer) => timer !== tick.timer)
       if (!this.ambient) return
-      fn()
-      const timer = setTimeout(tick, (min + Math.random() * (max - min)) * 1000)
+      if (!this.audioPaused) fn()
+      const delay = this.audioPaused ? 1000 : (min + Math.random() * (max - min)) * 1000
+      const timer = setTimeout(tick, delay)
+      tick.timer = timer
       this._ambientTimers.push(timer)
     }
     const timer = setTimeout(tick, (min + Math.random() * (max - min)) * 1000)
+    tick.timer = timer
     this._ambientTimers.push(timer)
   }
 
   stopAmbient() {
+    this.audioDesiredPaused = false
+    this.audioPaused = false
+    this._tension = 0
     if (!this.ambient) return
     const { a, b, lfo, r1, r2, rumbleLfo, rumbleNoise, bus } = this.ambient
     const now = this.ctx.currentTime
@@ -340,7 +450,7 @@ export class AudioManager {
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration)
     noise.connect(band)
     band.connect(g)
-    g.connect(this.ambient ? this.ambient.bus : this.master)
+    g.connect(this.ambient ? this.ambient.bus : this.transientBus)
     noise.start(t0)
     noise.stop(t0 + duration + 0.1)
   }
@@ -357,7 +467,7 @@ export class AudioManager {
     const muffle = ctx.createBiquadFilter()
     muffle.type = 'lowpass'
     muffle.frequency.value = 420 + Math.random() * 260
-    muffle.connect(this.ambient ? this.ambient.bus : this.master)
+    muffle.connect(this.ambient ? this.ambient.bus : this.transientBus)
     const partials = [
       { ratio: 1, gain: 1, tau: 1.6 },
       { ratio: 1.51, gain: 0.4, tau: 1.1 },
@@ -386,7 +496,7 @@ export class AudioManager {
     blip.frequency.exponentialRampToValueAtTime(280, t0 + 0.09)
     const g = this._decayGain(0.07, 0.02, t0, 0.001)
     blip.connect(g)
-    g.connect(this.ambient ? this.ambient.bus : this.master)
+    g.connect(this.ambient ? this.ambient.bus : this.transientBus)
     blip.start(t0)
     blip.stop(t0 + 0.2)
     // the faint plink an echo distance away
@@ -395,7 +505,7 @@ export class AudioManager {
     echo.frequency.value = 1400 + Math.random() * 600
     const eg = this._decayGain(0.02, 0.015, t0 + 0.18 + Math.random() * 0.15, 0.002)
     echo.connect(eg)
-    eg.connect(this.ambient ? this.ambient.bus : this.master)
+    eg.connect(this.ambient ? this.ambient.bus : this.transientBus)
     echo.start(t0 + 0.3)
     echo.stop(t0 + 0.6)
   }
@@ -423,7 +533,7 @@ export class AudioManager {
     // loop 11: a per-toll bus so the whole voice can feed the echo tail
     const bus = ctx.createGain()
     bus.gain.value = 1
-    bus.connect(this.master)
+    bus.connect(this.transientBus)
     const partials = [
       { ratio: 0.5, gain: 0.5, tau: 2.8 },
       { ratio: 1, gain: 1, tau: 2.4 },
@@ -454,7 +564,7 @@ export class AudioManager {
     noise.start(t0)
     noise.stop(t0 + 0.4)
     // loop 11: double echo tail off the toll bus
-    this._echoTail(bus, 0.21 + Math.random() * 0.06, 0.38 + Math.random() * 0.08, level * 0.5)
+    this._echoTail(bus, 0.21 + Math.random() * 0.06, 0.38 + Math.random() * 0.08, level * 0.5, t0)
   }
 
   /** The reset sequence: 3 tolls, 0.7s apart, each with a double echo tail. */
@@ -469,11 +579,11 @@ export class AudioManager {
    * growing further apart and quieter, like stone corridors returning the call.
    * @param {AudioNode} destination where to patch the echo chain
    */
-  _echoTail(delayNodeTarget, delayA = 0.23, delayB = 0.41, level = 0.3) {
+  _echoTail(delayNodeTarget, delayA = 0.23, delayB = 0.41, level = 0.3, when = this.ctx.currentTime) {
     if (!this.ctx) return
     const ctx = this.ctx
-    const e1 = this._decayGain(level, 0.25, ctx.currentTime + delayA, 0.01)
-    const e2 = this._decayGain(level * 0.55, 0.3, ctx.currentTime + delayA + delayB, 0.01)
+    const e1 = this._decayGain(level, 0.25, when + delayA, 0.01)
+    const e2 = this._decayGain(level * 0.55, 0.3, when + delayA + delayB, 0.01)
     // gentle lowpass on the echoes — hard surfaces eat the highs first
     const damp = ctx.createBiquadFilter()
     damp.type = 'lowpass'
@@ -481,8 +591,8 @@ export class AudioManager {
     delayNodeTarget.connect(damp)
     damp.connect(e1)
     damp.connect(e2)
-    e1.connect(this.master)
-    e2.connect(this.master)
+    e1.connect(this.transientBus)
+    e2.connect(this.transientBus)
   }
 
   /** Footstep: bandpassed noise scuff + a low thud. Surface varies with speed. */
@@ -504,7 +614,7 @@ export class AudioManager {
     const ng = this._decayGain(level * (stone ? 1.25 : 1), 0.02, t0, 0.001)
     noise.connect(band)
     band.connect(ng)
-    ng.connect(this.master)
+    ng.connect(this.transientBus)
     noise.start(t0)
     noise.stop(t0 + 0.12)
 
@@ -513,7 +623,7 @@ export class AudioManager {
     thud.frequency.value = 75
     const tg = this._decayGain(level * 0.8, 0.03, t0, 0.002)
     thud.connect(tg)
-    tg.connect(this.master)
+    tg.connect(this.transientBus)
     thud.start(t0)
     thud.stop(t0 + 0.12)
   }
@@ -535,7 +645,7 @@ export class AudioManager {
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5)
     noise.connect(band)
     band.connect(g)
-    g.connect(this.master)
+    g.connect(this.transientBus)
     noise.start(t0)
     noise.stop(t0 + 0.6)
   }
@@ -545,10 +655,31 @@ export class AudioManager {
    * frequency wobbles (that wobble is what makes it read as stick-slip wood),
    * plus a couple of short noise scrapes.
    */
-  doorCreak(duration = 1.4) {
+  doorCreak(duration = 1.4, position = null) {
     if (!this.ctx) return
     const ctx = this.ctx
     const t0 = ctx.currentTime
+    const voice = ctx.createGain()
+    voice.gain.value = 1
+    let output = voice
+    if (position && typeof ctx.createPanner === 'function') {
+      const panner = ctx.createPanner()
+      panner.panningModel = 'HRTF'
+      panner.distanceModel = 'inverse'
+      panner.refDistance = 3
+      panner.maxDistance = 50
+      panner.rolloffFactor = 0.35
+      if (panner.positionX) {
+        panner.positionX.value = position.x
+        panner.positionY.value = position.y ?? 1.2
+        panner.positionZ.value = position.z
+      } else {
+        panner.setPosition?.(position.x, position.y ?? 1.2, position.z)
+      }
+      voice.connect(panner)
+      output = panner
+    }
+    output.connect(this.transientBus)
     const saw = ctx.createOscillator()
     saw.type = 'sawtooth'
     saw.frequency.setValueAtTime(90, t0)
@@ -575,7 +706,7 @@ export class AudioManager {
 
     saw.connect(peak)
     peak.connect(g)
-    g.connect(this.master)
+    g.connect(voice)
     saw.start(t0)
     lfo.start(t0)
     saw.stop(t0 + duration + 0.1)
@@ -590,7 +721,7 @@ export class AudioManager {
       const sg = this._decayGain(0.06, 0.05, t0 + offset, 0.01)
       scrape.connect(band)
       band.connect(sg)
-      sg.connect(this.master)
+      sg.connect(voice)
       scrape.start(t0 + offset)
       scrape.stop(t0 + offset + 0.25)
     }
@@ -611,7 +742,7 @@ export class AudioManager {
       g.gain.linearRampToValueAtTime(0.18, t0 + 0.8)
       g.gain.setTargetAtTime(0.0001, t0 + 0.8, 1.4)
       osc.connect(g)
-      g.connect(this.master)
+      g.connect(this.transientBus)
       osc.start(t0)
       osc.stop(t0 + 8)
     }
@@ -625,7 +756,7 @@ export class AudioManager {
     sg.gain.linearRampToValueAtTime(0.05, t0 + 1.6)
     sg.gain.setTargetAtTime(0.0001, t0 + 1.6, 1.8)
     shimmer.connect(sg)
-    sg.connect(this.master)
+    sg.connect(this.transientBus)
     shimmer.start(t0)
     shimmer.stop(t0 + 9)
 

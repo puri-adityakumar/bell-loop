@@ -59,9 +59,12 @@ import {
   shouldDoorOpenAtLoopStart,
   applyLightCandle,
   advanceTimer,
-  beginLoop,
-  restartState,
+   beginLoop,
+   pauseGame,
+   resumeGame,
+   restartState,
   resetFade,
+  wallSinkProgress,
   wallRiseProgress,
   wallRiseDelay,
   createStore,
@@ -448,15 +451,29 @@ test('the door opens on the loop AFTER the third candle, and stays open', () => 
   assert.equal(state.doorOpen, true)
 })
 
-test('phases are the documented four', () => {
-  assert.deepEqual(Object.values(PHASE).sort(), ['playing', 'reset', 'start', 'won'].sort())
+test('phases are the documented five', () => {
+  assert.deepEqual(Object.values(PHASE).sort(), ['paused', 'playing', 'reset', 'start', 'won'].sort())
   assert.equal(createInitialState().phase, PHASE.PLAYING)
   assert.equal(createInitialState(1, PHASE.START).phase, PHASE.START)
-  assert.equal(createInitialState(1, PHASE.START).fade, 1, 'the start overlay sits behind black')
+  assert.equal(createInitialState(1, PHASE.START).fade, 0, 'the live title preview is visible')
   const fresh = restartState(1)
   assert.equal(candlesLit(fresh.candles), 0)
   assert.equal(fresh.doorOpen, false)
   assert.equal(fresh.loop, 1)
+})
+
+test('pause and resume preserve the active loop phase', () => {
+  const playing = createInitialState(3)
+  const paused = pauseGame(playing)
+  assert.equal(paused.phase, PHASE.PAUSED)
+  assert.equal(paused.resumePhase, PHASE.PLAYING)
+  assert.equal(paused.pauseReason, 'pointer-lock')
+  assert.equal(resumeGame(paused).phase, PHASE.PLAYING)
+
+  const reset = pauseGame(beginLoop(playing, 4, PHASE.RESET))
+  assert.equal(resumeGame(reset).phase, PHASE.RESET)
+  assert.equal(pauseGame(createInitialState(1, PHASE.START)).phase, PHASE.START)
+  assert.equal(pauseGame(createInitialState(1, PHASE.WON)).phase, PHASE.WON)
 })
 
 test('beginLoop can hold the RESET phase (the swap happens behind black)', () => {
@@ -479,6 +496,14 @@ test('the bell timeline fades to black, swaps, then clears', () => {
   for (let i = 1; i < falling.length; i++) assert.ok(falling[i] <= falling[i - 1])
 })
 
+test('walls finish sinking before the layout swap', () => {
+  assert.equal(wallSinkProgress(0), 1)
+  assert.ok(wallSinkProgress(RESET_TIMELINE.fadeOut * 0.5) > 0)
+  assert.ok(wallSinkProgress(RESET_TIMELINE.fadeOut * 0.5) < 1)
+  assert.equal(wallSinkProgress(RESET_TIMELINE.fadeOut), 0)
+  assert.equal(wallSinkProgress(RESET_SWAP_AT), 0)
+})
+
 test('walls rise with a stagger and are all the way up by the end', () => {
   assert.equal(wallRiseProgress(RESET_SWAP_AT, 0), 0, 'nothing is up at the swap')
   assert.equal(wallRiseProgress(RESET_SWAP_AT - 0.2, 0.3), 0)
@@ -495,6 +520,9 @@ test('walls rise with a stagger and are all the way up by the end', () => {
 test('the reset window is long enough for all three tolls', () => {
   assert.ok(RESET_TIMELINE.total > (RESET_TIMELINE.tolls - 1) * RESET_TIMELINE.tollSpacing)
   assert.ok(RESET_SWAP_AT > 0 && RESET_SWAP_AT < RESET_TIMELINE.total)
+  assert.ok(RESET_TIMELINE.total >= RESET_SWAP_AT + 0.5 + RESET_TIMELINE.rise)
+  assert.ok(Math.abs(RESET_SWAP_AT + RESET_TIMELINE.fadeIn - RESET_TIMELINE.total) < 1e-9)
+  assert.equal(wallRiseProgress(RESET_TIMELINE.total, 0.5), 1)
 })
 
 // ---------------------------------------------------------------------------
@@ -547,6 +575,9 @@ test('hudSnapshot exposes exactly what the HUD paints', () => {
   assert.equal(hud.candles.A, true)
   assert.equal(hud.fade, 0)
   assert.equal(hud.prompt, null)
+  assert.equal(hud.pauseReason, null)
+  assert.equal(hud.resumePhase, null)
+  assert.deepEqual(hud.renderStats, { drawCalls: 0, triangles: 0, geometries: 0, textures: 0 })
   assert.equal(hudSnapshot(createInitialState(2)).timeFraction, 1)
 })
 
