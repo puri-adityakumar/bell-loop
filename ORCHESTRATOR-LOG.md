@@ -38,9 +38,25 @@ Branch: `cline/space-bunny-alpha`
 - Pass 1 (ideation): recon of repo (loop.js, maze.js pure modules; verify.mjs gate = oxlint + verify + build; PlayerController 3.6/6.0 m/s; HUD text-free; determinism = seed via mulberry32). Produced 16-section design outline + proposals. Flagged: verify-world.mjs NOT in `npm run check` gate (gap to fix in implementation).
 - Q1 world geometry → 4 (wrap now, streaming later). Q2 reshuffle → 3 (fixed geometry, permuted fixtures). Q3 hammer → 1 (must be found) + creature-learning kept.
 - Pass 2 (docs): resumed, wrote both docs, gate green, committed 4b60ca6. Token usage ~95K input + 500K cache reads, $0.00.
-- Pass 3 (next): Slice 01 — random-access PRNG (src/game/hash.js + pure checks).
+- Aditya went offline → autonomous overnight run authorized: "continue until finished, push everything; Vercel later."
+
+## Slice completion log (autonomous run)
+| Slice | Commit | Gate | Notes |
+|---|---|---|---|
+| 01 hash.js PRNG | 42800f4 | 40/40 | +7 checks |
+| 02 neighborhood chunks/wrap/graph | 0b05dd5 | 50/50 | wrap-seam connectivity proven |
+| 03 districts + anchors | c3653f2 | 59/59 | 5 objectives placed, hammer stable loops 1..8 |
+| 04 fixtures + 4 rules | c101e3c | 67/67 | Cline process died mid-slice (silent exit) — resumed via `cline --id`, finished. BFS fixture checks slow → optimized |
+| 05 rules.js portal/breath/persistence | 62238eb | 78/78 | tmux server died twice (container reaping); resumed via --id again |
+| 06 creature.js | (running) | — | architecture switched: non-interactive background cline per slice, no tmux |
+
+## Infrastructure notes (for reproducibility)
+- tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
+- New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.
+- Push auth: `git -c credential.helper='!f(){ echo username=zeke-cmd; echo password=${GH_TOKEN}; }; f' push origin cline/space-bunny-alpha` (GH_TOKEN from /work/.hermes/.env).
+- `cline --id <session>` resume works and preserves context, but sessions balloon (340K+ input tokens, all cache reads, still $0.00 on Space Bunny Alpha). Fresh sessions per slice are cheaper and avoid stale-context drift; V2-PLAN.md + GAMEDESIGN.md on disk carry the design.
+- chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Implement slices 01–16 in order via Cline passes (each ends gate-green + commit).
-- Vercel auth (user will provide) — needed for final deploy.
-- Screenshot tooling: repo has tools/shot.mjs (GPU headless) — verify on this machine when Phase B renders exist.
+- Slices 06–16 in order (06 creature, 07 pathing+ladders, 08 player breath, 09 THE SWAP, 10 creature view, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures+cleanup+result README).
+- Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.
