@@ -6,7 +6,7 @@ model: space-bunny-free
 variant: max
 branch: stealth/space-bunny
 base_branch: main
-base_commit: d05089b50100bd3385d0309f691a348b8ae4d548
+base_commit: d7b7b6487b4bec5d0195d37ebf25da0720224f8c
 status: candidate
 run_count: 1
 pass_count: 30
@@ -35,7 +35,7 @@ screenshots: ["cycle30-title.png", "cycle30-entry.png", "cycle30-shrine.png", "c
 
 A first-person temporal horror maze built with Vite, React, and Three.js. The bell tolls every 60 seconds, the maze rearranges deterministically, three candle shrines persist across loops, and the center door opens after the third candle.
 
-This branch is a benchmark result built from `main` checkpoint `d05089b`. The complete workflow, statistics, captures, and implementation delta are recorded here.
+This branch is a benchmark result built from `main` checkpoint `d7b7b64`. The complete workflow, statistics, captures, and implementation delta are recorded here.
 
 ## Run card
 
@@ -46,7 +46,7 @@ This branch is a benchmark result built from `main` checkpoint `d05089b`. The co
 | Variant | `max` |
 | Result branch | `stealth/space-bunny` |
 | Checkpoint branch | `main` |
-| Checkpoint commit | `d05089b` |
+| Checkpoint commit | `d7b7b64` |
 | Status | Candidate |
 | Deployment | Pending |
 
