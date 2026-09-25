@@ -6,7 +6,7 @@ model: space-bunny-free
 variant: max
 branch: stealth/space-bunny
 base_branch: main
-base_commit: d7b7b6487b4bec5d0195d37ebf25da0720224f8c
+base_commit: ea9affe7117a4a3e49f96b4ba86823f72f9c43dd
 status: candidate
 run_count: 1
 pass_count: 30
@@ -27,7 +27,7 @@ cost_usd: 0
 pure_checks: 35
 world_checks: 23
 build: pass
-deployed_url: ""
+deployed_url: "https://bell-loop-m7xph7s6z-project-by-aditya.vercel.app"
 screenshots: ["cycle30-title.png", "cycle30-entry.png", "cycle30-shrine.png", "cycle30-open-door.png", "cycle30-reset.png", "cycle30-pause.png", "cycle30-win.png", "cycle30-short-landscape.png", "cycle24-entry.png", "cycle20-door.png", "cycle18-reset.png", "cycle22-pause.png"]
 ---
 
@@ -35,7 +35,7 @@ screenshots: ["cycle30-title.png", "cycle30-entry.png", "cycle30-shrine.png", "c
 
 A first-person temporal horror maze built with Vite, React, and Three.js. The bell tolls every 60 seconds, the maze rearranges deterministically, three candle shrines persist across loops, and the center door opens after the third candle.
 
-This branch is a benchmark result built from `main` checkpoint `d7b7b64`. The complete workflow, statistics, captures, and implementation delta are recorded here.
+This branch is a benchmark result built from `main` checkpoint `ea9affe`. The complete workflow, statistics, captures, and implementation delta are recorded here.
 
 ## Run card
 
@@ -46,9 +46,9 @@ This branch is a benchmark result built from `main` checkpoint `d7b7b64`. The co
 | Variant | `max` |
 | Result branch | `stealth/space-bunny` |
 | Checkpoint branch | `main` |
-| Checkpoint commit | `d7b7b64` |
+| Checkpoint commit | `ea9affe` |
 | Status | Candidate |
-| Deployment | Pending |
+| Deployment | [Vercel production](https://bell-loop-m7xph7s6z-project-by-aditya.vercel.app) |
 
 ## Stats
 
