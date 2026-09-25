@@ -1818,6 +1818,13 @@ function creatureScript() {
   gait('hunting again', 'portal', 8, 8, SHUTDOWN_FRAMES, 120)
   quiet('out of options once more', 1, 8, { searchExhausted: true })
   gait('it finds the street', 'sprint', 2, 2, SPRINT_STRIDE_FRAMES, 300)
+  // §8.2, and the only way to reach DORMANT without a hammer in the air: thirteen
+  // seconds of unbroken pursuit at 6 m. The meter never dips, so nothing else can
+  // end this chase, and at CHASE_MAX_SECONDS the creature gives it up and is gone.
+  gait('a chase that will not end', 'sprint', 6, 6, SPRINT_STRIDE_FRAMES, 780)
+  quiet('silence while it is gone', 120, 60)
+  quiet('re-emergence after the phase-out', 1, 60, { reemerge: true })
+  gait('it finds the street again', 'sprint', 2, 2, SPRINT_STRIDE_FRAMES, 300)
   // the last swing of the run, thrown mid-chase with the creature in view. This
   // is the only way a CHASE reaches STAGGER: break the sightline on the swing
   // frame and the meter drops out of the chase on that same frame instead.
@@ -2141,13 +2148,16 @@ test('a chase survives a lapse of noise instead of flickering (the 0.8 release)'
   const expected = (0.95 - beast.AWARENESS_CHASE_RELEASE) / beast.AWARENESS_DECAY_PER_SEC
   assert.ok(Math.abs(heldFrames * DT - expected) < 0.05, `released after ${(heldFrames * DT).toFixed(2)}s, expected ${expected.toFixed(2)}s`)
   assert.ok((1 - beast.AWARENESS_CHASE_RELEASE) / beast.AWARENESS_DECAY_PER_SEC < 2, 'a chase must be losable')
-  // §8.2: the chase clock runs while it is chasing, for slice 07's phase-out
+  // §8.2: the chase clock runs while it is chasing, and slice 07 is what ends it.
+  // The meter here is pinned by sight, so nothing else can end this chase — which
+  // is exactly the situation the pressure valve exists for.
   creature = beast.createCreature({ state: 'chase', awareness: 1 })
   for (let i = 0; i < 720; i += 1) {
     creature = beast.creatureStep(creature, DT, { distance: 6, seen: true, sightDistance: 6 }).creature
   }
-  assert.ok(creature.chaseSeconds > 11, `chaseSeconds is ${creature.chaseSeconds}, CHASE_MAX_SECONDS is ~12`)
-  assert.equal(creature.state, 'chase', 'and slice 07 is what ends it, not this slice')
+  assert.equal(creature.state, 'dormant', 'a chase that cannot be shaken off must phase out')
+  assert.equal(creature.awareness, 0)
+  assert.equal(creature.chaseSeconds, 0, 'and the clock is reset by the phase-out, not left running')
 })
 
 test('a scripted event sequence replays byte-identically (§15.3)', () => {
@@ -2182,9 +2192,10 @@ test('a scripted event sequence replays byte-identically (§15.3)', () => {
     i === swingAt ? { ...entry, frame: { ...entry.frame, distance: beast.BANISH_RANGE + 1 } } : entry,
   )
   assert.notDeepEqual(encode.encode(runCreatureScript(missed).trace), encode.encode(first.trace), 'a missed swing changed nothing')
-  // and the tier the world carries makes no difference here, because this slice
-  // reads no tier-dependent constant: the §11.1 ramp arrives per frame as
-  // `sightRange` and arrives in full in slice 07
+  // and the tier the world carries makes no difference here, because the meter
+  // reads no tier-dependent constant: the §11.1 ramp and the §11.2 ladder arrive
+  // in full in slice 07 as `detectionRange(tier, reemergenceCount)`, which the
+  // world resolves and hands in per frame as `sightRange`
   const tiered = runCreatureScript(script, beast.createCreature({ state: 'telegraph', tier: 3 }))
   assert.deepEqual(encode.encode(tiered.trace), encode.encode(first.trace), 'the tier leaked into the meter')
   // which is not the same as saying range is ignored — it is an input, and the
@@ -2252,9 +2263,10 @@ test('the scripted run tells the §6 and §7 story without breaking a rule', () 
     }
   }
   // §9.1: a banish does not advance the capture counter, and this run never
-  // caught anybody at all. Six banishes, five re-emergences: the run ends banished.
+  // caught anybody at all. Six banishes, six re-emergences: one of them after the
+  // §8.2 phase-out rather than after a swing. The run ends banished.
   assert.ok(run.history.every((row) => row.captured === false), 'the scripted player was caught')
-  assert.equal(run.creature.reemergenceCount, 5, 'five re-emergences, six banishes')
+  assert.equal(run.creature.reemergenceCount, 6, 'six re-emergences for six banishes')
   // §10.2: the finale takes the knowledge away for good
   const finale = at('third portal')
   assert.equal(finale.to, 'enraged')
@@ -2266,6 +2278,600 @@ test('the scripted run tells the §6 and §7 story without breaking a rule', () 
   // and the run ends banished rather than mid-hunt, with the meter empty
   assert.equal(run.creature.state, 'dormant')
   assert.equal(run.creature.awareness, 0)
+})
+
+// ---------------------------------------------------------------------------
+// v2 slice 07 — street-graph pathing and the two ladders
+// ---------------------------------------------------------------------------
+
+/** The player positions a re-emergence has to work around: streets, and lots. */
+const REEMERGE_SPOTS = [
+  { x: 0, z: 0, yaw: 0 },
+  { x: -192, z: -192, yaw: 1.2 },
+  { x: 96, z: -32, yaw: 3.9 },
+  { x: 32, z: 32, yaw: -2.4 },
+  { x: 9, z: 9, yaw: 0.7 },
+  { x: -40, z: 120, yaw: 2.2 },
+  { x: 168, z: 168, yaw: 5.1 },
+]
+
+section('Pathing and the two ladders (v2 slice 07)')
+
+test('the slice 07 constants match the design', () => {
+  assert.equal(beast.CHASE_MAX_SECONDS, 12, '§8.2 puts CHASE_MAX_SECONDS at ~12 s')
+  assert.equal(beast.REEMERGE_MIN_GRAPH_DISTANCE, 2, '§8.3 promises a distance, not a next street')
+  // §7.4's table, cell for cell, cap included
+  assert.deepEqual([...beast.BANISH_TABLE], [8, 12, 16, 20, 24])
+  assert.equal(beast.BANISH_DURATION_CAP, 24)
+  assert.equal(beast.BANISH_TABLE[beast.BANISH_TABLE.length - 1], beast.BANISH_DURATION_CAP)
+  // §11.1's ramp, row for row
+  assert.deepEqual(
+    beast.RAMP_TABLE.map((row) => [row.portals, row.speed, row.sight]),
+    [[0, 2.2, 14], [1, 2.8, 17], [2, 3.4, 20], [3, 5.2, Infinity]],
+  )
+  // and the player's own gaits, because §8.6 and §11.2 are both about them
+  assert.equal(beast.PLAYER_WALK_SPEED, 3.6)
+  assert.equal(beast.PLAYER_SPRINT_SPEED, 6.0)
+  assert.ok(
+    beast.SPEED_CEILING < beast.PLAYER_SPRINT_SPEED,
+    '§8.6: the player must always be able to outrun it',
+  )
+  assert.equal(beast.SPEED_CEILING, beast.RAMP_TABLE[3].speed, 'the ceiling is the enraged speed, no more')
+  // an encounter has to fit inside one chase window, or the §8.2 valve would
+  // answer every encounter before the player could swing at it
+  assert.ok(beast.HUNT_SECONDS_PER_ENCOUNTER > beast.STAGGER_SECONDS)
+  assert.ok(
+    beast.HUNT_SECONDS_PER_ENCOUNTER < beast.CHASE_MAX_SECONDS,
+    'a whole encounter must fit inside CHASE_MAX_SECONDS',
+  )
+  // and §16.3's open question is answered at its documented candidate
+  assert.equal(beast.ENRAGED_REEMERGENCE_SECONDS, 1.5)
+})
+
+test('every street routes to every street, by the shortest walk', () => {
+  let longest = 0
+  let seamRoutes = 0
+  for (let from = 0; from < hood.INTERSECTIONS; from += 1) {
+    for (let to = 0; to < hood.INTERSECTIONS; to += 1) {
+      const route = beast.streetRoute(from, to)
+      const label = `${from} -> ${to}`
+      assert.ok(route.length > 0, `${label} is unreachable on a connected torus`)
+      assert.equal(route[0], from, `${label} starts at the wrong end`)
+      assert.equal(route[route.length - 1], to, `${label} ends at the wrong place`)
+      // a connected walk: every hop is a real edge of the wrapped graph
+      for (let i = 1; i < route.length; i += 1) {
+        assert.ok(hood.STREET_ADJ[route[i - 1]].includes(route[i]), `${label} teleports at hop ${i}`)
+      }
+      assert.equal(new Set(route).size, route.length, `${label} visits a node twice`)
+      // and the shortest one, checked against the graph's own BFS
+      assert.equal(route.length - 1, hood.streetPathLength(from, to), `${label} is not a shortest walk`)
+      assert.equal(beast.graphDistance(from, to), route.length - 1, label)
+      assert.equal(beast.graphMetres(from, to), (route.length - 1) * hood.BLOCK, label)
+      longest = Math.max(longest, route.length - 1)
+      if (route.some((id) => {
+        const node = hood.streetNodeCoords(id)
+        return node.ax === 0 || node.az === 0
+      })) seamRoutes += 1
+    }
+  }
+  // 7 x 7 torus: the far corner is three blocks the other way, not 448 m away
+  assert.equal(longest, 6, 'the diameter of a 7 x 7 torus is 6 hops')
+  assert.ok(seamRoutes > 1000, `only ${seamRoutes} routes cross the wrap seam`)
+  assert.deepEqual(beast.streetRoute(7, 7), [7], 'already there is a route of length one')
+})
+
+test('nextHop closes exactly one step of distance, so a route always arrives', () => {
+  assert.equal(beast.nextHop(5, 5), null, 'already there is no next hop')
+  assert.equal(beast.graphDistance(5, 5), 0)
+  for (let from = 0; from < hood.INTERSECTIONS; from += 1) {
+    for (let to = 0; to < hood.INTERSECTIONS; to += 1) {
+      if (from === to) continue
+      const hop = beast.nextHop(from, to)
+      const here = beast.graphDistance(from, to)
+      assert.equal(beast.graphDistance(hop, to), here - 1, `${from} -> ${to}: the hop did not close the gap`)
+      assert.equal(beast.graphDistance(hop, to), hood.streetPathLength(hop, to), 'the hop is not on a shortest path')
+    }
+  }
+  // and following the hops arrives: the contract the view layer runs every frame,
+  // checked end to end once
+  let cursor = 0
+  let steps = 0
+  while (cursor !== 45) {
+    const next = beast.nextHop(cursor, 45)
+    assert.ok(next !== null, `stuck at ${cursor}`)
+    cursor = next
+    steps += 1
+    assert.ok(steps <= 6, 'a walk that does not arrive is not a route')
+  }
+  assert.equal(steps, beast.graphDistance(0, 45))
+})
+
+test('in a wrapping world, far means nothing (the wrap the pathing rests on)', () => {
+  // the classic failure this file exists to prevent: treating a torus as a plane,
+  // which makes the creature walk 400 m the long way round to a node 48 m behind
+  assert.equal(beast.wrapDelta(200, -200), -48)
+  assert.equal(beast.wrapDelta(-200, 200), 48)
+  assert.equal(beast.wrapDelta(0, 0), 0)
+  assert.equal(beast.wrapDelta(224, 0), 224, 'antipodal points are exactly half a world apart either way')
+  for (let a = -600; a <= 600; a += 7) {
+    for (const b of [-300, -1, 0, 1, 224, 300]) {
+      const delta = beast.wrapDelta(a, b)
+      assert.ok(Math.abs(delta) <= hood.WORLD_EXTENT / 2, `wrapDelta(${a}, ${b}) = ${delta} is off the torus`)
+    }
+  }
+  // snapping is done on the torus, so a point ten kilometres outside the world
+  // resolves to the node its wrapped twin does
+  for (const spot of REEMERGE_SPOTS) {
+    const there = beast.nearestIntersection(spot)
+    const wrapped = beast.nearestIntersection({ x: spot.x + hood.WORLD_EXTENT * 3, z: spot.z - hood.WORLD_EXTENT * 5 })
+    assert.equal(wrapped, there, 'a point outside the world must resolve like its wrapped twin')
+    // and it really is the closest node, measured the short way round
+    let best = Infinity
+    for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+      const node = hood.streetNodeToWorld(id)
+      best = Math.min(best, Math.hypot(beast.wrapDelta(spot.x, node.x), beast.wrapDelta(spot.z, node.z)))
+    }
+    assert.ok(best <= hood.BLOCK, `snapped ${best.toFixed(1)} m from the nearest node`)
+  }
+  // a point on an intersection snaps to itself, and a node id stays a node id
+  assert.equal(beast.nearestIntersection(hood.intersectionToWorld(3, 5)), hood.streetNodeId(3, 5))
+  assert.equal(beast.nearestIntersection(hood.intersectionToWorld(-4, 9)), hood.streetNodeId(3, 2), 'and folds')
+  assert.equal(beast.nodeId(11), 11)
+  assert.equal(beast.nodeId(-1), 48, 'a negative node id folds like a negative coordinate')
+  assert.equal(beast.nearestIntersection(null), 0, 'and no question is a question about node 0')
+  // the straight-line cost of the distance floor: two hops can be as close as one
+  // diagonal block, and that is still further than anything can see
+  let closest = Infinity
+  for (let a = 0; a < hood.INTERSECTIONS; a += 1) {
+    for (let b = 0; b < hood.INTERSECTIONS; b += 1) {
+      if (beast.graphDistance(a, b) !== beast.REEMERGE_MIN_GRAPH_DISTANCE) continue
+      closest = Math.min(closest, beast.distanceBetween(hood.streetNodeToWorld(a), hood.streetNodeToWorld(b)))
+    }
+  }
+  assert.ok(
+    Math.abs(closest - hood.BLOCK * Math.SQRT2) < 1e-6,
+    `two hops can be as close as ${closest.toFixed(2)} m`,
+  )
+  assert.ok(closest > 4 * beast.detectionRange(2, 0), '§8.3: never inside a detection range, even the last one')
+})
+
+test('the creature walks streets, and the graph never asks it to walk a diagonal', () => {
+  // §6.1 routes along the streets, so every edge has to BE a street: two adjacent
+  // nodes share an axis, and the run between them sits on a road centreline. This
+  // is also the invariant that makes pathing need no obstacle avoidance, because
+  // slice 04's rule 1 keeps every fixture clear of both centrelines.
+  for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+    const here = hood.streetNodeToWorld(id)
+    const hereCoords = hood.streetNodeCoords(id)
+    for (const next of hood.STREET_ADJ[id]) {
+      const there = hood.streetNodeToWorld(next)
+      const thereCoords = hood.streetNodeCoords(next)
+      assert.ok(
+        hereCoords.az === thereCoords.az || hereCoords.ax === thereCoords.ax,
+        `edge ${id} -> ${next} changes both axes`,
+      )
+      const middle = { x: (here.x + there.x) / 2, z: (here.z + there.z) / 2 }
+      assert.ok(
+        distanceToNearestRoad(middle.x, middle.z) < 1e-6,
+        `the middle of edge ${id} -> ${next} is not on a road`,
+      )
+    }
+    // and the node itself is on a centreline, which is what makes the placement
+    // rule's "at a distance" mean distance
+    assert.ok(distanceToNearestRoad(here.x, here.z) < 1e-6, `node ${id} is off the grid`)
+  }
+  assert.equal(beast.routePositions(beast.streetRoute(0, 1)).length, 2, 'positions mirror the node route')
+  assert.equal(beast.routePositions(beast.streetRoute(0, 24)).length, 7, 'a diagonal is six blocks, not one')
+  assert.deepEqual(beast.routePositions(null), [])
+})
+
+test('REPOSITION asks for a new street, never the one it just left (§6.1)', () => {
+  const from = 0
+  const avoid = 24
+  const previous = 7
+  const toward = beast.nextHop(from, avoid)
+  const seen = new Set()
+  for (let count = 0; count < 12; count += 1) {
+    const origin = beast.searchOrigin({ from, avoid, previous, seed: 1337, count })
+    assert.equal(origin.from, from)
+    assert.ok(hood.STREET_ADJ[from].includes(origin.id), 'a search origin must be one street away')
+    assert.notEqual(origin.id, previous, 'it must not go back where it came from')
+    assert.notEqual(origin.id, toward, 'and not back down the street it was working out')
+    assert.equal(origin.hopsToTarget, beast.graphDistance(origin.id, avoid))
+    assert.deepEqual(origin.position, hood.streetNodeToWorld(origin.id))
+    // deterministic, and it moves around: twelve searches are not one street
+    assert.deepEqual(
+      beast.searchOrigin({ from, avoid, previous, seed: 1337, count }),
+      origin,
+      'a search origin is a function of (from, avoid, previous, seed, count)',
+    )
+    seen.add(origin.id)
+  }
+  assert.ok(seen.size >= 2, `twelve searches visited ${seen.size} street(s)`)
+  // with no history to avoid it still has somewhere to go, and with nothing but a
+  // last-heard point it still excludes the street toward it
+  const blind = beast.searchOrigin({ from, seed: 7 })
+  assert.ok(hood.STREET_ADJ[from].includes(blind.id))
+  assert.equal(blind.hopsToTarget, null)
+  assert.notEqual(beast.searchOrigin({ from, avoid, seed: 7 }).id, toward)
+  assert.equal(beast.searchOrigin({ from: hood.intersectionToWorld(3, 3), seed: 7 }).from, 24, 'a position is accepted too')
+  assert.equal(beast.nodeId(4.9), 4, 'and a fractional id is floored, not used as an index')
+})
+
+test('re-emergence is never near and never in sight (§8.3)', () => {
+  assert.equal(beast.reemergeNode({}), null, 'no player, no placement')
+  // §8.3 in two halves, and both are checked against a world that actually has
+  // houses in it: the literal fixture pass, not a synthetic occluder
+  const world = hood.fixturePass(1337, 1)
+  assert.ok(world.fixtures.length > 200, `only ${world.fixtures.length} fixtures to hide behind`)
+  const seen = new Set()
+  let tightest = Infinity
+  for (const seed of [1, 2, 3, 7]) {
+    for (let count = 0; count < 8; count += 1) {
+      for (const spot of REEMERGE_SPOTS) {
+        const player = { ...spot }
+        const placement = beast.reemergeNode({
+          playerPosition: player,
+          occluders: world.fixtures,
+          seed,
+          reemergenceCount: count,
+        })
+        const label = `seed ${seed}, re-emergence ${count}, player at ${spot.x},${spot.z}`
+        // 1. the distance floor, and it is graph distance from the *player's* node
+        assert.ok(placement.hops >= beast.REEMERGE_MIN_GRAPH_DISTANCE, `${label}: only ${placement.hops} hops away`)
+        tightest = Math.min(tightest, beast.distanceBetween(player, placement.position))
+        // 2. never in line of sight, against the real occluders — and the level
+        //    that decided it, so a rule that quietly stopped applying is visible
+        assert.equal(placement.level, 'sight', `${label}: hid behind the distance floor instead of a house`)
+        assert.equal(placement.sighted, false, `${label}: it re-emerged in a clear line`)
+        // and the player cannot see it at any range §11.1 ever offers
+        for (let tier = 0; tier < beast.RAMP_TABLE.length; tier += 1) {
+          assert.equal(
+            beast.canSee(player, { ...placement.position, yaw: 0 }, {
+              range: beast.detectionRange(tier, count),
+              occluders: world.fixtures,
+            }),
+            false,
+            `${label}: visible to tier ${tier}`,
+          )
+        }
+        // reproducible, and a function of the count rather than of the clock
+        assert.deepEqual(
+          beast.reemergeNode({ playerPosition: player, occluders: world.fixtures, seed, reemergenceCount: count }),
+          placement,
+          `${label}: placement is not deterministic`,
+        )
+        seen.add(`${count}:${placement.id}`)
+      }
+    }
+  }
+  // the hop floor is the guarantee, and in metres it survives the player standing
+  // off their own node: a Voronoi cell is 64 m square, so the player is at most
+  // BLOCK * sqrt(2) / 2 from it, and 2 hops is at least BLOCK * sqrt(2) from it
+  assert.ok(
+    tightest >= hood.BLOCK * (Math.SQRT2 / 2) - 1e-6,
+    `a re-emergence landed ${tightest.toFixed(1)} m away`,
+  )
+  assert.ok(seen.size > 20, `only ${seen.size} distinct placements across 224 of them`)
+  // with the world stripped away — the degenerate case, nothing to hide behind —
+  // the promise still holds, because the cone filter is the one that cannot fail
+  let faced = 0
+  for (const spot of REEMERGE_SPOTS) {
+    for (let count = 0; count < 8; count += 1) {
+      const placement = beast.reemergeNode({ playerPosition: { ...spot }, seed: 5, reemergenceCount: count })
+      assert.ok(placement.hops >= beast.REEMERGE_MIN_GRAPH_DISTANCE, 'distance holds with no occluders at all')
+      assert.equal(placement.level, 'facing')
+      if (placement.faced) faced += 1
+    }
+  }
+  assert.equal(faced, 0, "it re-emerged in the player's own sight cone")
+  // the floor is a floor: a caller may ask for less, and the filters still answer
+  const near = beast.reemergeNode({ playerPosition: { x: 0, z: 0, yaw: 0 }, seed: 1, reemergenceCount: 0, minDistance: 0 })
+  assert.equal(near.level, 'facing', 'with no distance floor, the cone is the filter that decides')
+  assert.equal(near.faced, false, 'and it still does not appear in front of you')
+  assert.ok(beast.reemergeNode({ playerPosition: { x: 0, z: 0 }, minDistance: -4 }).hops >= 0)
+  assert.ok(beast.reemergeNode({ playerPosition: { x: 0, z: 0 }, minDistance: NaN }).hops >= 0)
+})
+
+test('banishDuration is §7.4\'s table, monotonic, and capped', () => {
+  // the table, exactly, including the two rows that are equal because the cap is
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7, 8].map(beast.banishDuration),
+    [8, 12, 16, 20, 24, 24, 24, 24],
+  )
+  // monotonically non-decreasing, over a range far longer than any run
+  for (let n = 1; n <= 64; n += 1) {
+    const now = beast.banishDuration(n)
+    const before = beast.banishDuration(n - 1)
+    assert.ok(now >= before, `banish ${n} (${now}s) is shorter than banish ${n - 1} (${before}s)`)
+    assert.ok(now <= beast.BANISH_DURATION_CAP, `banish ${n} exceeds the cap`)
+    assert.equal(now, beast.banishDuration(n), 'and it is a pure function of its argument')
+  }
+  // §7.4: the counter is run-long, so the fifth banish is the end of the ladder
+  assert.equal(beast.banishDuration(5), beast.BANISH_DURATION_CAP)
+  assert.equal(beast.banishDuration(500), beast.BANISH_DURATION_CAP)
+  // a count that has not happened yet asks what the first one buys
+  assert.equal(beast.banishDuration(0), 8)
+  assert.equal(beast.banishDuration(-3), 8)
+  assert.equal(beast.banishDuration(NaN), 8)
+  assert.equal(beast.banishDuration(Infinity), 8)
+  assert.equal(beast.banishDuration(2.9), 12, 'a fractional count is a count that has happened')
+  // the ladder is strictly increasing *before* the cap and flat after it, which
+  // is the shape §11.3's exposure trend has to be read with. Rung 0 is not a rung:
+  // there is no removal before the first swing, so the first step is 0.
+  const steps = [1, 2, 3, 4, 5, 6, 7].map((n) => beast.banishDuration(n) - beast.banishDuration(n - 1))
+  assert.deepEqual(steps, [0, 4, 4, 4, 4, 0, 0], 'the cap is where the ladder stops paying')
+})
+
+test('aggressionAt rises strictly with the re-emergence count (§11.2)', () => {
+  let previous = beast.aggressionAt(0)
+  assert.deepEqual(previous, { count: 0, speed: 0, sight: 0, delay: beast.REEMERGE_DELAY_CEILING, threat: 0 })
+  for (let count = 1; count <= 64; count += 1) {
+    const now = beast.aggressionAt(count)
+    assert.equal(now.count, count)
+    // §11.2: "Each time the creature comes back it is faster" — strictly, so that
+    // §11.3's "damage per encounter → increasing" is a fact and not a tendency
+    assert.ok(now.speed > previous.speed, `re-emergence ${count} is not faster than ${count - 1}`)
+    assert.ok(now.sight > previous.sight, `re-emergence ${count} does not see further than ${count - 1}`)
+    // and "...its re-emergence delay is shorter"
+    assert.ok(now.delay < previous.delay, `re-emergence ${count} waits longer than ${count - 1}`)
+    assert.ok(now.delay >= beast.REEMERGE_DELAY_FLOOR, 'and the delay never reaches zero')
+    // threat is the product of a rising and a falling quantity, so it rises
+    assert.ok(now.threat > previous.threat, `threat did not rise at ${count}`)
+    assert.equal(now.threat, now.speed / now.delay, 'threat is closing speed times return rate')
+    assert.deepEqual(now, beast.aggressionAt(count), 'and it is a pure function of its argument')
+    previous = now
+  }
+  // the delay is bounded, so a hundred re-emergences is not an instant return
+  assert.ok(beast.aggressionAt(1e6).delay < beast.REEMERGE_DELAY_FLOOR + 0.001, 'the floor is an asymptote')
+  // rubbish in is clamped rather than propagated
+  assert.deepEqual(beast.aggressionAt(-2), beast.aggressionAt(0))
+  assert.deepEqual(beast.aggressionAt(NaN), beast.aggressionAt(0))
+  assert.equal(beast.aggressionAt(2.7).count, 2)
+  // §10.2: the finale takes the ladder out of the re-emergence delay entirely
+  assert.equal(beast.reemergeDelay(0, { enraged: true }), beast.ENRAGED_REEMERGENCE_SECONDS)
+  assert.equal(beast.reemergeDelay(40, { enraged: true }), beast.ENRAGED_REEMERGENCE_SECONDS)
+  assert.equal(beast.reemergeDelay(40, { flat: true }), beast.ENRAGED_REEMERGENCE_SECONDS)
+  // §10.2: the finale takes the ladder out of the re-emergence delay entirely, and
+  // what is left is short and constant — the finale banish buys 1.5 s, not a row
+  assert.ok(beast.ENRAGED_REEMERGENCE_SECONDS < beast.reemergeDelay(0), 'a flat delay beats a whole ladder')
+  assert.ok(beast.ENRAGED_REEMERGENCE_SECONDS >= beast.REEMERGE_DELAY_FLOOR, 'but it is still a delay')
+})
+
+test('both axes compose, and neither can outrun the player (§8.6)', () => {
+  for (let tier = 0; tier < beast.RAMP_TABLE.length; tier += 1) {
+    let previousSpeed = 0
+    let previousSight = -Infinity
+    for (let count = 0; count <= 12; count += 1) {
+      const speed = beast.creatureSpeed(tier, count)
+      const sight = beast.detectionRange(tier, count)
+      assert.ok(speed >= previousSpeed, `tier ${tier}: pressure axis made it slower`)
+      assert.ok(sight >= previousSight, `tier ${tier}: pressure axis shortened its sight`)
+      if (count > 0 && Number.isFinite(sight)) {
+        assert.ok(sight > previousSight, `tier ${tier}: re-emergence ${count} does not extend its range`)
+      }
+      assert.ok(speed <= beast.SPEED_CEILING, `tier ${tier}: ${speed} m/s outruns §8.6`)
+      assert.ok(speed < beast.PLAYER_SPRINT_SPEED, 'and the player must always be able to leave')
+      previousSpeed = speed
+      previousSight = sight
+    }
+    // the progress axis is monotonic in the tier as well
+    assert.ok(beast.creatureSpeed(tier, 0) <= beast.creatureSpeed(tier + 1, 0) || tier === 3)
+  }
+  // the finale's range is infinite and stays infinite, whatever the pressure axis
+  assert.equal(beast.detectionRange(3, 0), Infinity)
+  assert.equal(beast.detectionRange(3, 999), Infinity)
+  assert.equal(beast.creatureSpeed(3, 999), beast.SPEED_CEILING, 'the finale speed is the ceiling')
+  // and out-of-range tiers clamp rather than read past the table
+  assert.equal(beast.creatureSpeed(99, 0), beast.SPEED_CEILING)
+  assert.equal(beast.creatureSpeed(-4, 0), beast.RAMP_TABLE[0].speed)
+  assert.equal(beast.detectionRange(NaN, NaN), beast.RAMP_TABLE[0].sight)
+  // the axes are additive rather than one blended difficulty, and two and a half
+  // re-emergences is worth one tier of §11.1 — which is the whole reason §11.2 can
+  // be modelled separately from the progress axis at all
+  assert.equal(beast.creatureSpeed(0, 3), beast.RAMP_TABLE[0].speed + 3 * beast.AGGRESSION_SPEED_STEP)
+  assert.ok(Math.abs(beast.RAMP_TABLE[1].speed - beast.RAMP_TABLE[0].speed - 2.4 * beast.AGGRESSION_SPEED_STEP) < 1e-9)
+  assert.equal(beast.creatureSpeed(2, 40), beast.SPEED_CEILING, 'and eventually the ceiling, and only then')
+  assert.equal(beast.detectionRange(2, 40), beast.RAMP_TABLE[2].sight + 40 * beast.AGGRESSION_SIGHT_STEP, 'range is uncapped')
+})
+
+test('a chase cannot last forever (§8.2)', () => {
+  // a chase with the meter pinned by sight can end in exactly one way, and this
+  // is it: the clock, at CHASE_MAX_SECONDS, and not one frame later
+  const frames = Math.round(beast.CHASE_MAX_SECONDS / DT)
+  let creature = beast.createCreature({ state: 'chase', awareness: 1 })
+  let out = null
+  for (let at = 0; at <= frames; at += 1) {
+    const step = beast.creatureStep(creature, DT, { distance: 6, seen: true, sightDistance: 6 })
+    if (step.phaseOut) out = { at, steps: at + 1, step, previous: creature.state }
+    creature = step.creature
+  }
+  assert.ok(out, 'the phase-out never fired')
+  // the 720th frame of the chase is the one that ends it: the clock reads
+  // CHASE_MAX_SECONDS exactly on that frame, and `>=` is what makes that the bound
+  assert.equal(out.steps, frames, `it ended on frame ${out.steps}, not ${frames}`)
+  assert.equal(out.previous, 'chase', 'and the frame before it was still a chase')
+  assert.equal(out.step.from, 'chase')
+  assert.equal(out.step.to, 'dormant', '§8.2: it returns to DORMANT, elsewhere')
+  assert.ok(out.step.chaseSeconds >= beast.CHASE_MAX_SECONDS, 'at the bound, not past it')
+  assert.ok(out.step.awareness === 0, 'and it takes the meter with it')
+  assert.equal(creature.state, 'dormant')
+  assert.equal(creature.chaseSeconds, 0, 'the clock is reset by the phase-out')
+  assert.equal(creature.lastSeen, null, 'and so is what it knew')
+  // the edge is a documented one, and the scripted run is what proves that the
+  // documentation and the machine still describe each other
+  assert.ok(
+    beast.TRANSITIONS.some((row) => row.from === 'chase' && row.to === 'dormant'),
+    'the phase-out edge is missing from TRANSITIONS',
+  )
+  assert.ok(runCreatureScript(creatureScript()).edges.has('chase>dormant'), 'and the run never takes it')
+  // a chase that is shaken off early never reaches the clock at all
+  let shaken = beast.createCreature({ state: 'chase', awareness: 1 })
+  let phasedOut = false
+  for (let at = 0; at < frames - 1; at += 1) {
+    const step = beast.creatureStep(shaken, DT, { distance: 60, sounds: [] })
+    if (step.phaseOut) phasedOut = true
+    shaken = step.creature
+  }
+  assert.equal(phasedOut, false)
+  assert.equal(shaken.state, 'stalk', 'a losable chase is a stalk again')
+  // the pressure valve is not a reward: it advances neither ladder
+  const valved = out.step.creature
+  assert.equal(valved.banishCount, 0, '§7.4: a chase that ran out of clock is not a banish')
+  assert.equal(valved.reemergenceCount, 0, 'and it is not a re-emergence either')
+  assert.equal(out.step.banishSeconds, beast.BANISH_TABLE[0], 'so the next window is the first one')
+  // and the finale has no valve at all (§11.1's last row, §10.2)
+  let finale = beast.createCreature({ state: 'enraged' })
+  for (let at = 0; at < frames * 3; at += 1) {
+    const step = beast.creatureStep(finale, DT, { distance: 200, sounds: [] })
+    assert.equal(step.phaseOut, false, `frame ${at}: the finale phase-outs`)
+    finale = step.creature
+  }
+  assert.equal(finale.state, 'enraged', 'thirty-six seconds later it is still coming')
+})
+
+test('a banish does not advance the capture counter (§9.2)', () => {
+  // the ledger, which is the only place the two counters can be confused: the
+  // capture counter moves on `captured` and on nothing else, ever
+  let captures = 0
+  let banishes = 0
+  const ledger = runCreatureScript(creatureScript())
+  for (const row of ledger.history) {
+    if (row.captured) captures += 1
+    if (row.swing && row.swing.result === 'banish') banishes += 1
+  }
+  assert.equal(banishes, 6, 'the scripted run lands six hammers')
+  assert.equal(captures, 0, 'and is never caught, so the counter never moves')
+  assert.equal(ledger.creature.banishCount, 6, 'while the banish ladder is on its sixth rung')
+  // a single banish, isolated: the ladder moves and the capture counter does not
+  const state = rules.createInitialState(hood.placeObjectives(1337, 1))
+  const hit = beast.creatureStep(beast.createCreature({ state: 'stalk' }), DT, { distance: 2, swing: true })
+  assert.equal(hit.swing.result, 'banish')
+  assert.equal(hit.creature.banishCount, 1, '§7.4: the banish ladder advances')
+  assert.equal(hit.banishSeconds, beast.banishDuration(1), 'and the window it buys is the first one')
+  assert.equal(state.loop, 1, '§9.2: the capture counter is untouched by a banish')
+  assert.equal(state.banishCount, 0, 'and so is the run-level copy, which the world mirrors')
+  // only a capture moves it, and §9.1 keeps the banish counter across that capture
+  const caught = rules.applyCapture({ ...state, banishCount: hit.creature.banishCount, hammerHeld: true })
+  assert.equal(caught.loop, 2, 'a capture is the only thing that advances it')
+  assert.equal(caught.banishCount, 1, 'while the banish counter survives the reset (§9.1)')
+  assert.equal(caught.creature.reemergenceCount, 0, 'and the pressure axis is the thing that resets')
+  // a phase-out is a removal too, and it too is not a capture
+  const valved = beast.creatureStep(
+    beast.createCreature({ state: 'chase', awareness: 1, chaseSeconds: beast.CHASE_MAX_SECONDS - DT }),
+    DT,
+    { distance: 30 },
+  )
+  assert.equal(valved.phaseOut, true)
+  assert.equal(valved.captured, false, '§8.2 is a relief, not an ending')
+  assert.equal(valved.creature.banishCount, 0, 'and it earns nothing')
+})
+
+test('a removal takes what it knew with it (§7.4, §8.3)', () => {
+  // §7.4: a connected swing is a *full removal*, not a stagger. Anything the
+  // creature had worked out goes with it, or "full" is a word and not a rule.
+  let creature = beast.createCreature({ state: 'chase', awareness: 1, banishCount: 2 })
+  creature = { ...creature, lastSeen: { x: 4, z: 4 }, lastHeard: { x: 5, z: 5 } }
+  const hit = beast.creatureStep(creature, DT, { distance: 2, swing: true })
+  assert.equal(hit.to, 'stagger', 'the recoil is not the removal')
+  assert.equal(hit.creature.banishCount, 3, 'the banish that caused it advanced the ladder')
+  assert.deepEqual(hit.creature.lastSeen, { x: 4, z: 4 }, 'and it still knows things while it reels')
+  let done = hit.creature
+  for (let at = 0; at < Math.round(beast.STAGGER_SECONDS / DT) + 2; at += 1) {
+    done = beast.creatureStep(done, DT, { distance: 60, sounds: [] }).creature
+  }
+  assert.equal(done.state, 'dormant')
+  assert.equal(done.lastHeard, null, '§7.4: what it knew went with it')
+  assert.equal(done.lastSeen, null)
+  assert.equal(done.awareness, 0)
+  assert.equal(done.banishPending, false)
+  assert.equal(done.banishCount, 3, 'and the removal itself did not advance the ladder again')
+  // and a re-emergence starts from nothing, wherever §8.3 puts it
+  const back = beast.creatureStep(done, DT, { distance: 60, reemerge: true, sounds: [] })
+  assert.equal(back.to, 'stalk')
+  assert.equal(back.creature.reemergenceCount, 1)
+  assert.equal(back.creature.lastHeard, null, 'a creature that comes back knowing where you are is a wallhack')
+  assert.equal(back.creature.lastSeen, null)
+  assert.equal(back.creature.awareness, 0)
+  // the window it is owed, and both ends of that window
+  // the window it is owed, read off the run-long counter (§7.4), and both ends of it
+  assert.deepEqual(
+    [1, 2, 3, 4, 5].map((n) => beast.banishWindow({ state: 'dormant', banishCount: n })),
+    [8, 12, 16, 20, 24],
+    'the window it is owed is §7.4\'s table, read off the banish counter',
+  )
+  assert.equal(beast.banishWindow(done), 16, 'and this one is owed its own third banish')
+  assert.equal(beast.banishWindow({ state: 'dormant', banishCount: 2, finale: true }), beast.ENRAGED_REEMERGENCE_SECONDS)
+  assert.equal(beast.banishWindow({ state: 'enraged', banishCount: 9 }), beast.ENRAGED_REEMERGENCE_SECONDS)
+  assert.equal(beast.banishWindow(null), beast.BANISH_TABLE[0])
+  assert.equal(beast.reemergeReady(done, 15.9), false, 'not one frame early')
+  assert.equal(beast.reemergeReady(done, 16), true, 'and the boundary is inclusive')
+  assert.equal(beast.reemergeReady(done, 999), true)
+  assert.equal(beast.reemergeReady(done, NaN), false, 'an unknown elapsed time is not a finished one')
+  assert.equal(beast.banishRemainder(done, 4), 12)
+  assert.equal(beast.banishRemainder(done, 40), 0, 'floored at zero, never negative')
+  assert.equal(beast.banishRemainder(done, NaN), 16)
+})
+
+test('§11.3: less exposure and more threat, sampled across a run', () => {
+  // §11.3, in its pure form. The design states two trends and says the gate must
+  // prove the net of them; this is that, from the tables, with no simulation —
+  // the encounter-by-encounter version arrives in slice 15 and this one stays,
+  // because a trend proved from the constants costs nothing to re-check.
+  const samples = beast.balanceTrend(8)
+  assert.equal(samples.length, 8)
+  for (let i = 1; i < samples.length; i += 1) {
+    const now = samples[i]
+    const before = samples[i - 1]
+    const label = `encounter ${now.encounter}`
+    // TREND 1: "expected seconds of creature-on-field per encounter → decreasing"
+    assert.ok(now.onField <= before.onField, `${label}: more creature on the field than at ${before.encounter}`)
+    assert.ok(now.cycle >= before.cycle, `${label}: the cycle got shorter`)
+    // TREND 2: "damage per encounter → increasing"
+    assert.ok(now.threat > before.threat, `${label}: less threat than at ${before.encounter}`)
+    assert.ok(now.reemergeDelay < before.reemergeDelay, `${label}: it waited longer than before`)
+    // and the rows are the two ladders, not a copy of them
+    assert.equal(now.banishSeconds, beast.banishDuration(now.banishes))
+    assert.equal(now.threat, beast.threatPerEncounter(now.reemergences))
+  }
+  // the first trend is *strict* before the cap and flat at it: 8, 12, 16, 20, 24,
+  // 24 — §7.4's cap is exactly the reason exposure stops falling
+  const exposures = samples.map((row) => row.onField)
+  for (let i = 1; i < beast.BANISH_TABLE.length; i += 1) {
+    assert.ok(exposures[i] < exposures[i - 1], `exposure did not fall at encounter ${i + 1}, before the cap`)
+  }
+  assert.equal(exposures[5], exposures[6], 'past the cap the exposure is flat, and that is the cap doing its job')
+  assert.ok(exposures[0] > exposures[4], 'across the ladder it nearly halves')
+  // the cap's argument, measured rather than asserted (§7.4: "a run-long ladder
+  // plus the speed ramp would otherwise walk the game into triviality")
+  assert.ok(
+    samples[samples.length - 1].threat > samples[4].threat,
+    'past the cap the threat is still climbing, so the game is not trivial',
+  )
+  // the whole run, in one number: the share of a player's seconds spent with the
+  // creature in the world falls encounter over encounter
+  let runExposure = 0
+  let runSeconds = 0
+  for (const sample of samples) {
+    runExposure += beast.HUNT_SECONDS_PER_ENCOUNTER
+    runSeconds += sample.cycle
+  }
+  assert.ok(runExposure / runSeconds < samples[0].onField, 'the run average beats its first encounter')
+  // the trend holds for any plausible hunt length, which is what makes the single
+  // constant above safe rather than load-bearing
+  for (const hunt of [4, 6, beast.HUNT_SECONDS_PER_ENCOUNTER, 11, 11.9]) {
+    const shares = [1, 2, 3, 4, 5, 6].map((n) => beast.onFieldShare(hunt, n))
+    for (let i = 1; i < shares.length; i += 1) assert.ok(shares[i] <= shares[i - 1], `hunt ${hunt}s: exposure rose`)
+    assert.ok(shares[4] < shares[0], `hunt ${hunt}s: the ladder did nothing`)
+  }
+  assert.equal(beast.onFieldShare(9, 1), 9 / 17)
+  assert.equal(beast.onFieldShare(0, 1), 0, 'no hunt is no exposure')
+  assert.equal(beast.encounterCycleSeconds(9, 7), 33, 'a capped banish is still 24 s of banish')
+  // and a run that is *not* a clean sequence of banishes is the one the numbers
+  // are pessimistic about, which is the direction §11.3 wants: every encounter the
+  // player ends with a hammer is an encounter they survived
+  assert.ok(beast.balanceTrend(1).length === 1)
+  assert.ok(beast.balanceTrend(0).length >= 1, 'a zero-encounter run still samples')
 })
 
 // ---------------------------------------------------------------------------

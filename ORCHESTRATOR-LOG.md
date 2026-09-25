@@ -48,7 +48,8 @@ Branch: `cline/space-bunny-alpha`
 | 03 districts + anchors | c3653f2 | 59/59 | 5 objectives placed, hammer stable loops 1..8 |
 | 04 fixtures + 4 rules | c101e3c | 67/67 | Cline process died mid-slice (silent exit) — resumed via `cline --id`, finished. BFS fixture checks slow → optimized |
 | 05 rules.js portal/breath/persistence | 62238eb | 78/78 | tmux server died twice (container reaping); resumed via --id again |
-| 06 creature.js | (running) | — | architecture switched: non-interactive background cline per slice, no tmux |
+| 06 creature.js awareness + state machine | 1411e29 | 101/101 | non-interactive background cline per slice (no tmux); 7 states incl. STAGGER/REPOSITION; awareness held by sight |
+| 07 pathing + the two ladders | (this commit) | 115/115 | BFS on the 49-node street graph; §7.4 ladder 8→24 capped; §11.2 aggression strictly up, delay strictly down; §8.2 phase-out at 12 s; §8.3 placement cascade; §11.3 pure trend |
 
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
@@ -58,5 +59,6 @@ Branch: `cline/space-bunny-alpha`
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 06–16 in order (06 creature, 07 pathing+ladders, 08 player breath, 09 THE SWAP, 10 creature view, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures+cleanup+result README).
+- Slices 08–16 in order (08 player breath, 09 THE SWAP, 10 creature view, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures+cleanup+result README).
+- Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.
