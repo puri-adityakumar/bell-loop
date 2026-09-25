@@ -553,6 +553,204 @@ test('every block fronts streets, and the four districts cover the world', () =>
 })
 
 // ---------------------------------------------------------------------------
+// v2 slice 03 — districts and objective anchors
+// ---------------------------------------------------------------------------
+
+section('Objective anchors (v2 slice 03)')
+
+/** Closest approach of a world point to any road centreline, in metres. */
+function distanceToNearestRoad(x, z) {
+  const dx = Math.abs(x / hood.BLOCK - Math.round(x / hood.BLOCK)) * hood.BLOCK
+  const dz = Math.abs(z / hood.BLOCK - Math.round(z / hood.BLOCK)) * hood.BLOCK
+  return Math.min(dx, dz)
+}
+
+test('the slice 03 constants match the design', () => {
+  assert.equal(hood.MIN_OBJECTIVE_DISTANCE, 3, '§3.4 keeps objectives a real walk from spawn')
+  assert.equal(hood.OBJECTIVE_POOL, 6, '§3.4 caps the nearest-N candidate pool')
+  assert.equal(hood.MIN_ANCHOR_SEPARATION, 2, 'no two objectives on adjacent blocks')
+  assert.deepEqual([...hood.PORTAL_IDS], ['A', 'B', 'C'])
+  assert.deepEqual([...hood.ANCHOR_IDS], ['A', 'B', 'C', 'HAMMER', 'EXIT'])
+  // spawn is a fixed point, like v1's ENTRANCE — the distances mean nothing if it moves
+  assert.equal(hood.SPAWN.cx, 0)
+  assert.equal(hood.SPAWN.cz, 0)
+  assert.equal(hood.chunkAtWorld(hood.SPAWN.position.x, hood.SPAWN.position.z).cx, 0)
+  assert.equal(hood.districtOf(hood.SPAWN.cx, hood.SPAWN.cz), 0)
+})
+
+test('every district hosts exactly one objective, and identity is welded to it', () => {
+  assert.equal(Object.keys(hood.OBJECTIVE_DISTRICT).length, 4)
+  assert.deepEqual(
+    hood.PORTAL_IDS.map((id) => hood.OBJECTIVE_DISTRICT[id]).sort(),
+    [0, 1, 2],
+    'the three portals take three distinct districts',
+  )
+  const districts = hood.PORTAL_IDS.map((id) => hood.OBJECTIVE_DISTRICT[id]).concat(hood.OBJECTIVE_DISTRICT.HAMMER)
+  assert.equal(new Set(districts).size, 4, 'the four district objectives must be one per district')
+
+  for (let seed = 1; seed <= 64; seed++) {
+    const objectives = hood.placeObjectives(seed, 1)
+    for (const anchor of [...objectives.portals, objectives.hammer]) {
+      assert.equal(
+        anchor.district,
+        hood.OBJECTIVE_DISTRICT[anchor.id],
+        `seed ${seed}: ${anchor.id} is in district ${anchor.district}, expected ${hood.OBJECTIVE_DISTRICT[anchor.id]}`,
+      )
+      assert.equal(anchor.district, hood.districtOf(anchor.chunk.cx, anchor.chunk.cz))
+    }
+    assert.equal(objectives.exit.district, null, 'the exit is deliberately not district-allocated')
+    // the five objectives never share a block
+    assert.equal(new Set(objectives.all.map((a) => a.chunk.cx + ',' + a.chunk.cz)).size, 5)
+  }
+})
+
+test('every anchor sits on a lot, never on a street', () => {
+  for (let seed = 1; seed <= 64; seed++) {
+    for (const anchor of hood.placeObjectives(seed, 1).all) {
+      const chunk = hood.chunkAt(seed, anchor.chunk.cx, anchor.chunk.cz)
+      const lot = chunk.lots.find((candidate) => candidate.side === anchor.lot.side)
+      assert.ok(lot, `seed ${seed}: ${anchor.id} names a lot that does not exist`)
+      assert.equal(anchor.position.x, lot.x, `${anchor.id} is not on its lot`)
+      assert.equal(anchor.position.z, lot.z)
+      // and that lot is strictly inside the block, clear of the road centreline
+      assert.ok(
+        Math.abs(anchor.position.x - chunk.centre.x) + lot.w / 2 <= hood.BLOCK / 2,
+        `${anchor.id} pokes out of its block`,
+      )
+      assert.ok(
+        distanceToNearestRoad(anchor.position.x, anchor.position.z) >= hood.SETBACK,
+        `${anchor.id} is on the street, not on a lot`,
+      )
+    }
+  }
+})
+
+
+test('objectives respect the distance floor and the nearest-N pool ceiling', () => {
+  const pools = hood.objectiveCandidates()
+  assert.equal(pools.length, hood.DISTRICTS)
+  for (let seed = 1; seed <= 64; seed++) {
+    for (const anchor of hood.placeObjectives(seed, 1).all) {
+      assert.ok(
+        anchor.distance >= hood.MIN_OBJECTIVE_DISTANCE,
+        `seed ${seed}: ${anchor.id} is ${anchor.distance} steps from spawn, inside the ${hood.MIN_OBJECTIVE_DISTANCE}-step floor`,
+      )
+      assert.equal(
+        anchor.distance,
+        hood.blockDistanceFromSpawn(anchor.chunk.cx, anchor.chunk.cz),
+        `${anchor.id} reports the wrong distance`,
+      )
+      // the exit is not district-allocated, so it has no pool to rank within
+      if (anchor.kind === 'exit') continue
+      // drawn from the nearest-N of its own district's eligible blocks
+      const pool = pools[hood.OBJECTIVE_DISTRICT[anchor.id]]
+      const rank = pool.findIndex((block) => block.cx === anchor.chunk.cx && block.cz === anchor.chunk.cz)
+      assert.ok(rank >= 0, `seed ${seed}: ${anchor.id} is not in its district's candidate pool`)
+      assert.ok(
+        rank < hood.OBJECTIVE_POOL,
+        `seed ${seed}: ${anchor.id} came from rank ${rank}, past the pool of ${hood.OBJECTIVE_POOL}`,
+      )
+    }
+  }
+  // eligibility is structural, so the pools are identical every run
+  assert.deepEqual(hood.objectiveCandidates(), hood.objectiveCandidates())
+  assert.equal(pools.reduce((n, pool) => n + pool.length, 0), 25, '25 of 49 blocks clear the 3-step floor')
+})
+
+test('the hammer is separated from every portal by construction', () => {
+  for (let seed = 1; seed <= 128; seed++) {
+    const objectives = hood.placeObjectives(seed, 1)
+    for (const portal of objectives.portals) {
+      assert.ok(
+        portal.separation >= hood.MIN_ANCHOR_SEPARATION,
+        `seed ${seed}: ${portal.id} is only ${portal.separation} blocks from the hammer`,
+      )
+      assert.equal(
+        portal.separation,
+        hood.blockCentreDistance(portal.chunk, objectives.hammer.chunk),
+        `${portal.id} reports the wrong separation`,
+      )
+      // concretely: never on a block adjacent to the hammer's block
+      const hx = Math.abs(portal.chunk.cx - objectives.hammer.chunk.cx)
+      const hz = Math.abs(portal.chunk.cz - objectives.hammer.chunk.cz)
+      const dx = Math.min(hx, hood.GRID - hx)
+      const dz = Math.min(hz, hood.GRID - hz)
+      assert.ok(Math.hypot(dx, dz) >= hood.MIN_ANCHOR_SEPARATION, `seed ${seed}: ${portal.id} sits next to the hammer`)
+    }
+  }
+})
+
+test('the exit is the maximum-distance block, and that block is unique', () => {
+  const eligible = hood.objectiveCandidates().flat()
+  const furthest = Math.max(...eligible.map((block) => block.distance))
+  const atFurthest = eligible.filter((block) => block.distance === furthest)
+  // Unique for GRID = 7: the antipodal block. So the exit is a fixed point of the
+  // run for the same reason the hammer is, and the §10.3 headlights beacon is a
+  // place you can learn rather than re-roll every run.
+  assert.equal(atFurthest.length, 1, 'the furthest block is no longer unique — tie-breaking now matters')
+  for (let seed = 1; seed <= 64; seed++) {
+    const exit = hood.placeObjectives(seed, 1).exit
+    assert.equal(exit.chunk.cx, atFurthest[0].cx)
+    assert.equal(exit.chunk.cz, atFurthest[0].cz)
+    assert.equal(exit.distance, furthest)
+    assert.equal(exit.kind, 'exit')
+  }
+})
+
+
+test('the hammer anchor signature is byte-identical across loops 1..8', () => {
+  // §7.1: the hammer is a fixed point of the RUN, not a fixture. This is the
+  // assertion that makes dying unable to erase the goal.
+  for (const seed of [1, 7, 42, 1337, 90210]) {
+    const reference = hood.placeObjectives(seed, 1)
+    for (let loop = 2; loop <= 8; loop++) {
+      const objectives = hood.placeObjectives(seed, loop)
+      assert.equal(objectives.hammer.signature, reference.hammer.signature, `seed ${seed}: the hammer moved on loop ${loop}`)
+      assert.equal(objectives.hammer.chunk.cx, reference.hammer.chunk.cx)
+      assert.equal(objectives.hammer.chunk.cz, reference.hammer.chunk.cz)
+      assert.equal(objectives.hammer.lot.side, reference.hammer.lot.side)
+      // and the whole set is loop-invariant, not just the hammer
+      assert.equal(objectives.signature, reference.signature, `seed ${seed}: the objective set changed on loop ${loop}`)
+    }
+  }
+})
+
+test('all five anchors are reachable from spawn', () => {
+  for (let seed = 1; seed <= 64; seed++) {
+    for (const anchor of hood.placeObjectives(seed, 1).all) {
+      assert.ok(
+        hood.blockDistanceFromSpawn(anchor.chunk.cx, anchor.chunk.cz) >= 0,
+        `seed ${seed}: ${anchor.id} is unreachable from spawn`,
+      )
+      // and its own block's corners can actually walk to the spawn corner
+      for (const corner of hood.blockCorners(anchor.chunk.cx, anchor.chunk.cz)) {
+        const steps = hood.streetPathLength(corner, hood.SPAWN.node)
+        assert.ok(steps >= 0, `seed ${seed}: corner ${corner} of ${anchor.id} cannot reach spawn`)
+        assert.ok(steps <= 6, `seed ${seed}: ${anchor.id} is ${steps} steps out, past the torus diameter`)
+      }
+    }
+  }
+  assert.equal(hood.blockDistance({ cx: 0, cz: 0 }, { cx: 0, cz: 0 }), 0)
+  assert.ok(hood.blockDistance({ cx: 0, cz: 0 }, { cx: 3, cz: 3 }) >= 0)
+})
+
+test('placement is deterministic per seed and varies between seeds', () => {
+  assert.equal(hood.placeObjectives(1337, 1).signature, hood.placeObjectives(1337, 1).signature)
+  const signatures = new Set()
+  for (let seed = 1; seed <= 64; seed++) signatures.add(hood.placeObjectives(seed, 1).signature)
+  assert.equal(signatures.size, 64, 'two seeds produced the same objective layout')
+  // the exit being fixed must not drag the rest of the set down with it
+  const exits = new Set()
+  for (let seed = 1; seed <= 64; seed++) exits.add(hood.placeObjectives(seed, 1).exit.chunk.cx)
+  assert.equal(exits.size, 1, 'the exit block should be the fixed antipodal one')
+  // a starved pool is a design bug; placeObjectives throws rather than degrade, so
+  // a wide seed sweep is the check that the starvation guard never actually fires
+  for (let seed = 1; seed <= 300; seed++) {
+    assert.equal(hood.placeObjectives(seed, 1).all.length, 5, `seed ${seed} produced the wrong number of objectives`)
+  }
+})
+
+// ---------------------------------------------------------------------------
 // PRNG + determinism (the learnable pattern)
 // ---------------------------------------------------------------------------
 

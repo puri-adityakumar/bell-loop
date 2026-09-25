@@ -370,3 +370,239 @@ export function chunkSignature(chunk) {
 
 export default chunkAt
 
+// ---------------------------------------------------------------------------
+// objective anchors (§3.4 — the shrine fairness rule, welded to districts)
+// ---------------------------------------------------------------------------
+
+/**
+ * SPAWN — where a run starts. Fixed forever, like v1's `ENTRANCE`: the distances
+ * below are only meaningful because the origin never moves.
+ */
+export const SPAWN = Object.freeze({
+  cx: 0,
+  cz: 0,
+  node: streetNodeId(0, 0),
+  // on the pavement inside block (0,0), a few metres off the corner intersection
+  position: Object.freeze({ x: roadAxisToWorld(0) + 4, z: roadAxisToWorld(0) + 4 }),
+})
+
+/**
+ * Floor on graph distance from spawn, in street steps. The whole map is only 6
+ * steps across (§3.1), so 3 is "at least halfway" — a real walk — and it keeps
+ * 25 of the 49 blocks in play. Blocks closer than this never host an objective.
+ */
+export const MIN_OBJECTIVE_DISTANCE = 3
+
+/**
+ * Ceiling pool: objectives are drawn from the nearest N eligible blocks in their
+ * district, so nothing becomes a trek across the whole neighbourhood. A district
+ * with fewer eligible blocks than the pool simply uses all of them — the far
+ * quadrant has only 3, so the hammer's block is always one of those three.
+ */
+export const OBJECTIVE_POOL = 6
+
+/**
+ * Minimum separation between the hammer's block and every portal's block, in
+ * BLOCK CENTRES. 2 means one whole block between them, 128 m.
+ *
+ * This is NOT `MIN_OBJECTIVE_DISTANCE`, and the difference is measured, not
+ * stylistic. The far quadrant (district 3) is graph-adjacent to districts 1 and
+ * 2, and on a map whose entire diameter is 6 street steps the maximum walking
+ * separation between them is 2 — so a rule demanding `MIN_OBJECTIVE_DISTANCE` (3)
+ * street steps leaves ZERO candidates for portals B and C, under every possible
+ * district-to-objective mapping. It is simply not satisfiable on this map.
+ *
+ * What 2 block centres buys is the guarantee the design actually wants: no two
+ * objectives ever sit on adjacent blocks, so no errand can be completed on the
+ * way to another. Verified worst case leaves portal pools of 9, 3 and 3
+ * candidates, so the world still varies from seed to seed.
+ */
+export const MIN_ANCHOR_SEPARATION = 2
+
+/** Objective identity is welded to a district, exactly as v1 welded shrines to zones. */
+export const PORTAL_IDS = Object.freeze(['A', 'B', 'C'])
+export const HAMMER_ID = 'HAMMER'
+export const EXIT_ID = 'EXIT'
+export const ANCHOR_IDS = Object.freeze([...PORTAL_IDS, HAMMER_ID, EXIT_ID])
+
+/** Which district each objective belongs to. The exit is deliberately absent. */
+export const OBJECTIVE_DISTRICT = Object.freeze({ A: 0, B: 1, C: 2, [HAMMER_ID]: 3 })
+
+/** Salt for the anchor stream, so picking a lot cannot disturb lot CONTENT (§3.6). */
+const ANCHOR_SALT = 0x5eed1234
+
+/** Minimum walking distance, in street steps, from spawn to a block. */
+export function blockDistanceFromSpawn(cx, cz) {
+  const dist = streetDistanceMap(SPAWN.node)
+  return Math.min(...blockCorners(cx, cz).map((corner) => dist[corner]))
+}
+
+/** Minimum walking distance, in street steps, between two blocks. */
+export function blockDistance(a, b) {
+  let best = Infinity
+  for (const from of blockCorners(a.cx, a.cz)) {
+    for (const to of blockCorners(b.cx, b.cz)) {
+      const length = streetPathLength(from, to)
+      if (length >= 0 && length < best) best = length
+    }
+  }
+  return best === Infinity ? -1 : best
+}
+
+/**
+ * blockCentreDistance — separation between two blocks measured centre to
+ * centre, in BLOCKS, folded across the wrap.
+ *
+ * This is the metric the hammer/portal separation rule uses, and it is
+ * deliberately not `blockDistance`. Walking distance is min-over-corners, so two
+ * blocks either side of one street are 1 step apart and 1 step apart for blocks
+ * half the map away — it cannot express "far enough to be its own errand". Centre
+ * distance does, and it is stable under the wrap.
+ *
+ * @returns {number} distance in blocks; 1 means adjacent, 2 means one block
+ * between, and so on
+ */
+export function blockCentreDistance(a, b) {
+  const dx = Math.min(Math.abs(a.cx - b.cx), GRID - Math.abs(a.cx - b.cx))
+  const dz = Math.min(Math.abs(a.cz - b.cz), GRID - Math.abs(a.cz - b.cz))
+  return Math.sqrt(dx * dx + dz * dz)
+}
+
+/**
+ * objectiveCandidates — eligible blocks per district, nearest first.
+ *
+ * Eligibility is purely structural (distance from spawn); the seeded pick happens
+ * in `placeObjectives`. Keeping the two apart is what lets slice 03 assert the
+ * fairness rule without also depending on how the PRNG happened to land.
+ */
+export function objectiveCandidates() {
+  const pools = []
+  for (let district = 0; district < DISTRICTS; district++) pools.push([])
+  for (let cx = 0; cx < GRID; cx++) {
+    for (let cz = 0; cz < GRID; cz++) {
+      const distance = blockDistanceFromSpawn(cx, cz)
+      if (distance < MIN_OBJECTIVE_DISTANCE) continue
+      pools[districtOf(cx, cz)].push({ cx, cz, key: chunkKey(cx, cz), distance })
+    }
+  }
+  // nearest first, key as the tiebreak so the order is total and deterministic
+  for (const pool of pools) pool.sort((a, b) => a.distance - b.distance || a.key - b.key)
+  return pools
+}
+
+
+/** The lot an anchor sits on, chosen from a stream salted away from lot content. */
+function pickAnchorLot(seed, chunk) {
+  const rng = streamAt((seed ^ ANCHOR_SALT) >>> 0, chunk.cx, chunk.cz)
+  return chunk.lots[Math.floor(rng() * chunk.lots.length)]
+}
+
+function makeAnchor(seed, id, kind, cx, cz, distance, extra = {}) {
+  const chunk = chunkAt(seed, cx, cz)
+  const lot = pickAnchorLot(seed, chunk)
+  const anchor = {
+    id,
+    kind,
+    district: kind === 'exit' ? null : districtOf(cx, cz),
+    chunk: { cx, cz },
+    key: chunk.key,
+    lot: { id: lot.id, side: lot.side, x: lot.x, z: lot.z, w: lot.w, d: lot.d },
+    position: { x: lot.x, z: lot.z },
+    distance,
+    ...extra,
+  }
+  return { ...anchor, signature: anchorSignature(anchor) }
+}
+
+/** Stable fingerprint of one anchor's placement. */
+export function anchorSignature(anchor) {
+  return `${anchor.id}:${anchor.kind}:${anchor.chunk.cx},${anchor.chunk.cz}:${anchor.lot.side}:${anchor.position.x},${anchor.position.z}`
+}
+
+/** Stable fingerprint of a whole objective set. */
+export function objectivesSignature(objectives) {
+  return objectives.all.map((anchor) => anchor.signature).join('|')
+}
+
+/** Placement must never silently degrade; a starved pool is a design bug. */
+function assertPool(id, pool) {
+  if (pool.length === 0) {
+    throw new Error(
+      `objective pool for ${id} is empty: MIN_OBJECTIVE_DISTANCE=${MIN_OBJECTIVE_DISTANCE} and OBJECTIVE_POOL=${OBJECTIVE_POOL} leave no candidate`,
+    )
+  }
+}
+
+/**
+ * placeObjectives — the three portals, the hammer and the exit for one run.
+ *
+ * ORDER MATTERS, and deliberately so. The hammer is placed first because it is
+ * the most constrained objective — it lives in the far quadrant, which has only
+ * three blocks clearing MIN_OBJECTIVE_DISTANCE — and every portal is then drawn
+ * from a pool with blocks too close to the hammer filtered out. That makes
+ * "the hammer is its own errand" (§7.1) true *by construction* rather than by
+ * luck of the seed. See MIN_ANCHOR_SEPARATION for why the separation is measured
+ * in block centres rather than in the street steps of MIN_OBJECTIVE_DISTANCE.
+ *
+ * The exit is placed last and is not district-allocated: it is the block of
+ * maximum distance from spawn. For GRID = 7 that block is unique — the
+ * antipodal one — so the exit is a fixed point of the run for the same reason the
+ * hammer is, and the headlights beacon in §10.3 is a place you can learn rather
+ * than re-roll every run. Ties are still broken by the seed, so the rule stays
+ * correct if GRID ever changes.
+ *
+ * `loopNumber` is accepted and deliberately ignored. Callers have one in hand and
+ * should not have to think about it; the fact that passing 1..8 changes nothing is
+ * asserted in verify.mjs, because it is the property that makes dying unable to
+ * erase the goal (§7.1).
+ *
+ * @param {number} seed the run's base seed
+ * @param {number} [loopNumber] accepted and ignored — see above
+ * @returns {object} the objective set
+ */
+export function placeObjectives(seed, loopNumber = 1) {
+  void loopNumber
+  const pools = objectiveCandidates()
+  const hammerPool = pools[OBJECTIVE_DISTRICT[HAMMER_ID]]
+  assertPool(HAMMER_ID, hammerPool)
+  const hammerRng = streamAt(seed, 0x48414d4d, 0x4552) // "HAMMER"
+  const hammerBlock = hammerPool[Math.floor(hammerRng() * hammerPool.length)]
+
+  const anchors = []
+  for (const id of PORTAL_IDS) {
+    const district = OBJECTIVE_DISTRICT[id]
+    // drop blocks too close to the hammer, so the separation rule holds
+    const pool = pools[district]
+      .filter((block) => blockCentreDistance(block, hammerBlock) >= MIN_ANCHOR_SEPARATION)
+      .slice(0, OBJECTIVE_POOL)
+    assertPool(id, pool)
+    const rng = streamAt(seed, 0x504f5254 + id.charCodeAt(0), district) // "PORT"
+    const block = pool[Math.floor(rng() * pool.length)]
+    anchors.push(
+      makeAnchor(seed, id, 'portal', block.cx, block.cz, block.distance, {
+        separation: blockCentreDistance(block, hammerBlock),
+      }),
+    )
+  }
+  anchors.push(
+    makeAnchor(seed, HAMMER_ID, 'hammer', hammerBlock.cx, hammerBlock.cz, hammerBlock.distance, {
+      separation: null,
+    }),
+  )
+
+  const exitBlock = pools.flat().reduce((best, block) => (block.distance > best.distance ? block : best))
+  anchors.push(makeAnchor(seed, EXIT_ID, 'exit', exitBlock.cx, exitBlock.cz, exitBlock.distance))
+
+  const byId = Object.fromEntries(anchors.map((anchor) => [anchor.id, anchor]))
+  const result = {
+    seed,
+    spawn: SPAWN,
+    portals: PORTAL_IDS.map((id) => byId[id]),
+    hammer: byId[HAMMER_ID],
+    exit: byId[EXIT_ID],
+    all: ANCHOR_IDS.map((id) => byId[id]),
+  }
+  return { ...result, signature: objectivesSignature(result) }
+}
+
+
