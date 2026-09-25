@@ -310,6 +310,226 @@ check('dispose() tears the world down without throwing', () => {
 })
 
 // ---------------------------------------------------------------------------
+// v2 slice 10 — the world checks, parked and NOT yet runnable
+// ---------------------------------------------------------------------------
+//
+// DO NOT UN-COMMENT THIS. The file does not run, and slice 14 owns repairing the
+// harness; the instructions for that repair are in `V2-PLAN.md` slice 14, and the
+// reason this block exists at all is below.
+//
+// WHY THE CHECKS BELOW ARE NOT IN THE FILE YET
+// ---------------------------------------------
+// Slice 10 added `creatureView.js` and the whole Act I -> Act II -> capture ->
+// reset cycle, and every one of its world-level claims belongs here. But this
+// harness exits 1 on an incomplete canvas stub at the base commit, so anything
+// appended to it would be unreachable: the list would look like coverage and
+// measure nothing, which is worse than no list. So it is written out in full, as
+// source, with the assertion text that will be used — and slice 10's *pure* half
+// went into `verify.mjs` instead, where it actually runs today.
+//
+// The split follows §15.2's seam. What is provable in node — the presentation
+// policy, the eye pixel floor, the per-state tells, the §7.4 ladder, the §9.1
+// persistence table, the §7.2 awakening — is in `creature.js` and is asserted in
+// `verify.mjs` (section "Creature view and the capture loop", 14 checks). What is
+// left is the part that genuinely needs a renderer, and it is below.
+//
+// WHEN SLICE 14 LANDS, EACH ITEM HERE IS ONE `check('...', () => {...})`. The
+// list is ordered by the V2-PLAN's own wording for this slice, so it can be diffed
+// against the plan directly.
+//
+// A note for whoever does it: all ten of these were written and run against the
+// *current* stub, in a scratch harness, and all ten passed. They are transcribed
+// from a working run rather than sketched, so slice 14 should find them nearly
+// drop-in. Two of them caught real bugs on the way — see the ORCHESTRATOR-LOG
+// entry for slice 10 — and one needs `document.removeEventListener` added to the
+// stub before `dispose()` can be checked at all.
+
+/*
+check('the game constructs a creature view and an Act I apparition', () => {
+  // `world.js` builds the view in its constructor and places §6.1's first
+  // sighting in front of the spawn. The telegraph is the only thing on the title
+  // screen that says there is something out here, so it must be drawn there.
+  assert.ok(game.creatureView, 'no creature view')
+  assert.equal(game.creatureView.disposed, false)
+  assert.equal(game.creature.state, 'telegraph', 'Act I opens as a telegraph')
+  assert.equal(game.creatureView.root.visible, true, 'the apparition is on the title screen')
+  assert.ok(game.creatureView.pose.presence < 0.3, 'and it is the dim one')
+  // §8.3's distance floor is also the telegraph's, so the eyes are at their
+  // largest here — the pixel floor, not an anatomical eye
+  assert.ok(game.creatureView.pose.eyeSize > 1, 'the eyes hold the pixel floor at that range')
+})
+
+check('the awakening toll moves TELEGRAPH -> STALK on pickup and not before', () => {
+  // §7.2. The pickup is the only door into Act II, and it is a one-shot.
+  game.start()
+  assert.equal(game.creature.state, 'telegraph', 'Act I can still lose the sighting')
+  run(game, 4)
+  assert.equal(game.creature.state, 'dormant', '§6.1: gone when you look back')
+  assert.equal(game.state.hammerHeld, false, 'and the pickup never happened')
+  game._takeHammer()
+  run(game, DT * 2)
+  assert.equal(game.creature.state, 'stalk', '§7.2: the toll is the awakening')
+  assert.equal(game._takeHammer(), false, 'and it cannot toll twice')
+  run(game, 1)
+  assert.equal(game.creature.state, 'stalk', 'a second pickup changes nothing')
+})
+
+check('a connected swing banishes, recoils, and advances the §7.4 ladder', () => {
+  // §7.4. This is the check that matters most in the list: until slice 10 the
+  // world consumed the LMB edge and never handed it to `creatureStep`, so the
+  // hammer rang and nothing ever answered.
+  game.creaturePosition = { x: game.player.pos.x + 2, z: game.player.pos.z }
+  game.creature = beast.createCreature({ state: 'stalk', banishCount: game.state.banishCount })
+  assert.equal(game.state.banishCount, 0)
+  game._swingPending = true
+  game.update(DT)
+  assert.equal(game.creature.state, 'stagger', 'a connected swing is a recoil')
+  assert.equal(game.state.banishCount, 1, 'the ladder advanced')
+  assert.equal(game.creature.banishCount, 1, 'and the run-level mirror agrees')
+  // the recoil is drawn, from the §7.4 clock, backwards
+  assert.ok(game.creatureView.pose.push > 0, 'the figure is thrown back')
+  assert.ok(game.creatureView.pose.pitch < 0, 'and pitched away from the player')
+  // and a swing at nothing moves no rung
+  game._swingPending = true
+  game.update(DT)
+  assert.equal(game.state.banishCount, 1, 'a swing at the dark buys nothing')
+})
+
+check('a banish removes the creature for its window, draws the departure, and returns it angrier', () => {
+  const window0 = beast.banishWindow(game.creature)
+  run(game, beast.STAGGER_SECONDS + 0.1)
+  assert.equal(game.creature.state, 'dormant', 'the recoil completes into a removal')
+  assert.equal(game.dismissing, true, 'and the departure is drawn')
+  run(game, beast.FADE_SECONDS.dismiss + 0.1)
+  assert.equal(game.dismissing, false, 'the dismissal window is finite')
+  assert.equal(game.creatureView.root.visible, false, 'and then it is gone')
+  const before = beast.creatureSpeed(game.creature.tier, game.creature.reemergenceCount)
+  // §8.3's arrival is drawn, not snapped: watch it come in from nothing
+  let arrival = null
+  for (let i = 0; i < Math.ceil((window0 + 1) / DT) && arrival === null; i++) {
+    game.update(DT)
+    if (game.creature.state === 'stalk' && game.creature.reemergenceCount > 0) {
+      arrival = game.creatureView.pose
+      assert.ok(arrival.presence < 0.2, `the arrival is drawn at ${arrival.presence.toFixed(3)}, not faded in`)
+    }
+  }
+  assert.ok(arrival, 'the creature never came back')
+  assert.ok(beast.creatureSpeed(game.creature.tier, game.creature.reemergenceCount) > before, 're-emergence is angrier')
+  assert.equal(game.creature.lastHeard, null, 'and it comes back knowing nothing')
+  run(game, beast.FADE_SECONDS.reemerge + 0.1)
+  assert.ok(game.creatureView.pose.presence > 0.5, 'and it arrives')
+  // §8.3 on the placement the world actually made
+  const spot = game.creaturePosition
+  const hops = hood.streetDistanceMap(beast.nodeId({ x: game.player.pos.x, z: game.player.pos.z }))
+  assert.ok(hops[beast.nodeId(spot)] >= beast.REEMERGE_MIN_GRAPH_DISTANCE, 'minimum graph distance')
+  assert.equal(beast.lineOfSight({ x: game.player.pos.x, z: game.player.pos.z }, spot, game.streetView.canonicalOccluders()), false, 'never in line of sight')
+})
+
+check('a CHASE past CHASE_MAX_SECONDS phase-outs, and the phase-out is drawn', () => {
+  // §8.2, and the most important rule in the anti-frustration section.
+  game.creature = beast.createCreature({ state: 'chase', awareness: 1, chaseSeconds: beast.CHASE_MAX_SECONDS - DT / 2 })
+  game.creaturePosition = { x: game.player.pos.x + 30, z: game.player.pos.z }
+  game.update(DT)
+  assert.equal(game.creature.state, 'dormant', 'the clock fired')
+  assert.equal(game.dismissing, true, 'and the departure is drawn')
+  assert.equal(game.creature.chaseSeconds, 0)
+  assert.equal(game.creature.awareness, 0, '§8.3: it goes knowing nothing')
+  // and it earns nothing: a chase that ran out of clock is not a banish
+  assert.equal(game.state.banishCount, 0, '§9.2')
+})
+
+check('a capture resets the player to spawn, permutes the fixtures, and keeps progress', () => {
+  // §9.1, §3.6 and §3.7 together, on the wired world rather than on the reducer.
+  game.state = { ...game.state, hammerHeld: true, banishCount: 3, portals: { A: true, B: true, C: false } }
+  game.streetView.setPortalShut('A', true)
+  game.streetView.setPortalShut('B', true)
+  const loopBefore = game.state.loop
+  const duskBefore = game.state.dusk
+  const dressing = hood.fixtureSignature(hood.fixturePass(1337, game.state.loop))
+  game.player.teleport(game.player.pos.x + 40, game.player.pos.z + 40, 0)
+  game.creature = beast.createCreature({ state: 'chase', awareness: 1, banishCount: 3 })
+  game.creaturePosition = { x: game.player.pos.x, z: game.player.pos.z }
+  game.update(DT)
+  assert.equal(store.get().phase, PHASE.RESET, 'a capture resets')
+  // §9.3: the creature reset happens behind the black, so nothing is drawn on the
+  // capture frame itself — this is the assertion that caught the stale phase read
+  assert.equal(game.creatureView.root.visible, false, 'the creature is removed on the frame it catches you')
+  assert.equal(game.state.loop, loopBefore + 1, 'the capture counter advanced')
+  assert.equal(game.state.banishCount, 3, '§9.1: the banish ladder survives')
+  assert.deepEqual(game.state.portals, { A: true, B: true, C: false }, '§9.1: the portals survive')
+  assert.equal(game.state.hammerHeld, true, '§9.1: the hammer survives')
+  assert.equal(game.state.dusk, duskBefore, '§3.7: dusk tracks portals, not the loop')
+  assert.equal(game.creature.reemergenceCount, 0, '§9.1: the pressure axis is the thing that resets')
+  assert.equal(game.creature.state, 'stalk', 'back to Act II, not Act I')
+  assert.ok(Math.hypot(game.player.pos.x - hood.SPAWN.position.x, game.player.pos.z - hood.SPAWN.position.z) < 0.01, 'and the player is at spawn')
+  assert.notEqual(hood.fixtureSignature(hood.fixturePass(1337, game.state.loop)), dressing, '§3.6: the dressing permutes')
+  run(game, 0.2)
+  assert.equal(game.creatureView.root.visible, false, 'nothing is drawn behind the black')
+  run(game, 2.0)
+  assert.equal(store.get().phase, PHASE.PLAYING, 'and play resumes')
+})
+
+check('a capture on its own removes the figure, with no frame around it', () => {
+  // `_capture` is self-contained. Inside `update` the next `_updateCreatureView`
+  // would hide the figure anyway, so this is belt-and-braces — but it is the
+  // difference between "a capture removes the creature" and "a capture removes the
+  // creature, provided something else runs first", and §9.3 is a rule, not a race.
+  game.restart()
+  run(game, 1.6)
+  assert.equal(store.get().phase, PHASE.PLAYING)
+  assert.equal(game.creatureView.root.visible, true, 'the Act I apparition is on screen')
+  game._capture()
+  assert.equal(game.creatureView.root.visible, false, 'and a capture takes it away by itself')
+  assert.equal(game.dismissing, false, 'with no dismissal drawn for it')
+})
+
+check('the creature is drawn in the copy the player is standing in', () => {
+  // §3.3's fold, for the creature. The position is canonical and everything drawn
+  // is not; if the view drew the canonical position the figure would jump a whole
+  // world period every time the street slid.
+  game.restart()
+  run(game, 1.6)
+  assert.deepEqual(game.creatureView.root.position, {
+    x: game.creaturePosition.x + game.streetView.origin.x,
+    z: game.creaturePosition.z + game.streetView.origin.z,
+  }, 'the drawn position is the canonical one, folded into the drawn copy')
+  // and it holds across a wrap
+  game.player.teleport(game.player.pos.x + hood.WORLD_EXTENT, game.player.pos.z, 0)
+  game.update(DT)
+  const drawn = game.creatureView.root.position
+  assert.ok(Math.hypot(drawn.x - game.player.pos.x, drawn.z - game.player.pos.z) < hood.WORLD_HALF, 'the figure is never a whole period away')
+})
+
+check('the finale enrages the creature and the figure is reddened', () => {
+  // §10.2. The reddening is the finale's visible consequence, and it is applied in
+  // `creatureView.js` from the pure `redden` factor, so this is the only place the
+  // hex is checked.
+  game.state = { ...game.state, finale: true }
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.5, finale: true })
+  game.creaturePosition = { x: game.player.pos.x + 8, z: game.player.pos.z }
+  game.update(DT)
+  assert.equal(game.creature.state, 'enraged', '§10.2')
+  assert.equal(game.creatureView.pose.redden, 1)
+  assert.ok(game.creatureView.pose.presence > 0.9, 'the enraged figure is at full presence')
+  assert.notEqual(game.creatureView.bodyMaterial.color.getHexString(), '08070a', 'and is no longer the near-black silhouette')
+  assert.notEqual(game.creatureView.eyeMaterial.color.getHexString(), 'cfe0ff', 'with hotter eyes')
+})
+
+check('dispose() tears the creature view down without throwing', () => {
+  // §15's definition of done. NOTE: this needs `document.removeEventListener` on
+  // the stub, which the current five-member canvas/DOM stub does not have — that
+  // is one of the things slice 14 has to add, and `player.dispose()` is what
+  // reaches for it, not the creature view.
+  game.dispose()
+  assert.equal(game.disposed, true)
+  assert.equal(game.creatureView.disposed, true, 'the view disposed')
+  assert.equal(game.creatureView.root.parent, null, 'and removed itself from the scene')
+  game.update(0.1)
+  game.dispose()
+})
+*/
+
+// ---------------------------------------------------------------------------
 // report
 // ---------------------------------------------------------------------------
 

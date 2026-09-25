@@ -1536,4 +1536,512 @@ export function creatureStep(creature, dt, frame = {}) {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// presentation (§6.1, §12.1) — what each state LOOKS like
+// ---------------------------------------------------------------------------
+//
+// WHY THE POLICY IS HERE AND THE GEOMETRY IS NOT
+// -----------------------------------------------
+// The design splits the world into a pure half and a Three.js half (§15.1) and
+// `verify.mjs` may only import the first — the V2-PLAN's own ground rule, and the
+// reason an entire hunting AI is provable in node. A per-state *presentation*
+// rule is exactly the kind of thing that needs proving ("CHASE is the full form",
+// "the eyes still read at §8.3's minimum distance") and exactly the kind of thing
+// that decays into art direction when nothing can see it. So the split inside the
+// slice follows the same line: the numbers are pure and live here, the meshes are
+// not and live in `creatureView.js`, which reads this table and does nothing else
+// but apply it.
+
+/** Clamp to [0, 1], treating a non-number as the low end rather than a NaN hole. */
+function clampUnit(value) {
+  if (!Number.isFinite(value)) return 0
+  return value < 0 ? 0 : value > 1 ? 1 : value
+}
+
+/**
+ * CREATURE_SHAPE — the silhouette, in metres, and the only geometry numbers
+ * anywhere in the project. `creatureView.js` builds from this and nothing else,
+ * so "procedural geometry only" is checkable: there is no second copy of a height
+ * to drift.
+ *
+ * The proportions are the art direction and they are load-bearing twice over.
+ *
+ * **It is thin.** A 2.80 m figure on a 0.40 m shoulder is 7:1 — twice as thin as
+ * a person, because a person-shaped thing at 90 m in fog is a smudge and the
+ * entire point of §6.1's apparition is that you notice it. Thin is legible; bulky
+ * is not.
+ *
+ * **It clears the frontage.** The height is set against the two things it will
+ * always be seen against, both from `streetView.js`: the hedges and fences are
+ * 1.1–1.3 m and the house walls are 5.2 m. At 2.80 m the figure is a little over
+ * twice the frontage, and that is the whole legibility argument — the street
+ * corridor is empty vertical space between a 1.3 m hedge and a 7.1 m roofline, and
+ * a dark thin thing standing in it is the only shape in the frame that is neither
+ * ground nor sky. It does not need to clear the roofs. Nothing human-proportioned
+ * does, and trying would turn a horror silhouette into a landmark.
+ */
+export const CREATURE_SHAPE = Object.freeze({
+  /** Crown height, and the aspect-ratio numerator (§12.1's silhouette). */
+  height: 2.8,
+  /** Shoulder span — the aspect-ratio denominator, and the "thin" in the brief. */
+  shoulder: 0.4,
+  /** Hip span, where the legs hang from. */
+  hip: 0.24,
+  /** Floor to hip, and hip to shoulder; the two add to the shoulder line. */
+  legLength: 1.24,
+  torsoLength: 1.08,
+  /** Shoulder joint height, `legLength + torsoLength`. */
+  armRoot: 2.32,
+  armLength: 1.36,
+  neckLength: 0.14,
+  headRadius: 0.15,
+  headCentre: 2.65,
+  /** The eyes sit a little above the head's centre, which is what reads as a face. */
+  eyeHeight: 2.68,
+  eyeSpread: 0.08,
+  eyeRadius: 0.035,
+})
+
+/**
+ * CREATURE_PRESENTATION — §6.1's five states as numbers.
+ *
+ * One row per state, and the rows are chosen so that the *difference* between two
+ * states is legible at a glance, because that is the entire job of a silhouette
+ * you can only see for a second at a time in fog. The brief's five names map onto
+ * the columns like this:
+ *
+ * | State | The tell | Columns that carry it |
+ * | --- | --- | --- |
+ * | `telegraph` | a far-appearance flicker | `flicker`, and the lowest `presence` |
+ * | `stalk` | edge-of-vision positioning | `edge`, plus `sway` and `scan` |
+ * | `chase` | the full form | the highest `scale`/`presence` with a hard `lean` |
+ * | `stagger` | a recoil reaction | `recoil`, read off the §7.4 recoil clock |
+ * | `enraged` | reddened | `redden` |
+ *
+ * `edge` is a named column rather than a test on `sway`, and the reason is a bug
+ * this table already had once: gating the §6.1 edge-of-vision angle on "does this
+ * state sway at all" also caught `chase`, which sways 0.05, and a chase presented
+ * 42° off the bearing to the player is a chase that appears not to be coming at
+ * them. The two properties are different — `sway` is the gait, `edge` is *where
+ * in the frame the thing stands* — and only the ranging states set the second.
+ *
+ * `dormant` and `dismissing` are not §6.1 states — they are what a *removal* and a
+ * *departure* look like, and they are here because §8.2's phase-out and §7.4's
+ * banish both have to be visible or they read as a bug.
+ */
+export const CREATURE_PRESENTATION = Object.freeze({
+  /** Off the field entirely (§7.4, §8.2, and every pre-awakening frame). */
+  dormant: Object.freeze({
+    present: 0, scale: 1, presence: 0, eye: 0, flicker: null,
+    lean: 0, sway: 0, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 0,
+  }),
+  /**
+   * The departure, §8.2's phase-out and §7.4's banish fading out. A removal the
+   * player cannot see is a removal they read as a stutter, and §8.2 exists so that
+   * being cornered is *survivable* — it has to be legible as relief.
+   */
+  dismissing: Object.freeze({
+    present: 1, scale: 1, presence: 0.72, eye: 1.1, flicker: null,
+    lean: 0.08, sway: 0, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 0,
+  }),
+  /**
+   * TELEGRAPH — "appears at long range and is gone when you look back" (§6.1).
+   *
+   * Dim and flickering, and *slightly smaller than life*. The flicker is the whole
+   * tell: at 90 m (§8.3's minimum, which is also the closest a telegraph ever gets,
+   * because `world.js`'s `_firstSightingPoint` reuses the same distance floor) a
+   * solid dark shape is either invisible or an obvious blob, and the design wants
+   * the player to be unsure whether they saw it at all. A thing that is there,
+   * then is not, then is, is the apparition. It is also the only state that does
+   * not lean: it has not arrived, so it does not read as moving towards anything.
+   */
+  telegraph: Object.freeze({
+    present: 1, scale: 0.88, presence: 0.3, eye: 0.5,
+    flicker: Object.freeze({ rate: 5.4, depth: 0.62, floor: 0.06 }),
+    lean: 0, sway: 0.03, scan: 0.12, edge: 0, recoil: 0, redden: 0, heave: 0.35,
+  }),
+  /**
+   * STALK — "moves to the player's last-heard position and ranges around it. It
+   * does not beeline" (§6.1).
+   *
+   * The lean is nearly upright and the sway is the widest of any hunting state,
+   * because this is a thing *ranging*, not a thing *coming*. The scan term turns
+   * the head independently of the body, which is the second half of the same
+   * sentence: a searcher visibly checks a street. The positioning angle itself is
+   * `stalkEdgeAngle`, a property of the camera rather than of this row.
+   */
+  stalk: Object.freeze({
+    present: 1, scale: 0.96, presence: 0.62, eye: 0.8, flicker: null,
+    lean: 0.06, sway: 0.1, scan: 0.5, edge: 1, recoil: 0, redden: 0, heave: 0.6,
+  }),
+  /** REPOSITION is STALK with the search origin changing; §6.1's searching beat. */
+  reposition: Object.freeze({
+    present: 1, scale: 0.96, presence: 0.62, eye: 0.8, flicker: null,
+    lean: 0.04, sway: 0.16, scan: 0.72, edge: 1, recoil: 0, redden: 0, heave: 0.7,
+  }),
+  /**
+   * CHASE — the full form. Everything that was withheld arrives at once: the
+   * tallest scale, the most solid presence, the hardest forward lean and the
+   * fastest heave. A chase that still drifted and still scanned would be
+   * indistinguishable from a stalk, and the player is owed an unambiguous read on
+   * the one state that can end the run.
+   */
+  chase: Object.freeze({
+    present: 1, scale: 1.04, presence: 1, eye: 1.6, flicker: null,
+    lean: 0.26, sway: 0.05, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 1.5,
+  }),
+  /**
+   * STAGGER — §7.4's recoil, and the one beat where the hammer is visibly *doing*
+   * something. The flicker is shallow and fast: a bolt of pain, not the slow
+   * uncertainty of a telegraph. The displacement itself is not a constant here — it
+   * is read off the §7.4 recoil clock by `staggerRecoil`, so the figure is thrown
+   * exactly as hard as the window is long.
+   */
+  stagger: Object.freeze({
+    present: 1, scale: 1, presence: 0.85, eye: 1.2,
+    flicker: Object.freeze({ rate: 7.7, depth: 0.3, floor: 0.45 }),
+    lean: -0.1, sway: 0.3, scan: 0, edge: 0, recoil: 1, redden: 0, heave: 0.2,
+  }),
+  /**
+   * ENRAGED — §10.2, reddened. The only other state with a colour of its own, and
+   * the reason the figure is *nearly* black to begin with: a near-black body with
+   * a red cast is a different animal from a red one, and the silhouette has to
+   * survive both, because the finale is the moment the player is looking at it
+   * hardest. `redden` is a 0..1 mix factor; the two hexes it mixes are art, and
+   * they live in `creatureView.js`.
+   */
+  enraged: Object.freeze({
+    present: 1, scale: 1.08, presence: 1, eye: 2.1, flicker: null,
+    lean: 0.34, sway: 0.04, scan: 0, edge: 0, recoil: 0, redden: 1, heave: 1.9,
+  }),
+})
+
+/** Every key of the table above, in §6.1's own order, for iteration and checks. */
+export const PRESENTATION_STATES = Object.freeze(Object.keys(CREATURE_PRESENTATION))
+
+/**
+ * presentationFor — a state name to its row.
+ *
+ * An unknown state is a caller bug, and it is answered with `dormant` rather than
+ * `undefined`: a creature that is not on the field is the safe reading of a name
+ * this build has never heard of, and a thrown `TypeError` sixty times a second in
+ * the render loop is the worst possible way to find that out.
+ *
+ * @param {string} state
+ */
+export function presentationFor(state) {
+  return CREATURE_PRESENTATION[state] ?? CREATURE_PRESENTATION.dormant
+}
+
+/**
+ * FADE_SECONDS — the two presentation windows a removal needs.
+ *
+ * They are presentation, not rules: §8.2's chase phase-out and §7.4's banish
+ * window are both decided in `creatureStep`, and the world runs their clocks.
+ * What this module owns is the number of seconds it takes the *figure* to go and
+ * to come, which nothing else depends on and which a benchmark capture will show.
+ * The dismissal is deliberately the same length as §9.3's cross-fade rather than
+ * longer, so the creature has finished leaving before the screen starts going
+ * down — and both are short enough that the player sees the relief, not a wait.
+ */
+export const FADE_SECONDS = Object.freeze({ dismiss: 1.1, reemerge: 0.9 })
+
+/** Fade *out*: 1 at the start of a departure, 0 once it is gone. */
+export function fadeOut(elapsed, total = FADE_SECONDS.dismiss) {
+  if (!Number.isFinite(elapsed) || !Number.isFinite(total) || total <= 0) return 0
+  return clampUnit(1 - elapsed / total)
+}
+
+/** Fade *in*: 0 the moment a re-emergence is placed, 1 once it has arrived. */
+export function fadeIn(elapsed, total = FADE_SECONDS.reemerge) {
+  if (!Number.isFinite(elapsed)) return 1
+  return clampUnit(elapsed / total)
+}
+
+/**
+ * EYE_PIXEL_FLOOR — the eyes' minimum apparent size, in pixels.
+ *
+ * This is the number that makes "emissive eyes" and "reads at distance in fog" one
+ * requirement instead of two, and it is the reason the eyes are quads rather than
+ * spheres. At §8.3's minimum re-emergence distance — 90.5 m of open air
+ * diagonally, the closest a banished thing can possibly come back — a 7 cm sphere
+ * subtends about *half a pixel*. The problem is not that the eyes are too dark;
+ * they are not there at all. Geometry has no floor on its apparent size, so the
+ * only fix is to stop scaling them down and hold a screen-space size instead: from
+ * six metres out the eye is anatomically sized, and from ninety it is a pair of
+ * points of light on a shape you can only guess at, which is the correct horror
+ * at that range and the only version of it that renders.
+ */
+export const EYE_PIXEL_FLOOR = 7
+
+/**
+ * eyeWorldSize — the world size an eye needs to hold `EYE_PIXEL_FLOOR` pixels.
+ *
+ * The exact solid-angle relation, with the camera's real numbers passed in rather
+ * than read off a Three.js object, so it stays a pure function and the behaviour
+ * at §8.3's distance is a number the gate can assert instead of a screenshot a
+ * human has to squint at.
+ *
+ * @param {number} distance metres to the camera
+ * @param {{ base?: number, pixels?: number, viewportHeight?: number,
+ *           fov?: number }} [options] `fov` is the camera's *vertical* field
+ */
+export function eyeWorldSize(distance, options = {}) {
+  const base = Number.isFinite(options.base) ? options.base : CREATURE_SHAPE.eyeRadius * 2.6
+  const pixels = Number.isFinite(options.pixels) ? options.pixels : EYE_PIXEL_FLOOR
+  const height = Number.isFinite(options.viewportHeight) ? options.viewportHeight : 720
+  const fov = Number.isFinite(options.fov) ? options.fov : 72
+  if (!Number.isFinite(distance) || distance <= 0 || height <= 0 || pixels <= 0) return base
+  const visible = (2 * distance * Math.tan((fov * Math.PI) / 360) * pixels) / height
+  return Math.max(base, visible)
+}
+
+/**
+ * STALK_EDGE_FRACTION — where in the frame a stalking creature is presented.
+ *
+ * A fraction of the camera's *horizontal* half-field rather than an angle, because
+ * the angle depends on the aspect ratio and the aspect ratio belongs to the window
+ * the player happens to have open. At the 16:9 the gate's captures are taken at,
+ * that is 0.8 x 52.2° = 41.8° off the bearing to the player, and the one number
+ * buys two properties at once:
+ *
+ *  - it is **inside** the frame, so the player does see it. §6.1's STALK is a
+ *    state the player is meant to be able to notice, and a presentation that put
+ *    it off-screen would be a state nobody ever learns to read;
+ *  - it is **outside** `SIGHT_HALF_ANGLE` (35°), so the thing standing at the
+ *    edge of your vision cannot see you. §6.1's stalk is a sound-hunter that
+ *    does not beeline, and this is the same promise drawn in the one place the
+ *    player can actually see it.
+ *
+ * `verify.mjs` asserts both halves against a restated camera, so a change to the
+ * fov or to `SIGHT_HALF_ANGLE` that quietly breaks either one is caught there.
+ */
+export const STALK_EDGE_FRACTION = 0.8
+
+/**
+ * stalkEdgeAngle — the off-bearing angle a STALK is presented at.
+ *
+ * @param {number} viewHalfFov the camera's horizontal half-field, radians
+ */
+export function stalkEdgeAngle(viewHalfFov) {
+  const fov = Number.isFinite(viewHalfFov) && viewHalfFov > 0 ? viewHalfFov : Math.PI / 4
+  return fov * STALK_EDGE_FRACTION
+}
+
+/**
+ * stalkEdgeAspectFloor — the narrowest window the §6.1 edge promise holds in.
+ *
+ * This is a real limit of the design rather than a rounding detail, and it was
+ * found by the gate rather than by playing. The edge has to be *inside* the frame
+ * (or §6.1's STALK is a state the player never learns to read) and *outside*
+ * `SIGHT_HALF_ANGLE` (or the thing at the edge of your vision can see you). With a
+ * 72° vertical field those two are only simultaneously satisfiable above an aspect
+ * of about 1.32:1, and a square window leaves barely one degree between the 35°
+ * cone and the 36° frame edge.
+ *
+ * The gate does not paper over that. It asserts both properties at every aspect
+ * above this floor, asserts the floor is above 1 — so the promise can never be
+ * *claimed* for a square window — and asserts that 4:3, the narrowest aspect any
+ * real window ships at, is inside the floor. A portrait phone therefore shows the
+ * figure nearer the frame edge than the fraction asks for, which is the right way
+ * round: §6.1's promise is that the player can see it, and "it can see you" is
+ * enforced by §6.3's sight test rather than by where the renderer chose to stand.
+ *
+ * @param {number} viewFov the camera's vertical field, degrees
+ */
+export function stalkEdgeAspectFloor(viewFov = 72) {
+  const half = (Number.isFinite(viewFov) && viewFov > 0 ? viewFov : 72) / 2
+  const needed = SIGHT_HALF_ANGLE / STALK_EDGE_FRACTION
+  if (needed >= half) return Infinity
+  return Math.tan(needed) / Math.tan((half * Math.PI) / 180)
+}
+
+/**
+ * RECOIL — §7.4's recoil, as displacement rather than as a flag.
+ *
+ * A hammer blow throws something *backwards*, which is why `creaturePose` applies
+ * these with the opposite sign to every other pitch in the table, and the spin is
+ * there because a thing that is struck hard turns: without it the recoil reads as
+ * the creature being deleted from behind rather than hit.
+ *
+ * `shape` is a decay exponent, and it is deliberately > 1. `staggerRecoil` returns
+ * `remaining ^ shape`, and a struck body *decelerates into a stop* rather than
+ * falling off a cliff — so the curve is convex, not concave. A tenth of the way
+ * through the window three quarters of the throw is still to come; by the halfway
+ * point it has already recovered three quarters; the last tenth is a settle worth
+ * nothing. An exponent below 1 gives the opposite shape, which is a shove into a
+ * wall, and 1 is a linear slide, which is a fade rather than a hit.
+ */
+export const RECOIL = Object.freeze({ push: 1.35, lift: 0.22, spin: 0.9, shape: 2 })
+
+/**
+ * staggerRecoil — how far into its recoil the creature is, 0..1.
+ *
+ * Read off the §7.4 clock the state machine already keeps (`staggerSeconds` counts
+ * down from `STAGGER_SECONDS`) rather than off a second timer the view would have
+ * to start and keep in step on its own. That is the whole reason the recoil is
+ * tied to the banish: the window *is* the animation, so a hammer thrown with a
+ * long window throws further, with no second source of truth left to disagree.
+ *
+ * The curve is `RECOIL.shape`, a convex decay, because a body that has been hit
+ * decelerates into a stop. See `RECOIL` for why the exponent is above one.
+ *
+ * Gated on the state as well as the clock, and not on the clock alone: a creature
+ * that is not staggering has no recoil however much time is left on a counter it
+ * does not own. In the game the two can never disagree — `creatureStep` sets both
+ * in the same frame, and the world asks for the pose after that frame — but a
+ * function that answers "how hard is it being hit right now" should not answer
+ * that question about a creature which is not.
+ */
+export function staggerRecoil(creature) {
+  const total = STAGGER_SECONDS
+  const left = creature?.staggerSeconds
+  if (creature?.state !== 'stagger') return 0
+  if (!Number.isFinite(left) || total <= 0) return 0
+  return Math.pow(clampUnit(left / total), RECOIL.shape)
+}
+
+/**
+ * apparitionFlicker — the TELEGRAPH's beat, in [0, 1].
+ *
+ * Two incommensurable sines rather than one, because a single sine is a pulse and
+ * a pulse is a machine: a player who has watched two apparitions has learned its
+ * period and can time their attention against it. The exponent does the real work
+ * — it holds the value near zero and lets it spike, so the apparition is absent
+ * far more often than it is present and each appearance is an event.
+ *
+ * Pure in `time`: the world owns the clock and passes it, which is what keeps
+ * §6.5 true of this file too.
+ *
+ * @param {number} time seconds, the world's own animation clock
+ * @param {number} [offset] per-creature phase, so two sightings do not blink in
+ *   lockstep
+ */
+export function apparitionFlicker(time, offset = 0) {
+  if (!Number.isFinite(time)) return 0
+  const a = Math.sin(time * 5.4 + offset)
+  const b = Math.sin(time * 13.7 + offset * 1.7)
+  return Math.pow(clampUnit(0.5 + 0.5 * (a * 0.62 + b * 0.38)), 2.2)
+}
+
+/**
+ * creaturePose — every number the view needs for one frame, and nothing else.
+ *
+ * This is the whole contract between the two halves of the slice. It is a total
+ * function of `(creature, frame)`: no clock of its own, no randomness, no
+ * Three.js, and nothing in the flicker that a replay could not reproduce. A
+ * missing creature, a state this build has never heard of, a NaN distance and a
+ * NaN time all have defined answers, because the alternative is a render loop that
+ * throws and a browser that stops — and a horror game must not be one bad frame
+ * away from a dead tab.
+ *
+ * @param {object|null} creature from `createCreature`
+ * @param {object} [frame]
+ * @param {number} [frame.time] seconds, the world's animation clock
+ * @param {number} [frame.distance] metres to the camera
+ * @param {number} [frame.elapsed] seconds into the current presentation
+ * @param {number} [frame.dismiss] a departure is still drawing, 0..1
+ * @param {number} [frame.sinceReemerge] seconds since the §8.3 placement
+ * @param {number} [frame.offset] flicker phase
+ * @param {number} [frame.chaseSeconds] §8.2's chase clock, for the closing beat
+ * @param {number} [frame.bearing] radians from the camera to the creature, signed
+ *   — the view measures it, because the camera is the only thing that knows which
+ *   way "left" is
+ * @param {number} [frame.viewHalfFov] the camera's horizontal half-field, radians
+ * @param {{fov?: number, viewportHeight?: number}} [frame.view] camera numbers
+ * @returns {object} `present`, `scale`, `presence`, `eye`, `eyeSize`, `pitch`,
+ *   `roll`, `heave`, `scan`, `redden`, `push`, `lift`, `spin`, `state`
+ */
+export function creaturePose(creature, frame = {}) {
+  const state = typeof creature?.state === 'string' ? creature.state : 'dormant'
+  const time = Number.isFinite(frame.time) ? frame.time : 0
+  const distance = Number.isFinite(frame.distance) ? Math.max(0, frame.distance) : 0
+  const offset = Number.isFinite(frame.offset) ? frame.offset : 0
+  const dismissing = Number.isFinite(frame.dismiss) ? frame.dismiss : 0
+
+  // A departure outranks the state it departed from. A creature banished on this
+  // frame is already `dormant`, and `dormant` draws nothing, so §7.4's removal
+  // would be invisible and §8.2's relief would read as a stutter in the frame
+  // rate. What the world hands over as `dismiss` is the only thing that can keep
+  // the last of it on screen while it goes.
+  const row = presentationFor(dismissing > 0 ? 'dismissing' : state)
+
+  const pose = {
+    state,
+    present: row.present > 0 && (dismissing > 0 || state !== 'dormant'),
+    scale: row.scale,
+    presence: row.presence,
+    eye: row.eye,
+    eyeSize: eyeWorldSize(distance, {
+      fov: frame.view?.fov,
+      viewportHeight: frame.view?.viewportHeight,
+    }),
+    pitch: row.lean,
+    roll: 0,
+    heave: 0,
+    scan: row.scan,
+    redden: row.redden,
+    push: 0,
+    lift: 0,
+    spin: 0,
+  }
+
+  // §6.1's edge-of-vision positioning. The offset is *proportional* to how near the
+  // edge of the frame the creature already is, rather than a constant applied to
+  // every sighting: a thing standing dead ahead is already being looked at, and
+  // presenting it as though it were at the edge of your vision would be a lie the
+  // player can see through. The sign comes from the bearing for free.
+  //
+  // Gated on the `edge` column and not on `sway`, so a chase — which does have a
+  // gait, and a small one — is still squared up to the player.
+  if (row.edge > 0 && Number.isFinite(frame.bearing) && Number.isFinite(frame.viewHalfFov) && frame.viewHalfFov > 0) {
+    const off = Math.max(-1, Math.min(1, frame.bearing / frame.viewHalfFov))
+    pose.roll = stalkEdgeAngle(frame.viewHalfFov) * off
+  }
+
+  if (row.flicker) {
+    const { rate, depth, floor } = row.flicker
+    const beat = 1 - depth + depth * apparitionFlicker(time * (rate / 5.4), offset)
+    const g = clampUnit(floor + (1 - floor) * beat)
+    pose.presence *= g
+    pose.eye *= g
+  }
+
+  if (row.recoil > 0) {
+    const k = staggerRecoil(creature)
+    pose.push = RECOIL.push * k
+    pose.lift = RECOIL.lift * k
+    pose.spin = RECOIL.spin * k
+    pose.pitch = row.lean - k * 0.7
+    pose.heave = k * 0.5
+  }
+
+  if (row.heave > 0) {
+    // the gait: a slow breath when it is still looking, a hard one at a sprint
+    pose.heave += Math.sin(time * row.heave * 2.1 + offset) * 0.035 * row.heave
+  }
+
+  if (dismissing > 0) pose.presence *= fadeOut(frame.elapsed ?? 0, FADE_SECONDS.dismiss)
+
+  // §8.3's placement is instant, so the arrival has to be *drawn* rather than
+  // snapped: a creature that pops into being two blocks away is a teleport, and a
+  // teleport is how a horror game tells you its own rules are not real
+  if (state === 'stalk' && Number.isFinite(frame.sinceReemerge)) {
+    pose.presence *= fadeIn(frame.sinceReemerge, FADE_SECONDS.reemerge)
+  }
+
+  if (state === 'chase' && Number.isFinite(frame.chaseSeconds) && frame.chaseSeconds > 0) {
+    // §8.2: the last of a chase, the figure is already half gone. Not a warning
+    // and not a mechanic — the state machine owns the phase-out — but the player
+    // deserves to feel the valve open a beat before it does.
+    pose.presence *= 1 - 0.25 * clampUnit(frame.chaseSeconds / CHASE_MAX_SECONDS)
+  }
+
+  pose.presence = clampUnit(pose.presence)
+  pose.eye = clampUnit(pose.eye)
+  if (pose.presence === 0) pose.present = false
+  return pose
+}
+
 export default createCreature

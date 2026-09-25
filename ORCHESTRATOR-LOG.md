@@ -136,6 +136,130 @@ Branch: `cline/space-bunny-alpha`
   is still out of the gate by design; a temporary 14-check node smoke run against
   the existing stub passed and is not committed.
 
+### Slice 10 — creature view and the capture loop
+
+- **THE SLICE SPLITS ALONG §15.2's SEAM, DELIBERATELY.** The plan gives slice 10 a
+  *world* gate, and its checks "belong" in `verify-world.mjs` — which does not run
+  and which slice 14 owns. Taken literally that leaves the whole of the creature's
+  visual design unverified for five slices, in a project whose defining constraint
+  is that it cannot be playtested. So the policy went into `creature.js` (pure) and
+  the geometry into `creatureView.js` (Three.js). The numbers are provable today;
+  the triangles are not, and pretending otherwise would be theatre.
+- **THE EYES HOLD A PIXEL FLOOR, AND THAT IS THE WHOLE OF "EMISSIVE EYES".** At
+  §8.3's minimum re-emergence distance — 90.5 m, the closest a banished thing can
+  legally come back — a 7 cm sphere subtends about half a pixel. Geometry has no
+  floor on its apparent size, so `eyeWorldSize` solves the solid angle and the eyes
+  are quads: 9 cm up close, 1.27 m at 90 m. `EYE_PIXEL_FLOOR = 7`. They are the
+  only part of the figure whose world size is a promise rather than a proportion,
+  which is why `present()` divides them back out of the figure's own scale.
+- **THE EYES ARE UNFOGGED, DELIBERATELY.** The same decision `streetView.js` makes
+  for the portal rings and the sodium lamp heads: §4's three distance-readable
+  things are the two lights and the thing hunting you, and a fogged emissive at
+  90 m is a slightly brighter piece of fog. They are billboarded every frame too,
+  because a creature facing you with its eyes pointed behind you has no readable
+  face.
+- **THE FIGURE IS 7:1, AND THAT IS A MEASUREMENT RATHER THAN A MOOD.** 2.80 m on a
+  0.40 m shoulder, against `streetView.js`'s own 1.1–1.3 m frontage and 5.2 m house
+  wall. It is 2.2x the hedge and under the roofline, and the gate asserts all three:
+  a silhouette that cleared the roofs would be a landmark, and a landmark is not a
+  horror. The parts sum to the height, so the rig cannot be built twice and
+  disagree.
+- **BODY COLOUR IS `PALETTE.creature`, AND NEAR-BLACK IS DOING WORK.** Every §12.3
+  fog stop is *lighter* than the body, so the figure always reads as a darker shape
+  than the air in front of it. That is what lets a near-black figure survive a
+  transparent material: a 30%-opacity apparition is a hole in the fog, not a grey
+  smudge on top of it. `depthWrite: false`, because a translucent mesh that writes
+  depth occludes itself.
+- **§6.1'S EDGE-OF-VISION ANGLE IS A FRACTION OF THE HALF-FIELD, AND IT HAS A
+  DOCUMENTED ASPECT FLOOR.** One number has to be inside the frame (or §6.1's STALK
+  is a state nobody learns to read) *and* outside `SIGHT_HALF_ANGLE` (or the thing
+  at the edge of your vision can see you). At 16:9 / 72° that is 41.8° and it
+  works. At 1:1 the frame is 36° and the cone is 35°, so the two promises are *not*
+  simultaneously satisfiable. `stalkEdgeAspectFloor` computes where they stop being
+  satisfiable (1.317:1) and the gate asserts the floor rather than pretending a
+  square window keeps the design intact. 4:3 — the narrowest aspect any real screen
+  ships at — is inside it. This was found by the gate, not by playing.
+- **THE EDGE OFFSET IS PROPORTIONAL TO HOW NEAR THE FRAME EDGE THE CREATURE IS.**
+  A constant applied to every sighting would dress up something standing dead
+  ahead as though it were at the edge of your vision, and a player can see through
+  that. `roll = edge * clamp(bearing / viewHalfFov)`.
+
+### Slice 10 — bugs found (four, all invisible to slice 09)
+
+- **A CHASE WAS TAKING THE STALK'S EDGE OFFSET.** The roll was gated on `sway > 0`,
+  and `chase` sways 0.05 — so a chase, the one state that should be squared up to
+  the player, was presented 42° off the bearing to them. `edge` is now a named
+  column on the presentation table and the gate asserts which states set it. The
+  gait and *where in the frame the thing stands* are different properties and had
+  been sharing a test.
+- **THE HAMMER RANG AND NOTHING ANSWERED.** Since slice 09 `_updateVerbs` consumed
+  the LMB edge, pushed a toll sound event, and then `creatureStep` was handed
+  `swing: false` — hardcoded. The banish ladder did not exist in the running game.
+  `_swingPending` now carries the edge to the step, and because `creatureStep` runs
+  the capture test *after* the swing, a hammer that connects on the frame it would
+  otherwise have caught you is §6.1's promise that STAGGER cannot touch you.
+- **THE §7.4 LADDER NEVER MOVED.** `world.js` mirrored `state.banishCount` onto the
+  creature every frame, overwriting the increment `creatureStep` had just made. The
+  counter stayed on zero for the whole run, so every banish bought the first rung's
+  eight seconds forever. The write-back now happens *before* the mirror, and the
+  gate asserts the invariant that closes it: the mirror is idempotent, so writing
+  the creature's own count back into the run is a no-op and cannot double-count.
+- **THE NEW CREATURE WAS DRAWN ON THE CAPTURE FRAME.** §9.3 says the creature reset
+  happens behind the black, but `_updateCreatureView` read `this.phase`, which
+  `update` had cached at the top of the frame — so a phase that changed *during* the
+  frame was read as the old one. It now reads the store, the same reason `_syncHud`
+  does. Caught by an assertion added to the world list, not by reading the code
+  carefully.
+
+- **THE RECOIL IS THE BANISH WINDOW, AND THE EXPONENT IS ABOVE ONE.**
+  `staggerRecoil` reads the `staggerSeconds` clock the state machine already keeps,
+  so a hammer thrown with a long window throws further and there is no second
+  source of truth to disagree. The curve is `remaining ^ 2` — a struck body
+  *decelerates into a stop*. My first exponent was 0.55 with a comment claiming it
+  front-loaded the throw; it does the exact opposite, and the gate's shape
+  assertion is what said so. The constant is now named `shape` rather than
+  `falloff`, because that name *was* the bug.
+- **THE DISMISSAL WINDOW IS §9.3's CROSS-FADE LENGTH, 1.1 s, ON PURPOSE.** A removal
+  the player cannot watch reads as a stutter, and §8.2 is the most important rule in
+  the anti-frustration section: being cornered is survivable *because you watch the
+  thing that cornered you give up*. The figure finishes leaving exactly as the
+  screen starts going down. The arrival is 0.9 s and fades rather than snapping,
+  because §8.3's placement is instant and a teleport is how a horror game tells you
+  its own rules are not real.
+- **A REMOVAL IS DRAWN, WHICH NEEDS A `dismissing` ROW.** §7.4 and §8.2 both leave
+  the creature `dormant`, and `dormant` draws nothing — so without a departure row
+  both rules would be invisible. It is not a §6.1 state and is documented as not one.
+- **THE ACT I APPARITION IS DRAWN ON THE TITLE SCREEN.** `_updateCreatureView` runs
+  in every phase and suppresses the figure only in RESET and WON. §6.1's first
+  sighting is the only thing on that screen that says there is something out here.
+- **NO TEXTURES, NO `document.createElement`, NO CLOCK, NO RANDOM.** The figure is
+  13 geometries and 384 triangles, built bottom-up from `CREATURE_SHAPE`. This
+  keeps the constructor inside `verify-world.mjs`'s existing five-member canvas
+  stub, which is why the scratch harness that validated all ten world checks needed
+  only `document.removeEventListener` added.
+
+### Slice 10 — gate
+
+- **Gate:** lint clean, **144/144** pure checks (up from 130 — a new "Creature view
+  and the capture loop" section, 14 checks), `vite build` clean. The 14 new checks
+  were mutation-tested: **17/17 caught** in `creature.js` (thinning the silhouette,
+  removing the telegraph flicker, deleting the eye pixel floor, moving the stalk
+  edge inside the sight cone, un-gating the recoil on state, linearising the
+  recoil, un-freezing the table, making `creaturePose` throw, and ten more). The
+  10 world checks were validated in a scratch harness and mutation-tested **10/10**
+  against `world.js`; the scratch harness is not committed.
+- **The world harness is still out of the gate and its failure is UNCHANGED** —
+  `1/12 world checks passed`, exit 1, `SHRINE_IDS is not iterable`, byte-identical
+  to the slice 09 baseline (verified by stashing). Slice 10's ten world checks are
+  parked at the bottom of `verify-world.mjs` inside a block comment, transcribed
+  from a working run rather than sketched, so slice 14 should find them nearly
+  drop-in. That block is the deliverable slice 14 should start from.
+- **Left for slice 11/12/13, deliberately:** the `searchExhausted` and
+  `searchPosition` frame channels are still hardcoded `false`/`null` in
+  `_updateCreature`, so `reposition` is a presentation row nothing reaches yet.
+  `presentationFor` has a row for it and the gate asserts it, so nothing breaks —
+  wiring the search layer is not slice 10's work.
+
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
 - New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.
@@ -144,6 +268,6 @@ Branch: `cline/space-bunny-alpha`
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 10–16 in order (10 creature view + capture loop, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slice 09 is landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`.
+- Slices 11–16 in order (11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slices 09 and 10 are landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`. Slice 14 should start from the parked world-check block at the bottom of `verify-world.mjs`.
 - Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.

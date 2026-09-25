@@ -40,6 +40,7 @@ import * as THREE from 'three'
 import { createStore, LOOP_SECONDS, PHASE } from './loop.js'
 import { PlayerController } from './player.js'
 import { PALETTE, StreetView } from './streetView.js'
+import { CreatureView } from './creatureView.js'
 import * as beast from './creature.js'
 import * as rules from './rules.js'
 import { streamAt } from './hash.js'
@@ -141,6 +142,27 @@ export class LongQuietGame {
     this.portalNoiseElapsed = 0
     /** One-frame flag: the hammer was picked up on this frame (§7.2's toll). */
     this._hammerToll = false
+    /**
+     * One-frame flag: LMB went down this frame. §7.4's swing is the *only* door to
+     * the banish ladder, and until slice 10 the world consumed the edge here and
+     * then never handed it on, so the hammer rang and nothing ever answered.
+     */
+    this._swingPending = false
+
+    // --- the creature's presentation (slice 10) -------------------------------
+    //
+    // Two clocks and a fade, all of them *presentation*. §6.1's states, §7.4's
+    // removal windows and §8.2's phase-out are decided in `creature.js`; what the
+    // world owns is how long the figure has been leaving, and how long ago it was
+    // placed, because the world is what owns a clock.
+    //
+    // `dismissElapsed` starts already past the end of the window, so the creature
+    // is absent on frame one and there is no opening apparition nobody asked for.
+    this.creatureView = new CreatureView(this.scene, { seed: this.seed })
+    this.dismissElapsed = beast.FADE_SECONDS.dismiss
+    this.dismissing = false
+    this.reemergeElapsed = beast.FADE_SECONDS.reemerge
+    this._creatureFacing = 0
     this.creatureAwareness = 0
     this._lampKey = ''
     this._candleKey = ''
@@ -337,6 +359,7 @@ export class LongQuietGame {
         this._updateStart(dt)
         break
     }
+    this._updateCreatureView(dt)
     this._syncHud()
   }
 
@@ -428,8 +451,12 @@ export class LongQuietGame {
 
     // §7.4: a swing is a press, and the hammer answers to the creature, not the
     // world. With nothing in reach it is simply noise, which is the point —
-    // swinging at the dark is how you get found.
+    // swinging at the dark is how you get found. The edge is *also* handed to
+    // `_updateCreature` on this frame, because `creatureStep` runs its capture test
+    // after the swing, and a hammer that connects on the frame it would otherwise
+    // have caught you is §6.1's promise that STAGGER cannot touch you.
     if (swing) {
+      this._swingPending = true
       this.soundEvents.push({
         kind: 'toll',
         radius: beast.SOUND_RADII.toll,
@@ -484,9 +511,10 @@ export class LongQuietGame {
    * creature's position is canonical too and every distance to the player goes
    * through `wrapDelta`. That is the seam §3.3's fold was built to leave.
    *
-   * Slice 10 adds the mesh. Until then this loop is invisible on purpose: §8.1's
-   * promise is that Act I cannot kill you, and nothing in this method can end a
-   * run while the hammer is untaken.
+   * Slice 10 hands `frame.swing` over and reads three presentation signals off the
+   * step: `phaseOut` for §8.2's departure, the banish for §7.4's, and the
+   * `dormant -> stalk` edge for §8.3's arrival. None of them are decisions — every
+   * one of them has already been made by the time this method is called.
    */
   _updateCreature(dt) {
     const player = { x: this.player.pos.x, z: this.player.pos.z, yaw: this.player.yaw }
@@ -514,7 +542,11 @@ export class LongQuietGame {
       playerPosition: player,
       distance,
       hammerPickup: this._hammerToll === true,
-      swing: false,
+      // §7.4. The edge is consumed here, once, and the toll sound was already
+      // queued by `_updateVerbs` — the hammer is heard *and* applied, which is why
+      // a connected swing still announces itself to a creature that is no longer
+      // listening
+      swing: this._swingPending === true,
       finale: this.state.finale,
       // §6.1 in one call: the telegraph "is gone when you look back", so the
       // sighting is the view cone and nothing else — not the creature's detection
@@ -525,14 +557,46 @@ export class LongQuietGame {
       searchPosition: null,
     })
     this._hammerToll = false
+    this._swingPending = false
     this.creature = step.creature
+    // §7.4's ladder is run-long, and `rules.js` owns the run-level copy that §9.1
+    // keeps across a capture. A connected swing is the *only* thing that advances
+    // it, so it has to be written back before the mirror runs — otherwise the
+    // mirror overwrites the increment the step just made, the counter stays on
+    // zero for the whole run, and every banish buys the first rung's eight seconds
+    // forever. This is the one line in the file that makes the ladder exist.
+    if (step.swing && step.swing.result === 'banish') {
+      this.state = { ...this.state, banishCount: step.creature.banishCount }
+    }
     this.creature = { ...this.creature, banishCount: this.state.banishCount, tier: rules.portalsShut(this.state.portals) }
     this.creatureAwareness = step.awareness
 
     if (step.to === 'stalk' && this.creature.state === 'stalk') this._walkCreature(dt, player)
     if (step.to === 'dormant' && step.from !== 'dormant') this.banishElapsed = 0
-    if (step.to === 'stalk' && step.from === 'dormant') this._reemerge(player, occluders)
+    if (step.to === 'stalk' && step.from === 'dormant') {
+      this._reemerge(player, occluders)
+      // §8.3 places it instantly; the arrival is faded in by the view so that a
+      // teleport two blocks away reads as something arriving rather than as a
+      // figure being switched on
+      this.reemergeElapsed = 0
+    }
+    if (step.phaseOut) this._beginDismissal()
+    else if (step.to === 'dormant' && step.from === 'stagger') this._beginDismissal()
     if (step.captured) this._capture()
+  }
+
+  /**
+   * _beginDismissal — the figure is leaving, and §8.2 / §7.4 both need it seen.
+   *
+   * A removal the player cannot watch is a removal they will read as a stutter, and
+   * §8.2 is the single most important rule in the anti-frustration section: the
+   * whole reason being cornered is survivable is that the player watches the thing
+   * that cornered them give up. The clock is presentation, so it lives here and
+   * not in `creatureStep`.
+   */
+  _beginDismissal() {
+    this.dismissing = true
+    this.dismissElapsed = 0
   }
 
   /**
@@ -575,8 +639,83 @@ export class LongQuietGame {
   }
 
   /**
-   * Act I opens with a sighting, and it is placed by the *opposite* rule to a
-   * re-emergence.
+   * _updateCreatureView — the whole of the Act I → Act II → capture → reset
+   * *presentation* cycle, in one method.
+   *
+   * Everything below the switch in `update` is a simulation that the rules already
+   * settled; this is the one place that turns the result into something on screen,
+   * and it is deliberately a single method so that "what does the game look like
+   * right now" has exactly one answer to read.
+   *
+   * The four frame channels and where each comes from:
+   *
+   *  - `distance` and `bearing` are measured to the *drawn* position, because the
+   *    eyes' pixel floor and §6.1's edge-of-vision angle are both statements about
+   *    what reaches the screen, not about the folded canonical frame;
+   *  - `dismiss` is the §8.2 phase-out and the §7.4 banish, both of which leave
+   *    the creature `dormant` — a state that draws nothing — and both of which have
+   *    to be seen;
+   *  - `sinceReemerge` is §8.3's arrival;
+   *  - `chaseSeconds` is §8.2's clock, used for the last-of-a-chase fade.
+   *
+   * The pose is computed by the pure module and the view only applies it. If this
+   * method ever starts deciding something, the gate has stopped being able to see
+   * it.
+   */
+  _updateCreatureView(dt) {
+    if (!this.creatureView || this.creatureView.disposed) return
+    const view = this.creatureView
+
+    // §9.3: the creature reset happens behind the black, and the world holds still
+    // behind the win card. Neither phase may show a figure. The title screen *may*
+    // show the Act I apparition, because §6.1's first sighting is the only thing on
+    // that screen that says there is something out here.
+    const phase = this.store.get().phase ?? this.phase
+    if (phase === PHASE.RESET || phase === PHASE.WON) {
+      view.present(beast.creaturePose(null))
+      return
+    }
+
+    if (this.dismissing) {
+      this.dismissElapsed += dt
+      if (this.dismissElapsed >= beast.FADE_SECONDS.dismiss) this.dismissing = false
+    }
+    this.reemergeElapsed += dt
+
+    // the creature's position is CANONICAL (slice 09's note) and everything drawn
+    // is not, so the fold happens here, in the one file that owns the wrap
+    const drawn = this.streetView.worldOf(this.creaturePosition)
+    const toCreatureX = this.player.pos.x - drawn.x
+    const toCreatureZ = this.player.pos.z - drawn.z
+    const distance = Math.hypot(toCreatureX, toCreatureZ)
+    const bearing = Math.atan2(toCreatureX, toCreatureZ) - this.player.yaw
+    // shortest-arc bearing, so a creature a few degrees behind the player's left
+    // shoulder is reported as a few degrees *left* and not as 350 degrees right
+    const signed = Math.atan2(Math.sin(bearing), Math.cos(bearing))
+    // it faces where it is going, and the camera is the only thing that knows
+    // which way "forward" is
+    this._creatureFacing = Math.atan2(-toCreatureX, -toCreatureZ)
+
+    const pose = beast.creaturePose(this.creature, {
+      time: this.animTime,
+      distance,
+      elapsed: this.dismissElapsed,
+      dismiss: this.dismissing ? 1 : 0,
+      sinceReemerge: this.creature.state === 'stalk' ? this.reemergeElapsed : null,
+      offset: view.flickerOffset,
+      chaseSeconds: this.creature.chaseSeconds ?? 0,
+      bearing: signed,
+      viewHalfFov: view.viewOf(this.camera).viewHalfFov,
+      view: view.viewOf(this.camera),
+    })
+    view.present(pose, { position: drawn, yaw: this._creatureFacing, camera: this.camera })
+  }
+
+  /**
+   * _firstSightingPoint — Act I opens with a sighting.
+   *
+   * Placed by the *opposite* rule to a re-emergence, which is the reason the method
+   * exists at all and why it cannot be folded into `_reemerge`.
    *
    * §8.3 exists so that something coming back is never a jump scare: minimum graph
    * distance, never in line of sight. A telegraph is the deliberate exception —
@@ -636,6 +775,13 @@ export class LongQuietGame {
    * does not touch it either, because §9.1's right-hand column is short on
    * purpose and breath is in neither column. Being caught costs you where you
    * were, not how tired you are.
+   *
+   * The presentation resets with everything else, and it resets to *absent* rather
+   * than to Act I's sighting. §9.3 says the creature reset happens behind the
+   * black, and the cross-fade is 1.1 s — exactly the length of the dismissal
+   * window — so the figure that hunted you is already gone before the screen
+   * starts going down, and the apparition that greets you out of the black is
+   * placed fresh, at the new loop's hashed sighting.
    */
   _capture() {
     this.state = rules.applyCapture(this.state)
@@ -650,6 +796,14 @@ export class LongQuietGame {
     this.hammerHold = 0
     this.banishElapsed = 0
     this._hammerToll = false
+    this._swingPending = false
+    // behind the black, per §9.3: no dismissal is drawn, the figure is simply not
+    // there any more, and the arrival clock starts run-out so the next Act I
+    // sighting is fully solid the moment the screen comes back
+    this.dismissing = false
+    this.dismissElapsed = beast.FADE_SECONDS.dismiss
+    this.reemergeElapsed = beast.FADE_SECONDS.reemerge
+    this.creatureView?.present(beast.creaturePose(null))
     this.addShake(0.9)
     this.player.enabled = false
     this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
@@ -788,6 +942,11 @@ export class LongQuietGame {
     this.hammerHold = 0
     this.banishElapsed = 0
     this._hammerToll = false
+    this._swingPending = false
+    this.dismissing = false
+    this.dismissElapsed = beast.FADE_SECONDS.dismiss
+    this.reemergeElapsed = beast.FADE_SECONDS.reemerge
+    this.creatureView?.present(beast.creaturePose(null))
     this._prompt = null
     for (const portal of this.streetView.portals) this.streetView.setPortalShut(portal.id, false)
     this.streetView.setHammerTaken(false)
@@ -827,6 +986,9 @@ export class LongQuietGame {
     this._resizeObserver?.disconnect()
     this.player.dispose()
     this.streetView.dispose()
+    // before the scene traversal below, and it removes its own root first, so the
+    // traversal never sees these geometries and disposes them a second time
+    this.creatureView?.dispose()
     const seenTextures = new Set()
     this.scene.traverse((object) => {
       if (object.geometry) object.geometry.dispose()

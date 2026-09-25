@@ -3644,6 +3644,540 @@ test('scripted run: the same input script produces the same trace (§15.3)', () 
 
 
 // ---------------------------------------------------------------------------
+// the creature's presentation and the capture loop (v2 slice 10)
+// ---------------------------------------------------------------------------
+//
+// WHAT IS ASSERTED HERE, AND WHY IT IS HERE AT ALL
+// -------------------------------------------------
+// Slice 10 is a *world* slice by the V2-PLAN's own gate vocabulary, and its checks
+// are supposed to live in `verify-world.mjs` — which does not run, and which slice
+// 14 owns. Taken literally that would leave the whole of the creature's visual
+// design unverified for five more slices, in a project whose defining constraint
+// (§16.1) is that it cannot be playtested.
+//
+// So the slice splits itself along §15.2's seam on purpose. `creatureView.js` draws,
+// and its checks are the world list parked at the bottom of `verify-world.mjs`; the
+// *policy* — which state reads as what, how big the eyes must be to survive fog,
+// when a removal is visible — is in `creature.js`, because it is numbers, and
+// numbers are testable in node today. Every assertion below is about a decision,
+// not about a triangle.
+
+section('Creature view and the capture loop (v2 slice 10)')
+
+/**
+ * The camera, restated from `world.js` rather than read out of a Three.js object,
+ * so this is a specification of the frame and not an echo of the code that reads
+ * it: a 72-degree *vertical* field at 16:9, which is what the gate's captures are
+ * taken at and therefore what §6.1's edge-of-vision angle is defined against.
+ */
+const VIEW_FOV = 72
+const VIEW_ASPECT = 16 / 9
+const VIEW_HALF_FOV = Math.atan(Math.tan((VIEW_FOV * Math.PI) / 360) * VIEW_ASPECT)
+
+/**
+ * The closest a §6.1 apparition or a §8.3 re-emergence can ever legally be, in
+ * metres: `REEMERGE_MIN_GRAPH_DISTANCE` hops of a 64 m grid taken diagonally, which
+ * is the *minimum* straight-line distance the graph allows. Every "reads at
+ * distance" claim in this section is measured here, at the worst range the design
+ * permits, because a promise checked at 20 m is not a promise at all.
+ */
+const FARTHEST_EVER = hood.BLOCK * Math.SQRT2 * beast.REEMERGE_MIN_GRAPH_DISTANCE
+
+test('the silhouette is a tall thin figure, built from one set of numbers', () => {
+  const S = beast.CREATURE_SHAPE
+  // §12.1's silhouette: thin IS the legibility argument, and 7:1 is twice as thin
+  // as a person. A body at this ratio still reads at FARTHEST_EVER; a body at a
+  // person's 3:1 does not, and the gate is the only place that can say so
+  assert.ok(Math.abs(S.height / S.shoulder - 7) < 1e-9, `the figure is ${(S.height / S.shoulder).toFixed(3)}:1, not 7:1`)
+  assert.ok(S.shoulder < 0.5, 'and that means genuinely narrow, not "roughly narrow"')
+  // the parts add up to the height, so the rig cannot be built twice and disagree
+  assert.ok(Math.abs(S.legLength + S.torsoLength - S.armRoot) < 1e-9, 'the shoulder line is leg + torso')
+  assert.equal(S.headCentre + S.headRadius, S.height, 'the crown is the stated height')
+  // and it stands clear of the two things it is always seen against, both from
+  // `streetView.js`: the 1.1–1.3 m frontage and the 5.2 m house wall
+  assert.ok(S.height > 1.3 * 2, 'twice the frontage, so it reads over the hedges')
+  assert.ok(S.height < 5.2, 'and under the roofline, because a landmark is not a horror')
+  // the eyes are on the head, and they are small
+  assert.ok(Math.abs(S.eyeHeight - S.headCentre) < S.headRadius, 'the eyes are inside the skull')
+  assert.ok(S.eyeSpread * 2 < S.headRadius * 2, 'and inside its width')
+  assert.ok(S.eyeRadius < 0.05, 'an eye, not a headlight')
+})
+
+test('every §6.1 state has a presentation, and the five tells are there', () => {
+  // the table covers the whole state list plus the two removals, so the view can
+  // never meet a state it has no row for
+  for (const state of beast.CREATURE_STATES) {
+    assert.ok(beast.PRESENTATION_STATES.includes(state), `${state} has no presentation row`)
+  }
+  assert.ok(beast.PRESENTATION_STATES.includes('dismissing'), 'a departure needs a row of its own')
+  // an unknown name is answered, not thrown: the render loop calls this 60x a second
+  assert.equal(beast.presentationFor('widdershins'), beast.presentationFor('dormant'))
+  assert.equal(beast.presentationFor(undefined), beast.presentationFor('dormant'))
+  // and a departure is the one row that draws while the state says it should not
+  assert.equal(beast.presentationFor('dormant').present, 0, 'dormant draws nothing')
+  assert.equal(beast.presentationFor('dismissing').present, 1, 'a departure draws')
+  // frozen, so art cannot drift at runtime
+  assert.ok(Object.isFrozen(beast.CREATURE_PRESENTATION))
+  assert.ok(Object.isFrozen(beast.CREATURE_PRESENTATION.telegraph.flicker))
+  // the five tells from the brief, one assertion each
+  assert.ok(beast.presentationFor('telegraph').flicker !== null, 'TELEGRAPH flickers')
+  assert.ok(beast.presentationFor('stalk').sway > 0 && beast.presentationFor('stalk').scan > 0, 'STALK ranges and scans')
+  assert.ok(beast.presentationFor('chase').sway < beast.presentationFor('stalk').sway, 'CHASE drifts less than a ranging creature')
+  assert.equal(beast.presentationFor('chase').scan, 0, 'and does not scan')
+  assert.equal(beast.presentationFor('stagger').recoil, 1, 'STAGGER recoils')
+  assert.equal(beast.presentationFor('enraged').redden, 1, 'ENRAGED is reddened')
+  // `edge` belongs to the ranging states and to nothing else — see the table's note
+  // on why it is a column rather than a test on `sway`
+  for (const state of beast.PRESENTATION_STATES) {
+    const expected = state === 'stalk' || state === 'reposition' ? 1 : 0
+    assert.equal(beast.presentationFor(state).edge, expected, `${state} must ${expected ? '' : 'not '}take the edge offset`)
+  }
+  for (const state of beast.PRESENTATION_STATES) {
+    if (state === 'enraged') continue
+    assert.equal(beast.presentationFor(state).redden, 0, `${state} must not be reddened`)
+  }
+})
+
+test('the five states do not read as one state — the tells are separated', () => {
+  // The whole premise of a per-state presentation is that a player can tell them
+  // apart in fog, in a second, without a HUD. That is a claim about *distances
+  // between numbers*, so it is asserted as distances and not as vibes.
+  const at = (state) => {
+    const pose = beast.creaturePose({ state }, { time: 2.5, distance: 30, viewHalfFov: VIEW_HALF_FOV })
+    return [pose.presence, pose.scale, Math.abs(pose.pitch), pose.eye]
+  }
+  const states = ['telegraph', 'stalk', 'chase', 'stagger', 'enraged']
+  for (const a of states) {
+    for (const b of states) {
+      if (a === b) continue
+      const [pa, sa, la, ea] = at(a)
+      const [pb, sb, lb, eb] = at(b)
+      const gap = Math.max(Math.abs(pa - pb), Math.abs(sa - sb), Math.abs(la - lb), Math.abs(ea - eb))
+      assert.ok(gap >= 0.05, `${a} and ${b} are only ${gap.toFixed(3)} apart in the frame`)
+    }
+  }
+  // and the ordering the brief asks for is a strict one, not a set of near-ties
+  const presence = states.map((s) => beast.presentationFor(s).presence)
+  assert.ok(
+    presence[0] < presence[1] && presence[1] < presence[2] && presence[2] <= presence[4],
+    `presence must rise telegraph < stalk < chase <= enraged: ${presence.join(', ')}`,
+  )
+  assert.equal(beast.presentationFor('chase').presence, 1, 'a chase is the full form')
+  assert.equal(beast.presentationFor('chase').flicker, null, 'and it never flickers')
+  // which is why CHASE and ENRAGED are told apart by scale and lean rather than by
+  // opacity — the finale is *more* solid, not differently solid
+  assert.ok(beast.presentationFor('enraged').scale > beast.presentationFor('chase').scale, 'the finale is bigger')
+  assert.ok(beast.presentationFor('enraged').lean > beast.presentationFor('chase').lean, 'and it is coming harder')
+  assert.ok(beast.presentationFor('enraged').eye > beast.presentationFor('chase').eye, 'with hotter eyes')
+})
+
+test('TELEGRAPH is mostly absent, and its beat is not a pulse a player can time', () => {
+  // a single sine is a machine: watch two apparitions and you have learned its
+  // period. The gate cannot prove a player will not learn it, but it can prove the
+  // signal is aperiodic over a sighting and mostly near zero
+  let near = 0
+  let total = 0
+  let peak = 0
+  for (let t = 0; t < 60; t += 1 / 60) {
+    const v = beast.apparitionFlicker(t)
+    assert.ok(v >= 0 && v <= 1, `out of range at ${t}: ${v}`)
+    if (v < 0.1) near += 1
+    peak = Math.max(peak, v)
+    total += 1
+  }
+  assert.ok(near / total > 0.2, `only ${((near / total) * 100).toFixed(0)}% of the time is it gone`)
+  assert.ok(peak > 0.8, `and it never actually appears: peak ${peak.toFixed(2)}`)
+  // a phase offset gives two sightings different beats, so a scene with two of
+  // them is not two things blinking in lockstep
+  let differs = 0
+  for (let t = 0; t < 10; t += 1 / 60) {
+    if (Math.abs(beast.apparitionFlicker(t, 0) - beast.apparitionFlicker(t, 1.3)) > 0.02) differs += 1
+  }
+  assert.ok(differs > 300, `two offsets are nearly identical (${differs} samples differ)`)
+  // and the telegraph's own row never lets it be fully solid
+  const row = beast.presentationFor('telegraph').flicker
+  assert.ok(row.depth > 0.5, 'it swings most of its range')
+  assert.ok(row.floor < 0.1, 'down to nearly nothing')
+  assert.equal(beast.apparitionFlicker(NaN), 0, 'and a missing clock is simply absent')
+})
+
+test('§6.1: a stalk sits at the edge of the frame and outside its own sight cone', () => {
+  // One number has to satisfy two rules at once, and this is where it is proven.
+  const edge = beast.stalkEdgeAngle(VIEW_HALF_FOV)
+  // inside the frame, or §6.1's STALK is a state the player never learns to read
+  assert.ok(edge < VIEW_HALF_FOV, `${((edge * 180) / Math.PI).toFixed(1)}deg is off-screen`)
+  assert.ok(edge > VIEW_HALF_FOV * 0.5, 'and it is at the edge, not in the middle of the frame')
+  // outside the creature's own cone, or the thing at the edge of your vision can
+  // see you — the one thing §6.1 says a stalk never does
+  assert.ok(edge > beast.SIGHT_HALF_ANGLE, 'the stalk must be outside the sight cone that found it')
+  // The margin has to be real, and it has to survive the narrowest window any real
+  // screen ships at — which is why the angle is a fraction of the half-field rather
+  // than a fixed number. `stalkEdgeAspectFloor` is where the two promises stop
+  // being simultaneously satisfiable, and the gate asserts the floor rather than
+  // pretending a square window keeps the design intact.
+  const floor = beast.stalkEdgeAspectFloor(VIEW_FOV)
+  assert.ok(floor > 1, `the floor is ${floor.toFixed(3)}:1, so a square window cannot hold both promises`)
+  assert.ok(floor < 4 / 3, `and 4:3 (${(4 / 3).toFixed(3)}) must be inside it, or every 4:3 monitor breaks the design`)
+  for (const aspect of [16 / 9, 16 / 10, 5 / 3, 3 / 2, 4 / 3]) {
+    assert.ok(aspect > floor, `the fixture aspect ${aspect.toFixed(3)} is below the floor ${floor.toFixed(3)}`)
+    const half = Math.atan(Math.tan((VIEW_FOV * Math.PI) / 360) * aspect)
+    const a = beast.stalkEdgeAngle(half)
+    assert.ok(a < half, `off-screen at ${aspect.toFixed(2)}:1`)
+    assert.ok(a > beast.SIGHT_HALF_ANGLE, `visible to itself at ${aspect.toFixed(2)}:1`)
+  }
+  // below the floor the figure still has to be *in* the frame — §6.1's promise is
+  // that the player sees it, and that promise does not have a minimum aspect
+  for (const aspect of [1, 3 / 4, 9 / 16]) {
+    const half = Math.atan(Math.tan((VIEW_FOV * Math.PI) / 360) * aspect)
+    assert.ok(beast.stalkEdgeAngle(half) < half, `off-screen at ${aspect.toFixed(2)}:1`)
+  }
+  // a nonsense camera is answered, not propagated
+  for (const bad of [0, NaN, -1]) {
+    assert.ok(Number.isFinite(beast.stalkEdgeAngle(bad)), `stalkEdgeAngle(${bad})`)
+  }
+  // and the pose applies it, proportionally to how near the frame edge the creature
+  // already is, and signed by which side it is on
+  const rolled = (bearing) => beast.creaturePose({ state: 'stalk' }, { bearing, viewHalfFov: VIEW_HALF_FOV }).roll
+  assert.equal(rolled(0), 0, 'a thing dead ahead is already being looked at, and is not dressed up')
+  assert.ok(rolled(-0.4) < 0, 'to the left rolls left')
+  assert.ok(rolled(0.4) > 0, 'and to the right rolls right')
+  assert.ok(Math.abs(rolled(-0.4) + rolled(0.4)) < 1e-12, 'and the two sides mirror')
+  // full effect at the frame edge, and never more than that
+  assert.ok(Math.abs(Math.abs(rolled(VIEW_HALF_FOV)) - edge) < 1e-12, 'by the documented angle, at the edge')
+  assert.ok(Math.abs(rolled(VIEW_HALF_FOV * 3)) === edge, 'and never more than it, however far off-axis')
+  // growing towards the edge, and linear in between
+  assert.ok(Math.abs(rolled(0.2)) < Math.abs(rolled(0.4)), 'the closer the edge, the harder the presentation')
+  assert.ok(Math.abs(Math.abs(rolled(0.4)) - Math.abs(rolled(0.2))) > 0.05, 'by a visible amount')
+  // a creature dead ahead is not rolled, and a chase is never rolled at all
+  assert.equal(beast.creaturePose({ state: 'chase' }, { bearing: -0.8, viewHalfFov: VIEW_HALF_FOV }).roll, 0, 'a chase is squared up to you')
+  for (const state of beast.PRESENTATION_STATES) {
+    if (beast.presentationFor(state).edge > 0) continue
+    assert.equal(rolled(0.7), rolled(0.7), 'sanity')
+    assert.equal(beast.creaturePose({ state }, { bearing: 0.7, viewHalfFov: VIEW_HALF_FOV }).roll, 0, `${state} must not take the edge offset`)
+  }
+})
+
+test('the eyes hold a pixel floor at the worst range the design permits', () => {
+  // "emissive eyes" and "reads at distance in fog" are one requirement, and this
+  // is the number that welds them together. At FARTHEST_EVER an anatomical eye is
+  // half a pixel; a half-pixel eye is not a dim eye, it is no eye.
+  const camera = { fov: VIEW_FOV, viewportHeight: 720 }
+  const base = beast.eyeWorldSize(0, camera)
+  const far = beast.eyeWorldSize(FARTHEST_EVER, camera)
+  assert.ok(far > base * 4, `at ${FARTHEST_EVER.toFixed(1)}m the eye is only ${far.toFixed(3)}m across`)
+  // and it really is at least EYE_PIXEL_FLOOR pixels, recomputed here rather than
+  // read back from the function under test
+  const pixels = (far * 720) / (2 * FARTHEST_EVER * Math.tan((VIEW_FOV * Math.PI) / 360))
+  assert.ok(pixels >= beast.EYE_PIXEL_FLOOR - 1e-9, `only ${pixels.toFixed(2)}px at ${FARTHEST_EVER.toFixed(1)}m`)
+  // close up it is a real eye and not a headlight, and the floor never engages
+  for (const d of [1, 2, 3, 5, 6]) {
+    assert.equal(beast.eyeWorldSize(d, camera), base, `the floor engaged at ${d}m`)
+  }
+  // past the crossover it grows linearly with distance and never dips
+  let previous = 0
+  for (let d = 6; d <= 140; d += 1) {
+    const size = beast.eyeWorldSize(d, camera)
+    assert.ok(size >= previous - 1e-12, `the eye shrank at ${d}m`)
+    previous = size
+  }
+  // the promise is about pixels, so it survives a different window
+  for (const height of [360, 720, 1080, 1440]) {
+    const size = beast.eyeWorldSize(FARTHEST_EVER, { fov: VIEW_FOV, viewportHeight: height })
+    const px = (size * height) / (2 * FARTHEST_EVER * Math.tan((VIEW_FOV * Math.PI) / 360))
+    assert.ok(Math.abs(px - beast.EYE_PIXEL_FLOOR) < 1e-9, `${height}px tall: ${px.toFixed(3)}px`)
+  }
+  // a degenerate camera gets the base size rather than an infinity
+  for (const bad of [0, -5, NaN, Infinity]) {
+    const size = beast.eyeWorldSize(bad, { viewportHeight: 0 })
+    assert.ok(Number.isFinite(size) && size > 0, `eyeWorldSize(${bad}) = ${size}`)
+  }
+})
+
+test('§7.4: the recoil is the banish window, not a second clock', () => {
+  // The displacement is read off `staggerSeconds`, the clock the state machine
+  // already keeps. A timer of its own could outlive the banish, and a figure
+  // flying away from a hammer that is no longer holding anything is the most
+  // obvious way this could have been built wrong.
+  const full = beast.STAGGER_SECONDS
+  assert.equal(beast.staggerRecoil({ state: 'stagger', staggerSeconds: full }), 1, 'full at the moment of the hit')
+  assert.equal(beast.staggerRecoil({ state: 'stagger', staggerSeconds: 0 }), 0, 'and nothing once it ends')
+  // monotonically down as the window runs out, and never negative past the end.
+  // `staggerSeconds` counts *down* from STAGGER_SECONDS, so elapsed time is the
+  // window minus it — walking the window forwards is walking the recoil backwards
+  let previous = Infinity
+  for (let elapsed = 0; elapsed <= full; elapsed += 0.05) {
+    const k = beast.staggerRecoil({ state: 'stagger', staggerSeconds: full - elapsed })
+    assert.ok(k <= previous + 1e-12, `the recoil grew at ${elapsed.toFixed(2)}s`)
+    assert.ok(k >= 0, `the recoil went negative at ${elapsed.toFixed(2)}s`)
+    previous = k
+  }
+  // Front-loaded but continuous: it snaps out, then decelerates into a stop, and
+  // reaches nothing only at the end. A linear slide reads as a fade rather than a
+  // hit, so the *shape* is asserted rather than assumed.
+  const atElapsed = (fraction) =>
+    beast.staggerRecoil({ state: 'stagger', staggerSeconds: full * (1 - fraction) })
+  assert.ok(beast.RECOIL.shape > 1, 'a struck body decelerates into a stop; the curve is convex')
+  assert.ok(atElapsed(0.1) > 0.75, `a tenth of the window in, only ${atElapsed(0.1).toFixed(2)} of the throw is left`)
+  assert.ok(atElapsed(0.5) < 0.5, `the halfway point has already recovered ${((1 - atElapsed(0.5)) * 100).toFixed(0)}% of it`)
+  assert.ok(atElapsed(0.9) < 0.05, `and the last tenth is the settle: ${atElapsed(0.9).toFixed(3)}`)
+  assert.equal(atElapsed(1), 0, 'and nothing once the window is spent')
+  assert.equal(atElapsed(2), 0, 'past the end as well')
+  // a creature that is not recoiling has no recoil, whatever else it is
+  for (const state of ['telegraph', 'stalk', 'chase', 'enraged', 'dormant']) {
+    assert.equal(beast.staggerRecoil({ state, staggerSeconds: full }), 0, `${state} must not recoil`)
+  }
+  assert.equal(beast.staggerRecoil(null), 0)
+  assert.equal(beast.staggerRecoil({ state: 'stagger', staggerSeconds: NaN }), 0)
+  // and the pose turns it into a throw, backwards, off the same number
+  const pose = beast.creaturePose({ state: 'stagger', staggerSeconds: full }, { time: 0 })
+  assert.equal(pose.push, beast.RECOIL.push)
+  assert.equal(pose.lift, beast.RECOIL.lift)
+  assert.equal(pose.spin, beast.RECOIL.spin)
+  assert.ok(pose.pitch < 0, 'thrown backwards, not forwards')
+})
+
+test('§8.2 and §7.4: a removal and an arrival are both drawn, and both are finite', () => {
+  // A banish the player cannot watch reads as a stutter, and §8.2 is the most
+  // important rule in the anti-frustration section: the reason being cornered is
+  // survivable is that you *watch* the thing that cornered you give up.
+  const d = beast.FADE_SECONDS.dismiss
+  assert.equal(beast.fadeOut(0), 1, 'a departure starts fully drawn')
+  assert.equal(beast.fadeOut(d / 2), 0.5)
+  assert.equal(beast.fadeOut(d), 0)
+  assert.equal(beast.fadeOut(d * 3), 0, 'and it does not come back')
+  // §9.3's cross-fade is 1.1 s, so the figure finishes leaving exactly as the
+  // screen starts going down. The two lengths are equal on purpose.
+  assert.equal(d, 1.1)
+  // the arrival is the same idea in reverse: §8.3's placement is instant, so the
+  // *drawing* of it is what stops it being a teleport
+  const r = beast.FADE_SECONDS.reemerge
+  assert.equal(beast.fadeIn(0), 0, 'an arrival starts invisible')
+  assert.equal(beast.fadeIn(r), 1)
+  assert.equal(beast.fadeIn(r * 4), 1)
+  assert.ok(r < d, 'arriving is quicker than leaving, or §8.3 costs the player patience')
+  // and the two are used exactly where §6.1 / §7.4 / §8.2 / §8.3 say they are
+  const leaving = beast.creaturePose({ state: 'dormant' }, { dismiss: 1, elapsed: 0 })
+  assert.equal(leaving.present, true, 'a banished creature is still visible on the frame it leaves')
+  assert.ok(leaving.presence > 0.5, 'and solid at the start of it')
+  assert.equal(leaving.state, 'dormant', 'while reporting its state honestly')
+  assert.equal(beast.creaturePose({ state: 'dormant' }, { dismiss: 1, elapsed: d }).present, false, 'and gone after')
+  assert.equal(beast.creaturePose({ state: 'dormant' }).present, false, 'a plain dormant draws nothing')
+  // the arrival only fades a stalk, because only a stalk is a re-emergence
+  assert.equal(beast.creaturePose({ state: 'stalk' }, { sinceReemerge: 0 }).presence, 0, 'nothing at the instant of placement')
+  assert.ok(beast.creaturePose({ state: 'stalk' }, { sinceReemerge: r }).presence > 0.5, 'and the figure once it has arrived')
+  assert.equal(
+    beast.creaturePose({ state: 'chase' }, { sinceReemerge: 0 }).presence,
+    beast.presentationFor('chase').presence,
+    'a chase was never placed, so it does not fade',
+  )
+})
+
+test('a chase fades towards §8.2\'s valve without ever reaching it', () => {
+  // The state machine owns the phase-out. The figure only *shows* the pressure
+  // building, and it must not get all the way to gone — a chase that visually
+  // vanished before the rule fired would be a second, silent phase-out, and one
+  // the player could not see coming.
+  const at = (seconds) => beast.creaturePose({ state: 'chase' }, { chaseSeconds: seconds }).presence
+  assert.equal(at(0), beast.presentationFor('chase').presence, 'a fresh chase is the full form')
+  const last = at(beast.CHASE_MAX_SECONDS)
+  assert.ok(last < at(0), 'and the last of one is dimmer')
+  assert.ok(last > beast.presentationFor('chase').presence * 0.7, `but not gone: ${last.toFixed(3)}`)
+  assert.ok(last > 0, 'never zero — the phase-out belongs to the state machine, not the pose')
+  // monotonic, and untouched when the clock is not running
+  let previous = Infinity
+  for (let s = 0; s <= beast.CHASE_MAX_SECONDS; s += 0.5) {
+    const v = at(s)
+    assert.ok(v <= previous + 1e-12, `the chase brightened at ${s}s`)
+    previous = v
+  }
+  assert.equal(beast.creaturePose({ state: 'chase' }).presence, at(0), 'an absent clock means an untouched pose')
+})
+
+test('creaturePose is total: no creature, no state, no camera, no clock, no number', () => {
+  // The render loop calls this sixty times a second behind everything else, and a
+  // throw here is a frozen tab rather than a missing shadow. Every hole has an
+  // answer, and the answers are the *safe* ones.
+  assert.equal(beast.creaturePose(null).present, false, 'no creature is no figure')
+  assert.equal(beast.creaturePose(undefined).state, 'dormant')
+  assert.equal(beast.creaturePose({}).state, 'dormant', 'a creature with no state is dormant')
+  assert.equal(beast.creaturePose({ state: 42 }).state, 'dormant', 'and so is a state that is not a string')
+  const hostile = {
+    time: NaN, distance: NaN, elapsed: NaN, offset: NaN,
+    bearing: NaN, viewHalfFov: NaN, chaseSeconds: NaN, sinceReemerge: NaN,
+    view: { fov: NaN, viewportHeight: NaN },
+  }
+  for (const state of beast.PRESENTATION_STATES) {
+    const pose = beast.creaturePose({ state }, hostile)
+    for (const [key, value] of Object.entries(pose)) {
+      if (typeof value === 'boolean' || key === 'state') continue
+      assert.ok(Number.isFinite(value), `${state}.${key} = ${value} is not a finite number`)
+      if (key === 'presence' || key === 'eye') {
+        assert.ok(value >= 0 && value <= 1, `${state}.${key} = ${value} left [0, 1]`)
+      }
+    }
+  }
+  // and no combination of absurd input can produce an absurd pose
+  for (const state of beast.PRESENTATION_STATES) {
+    for (const distance of [0, -1, 1e9, Infinity, NaN]) {
+      for (const time of [0, -1e9, Infinity, NaN]) {
+        const pose = beast.creaturePose({ state, staggerSeconds: time }, { distance, time })
+        assert.ok(pose.presence >= 0 && pose.presence <= 1, `${state} @ ${distance}m / ${time}s`)
+        assert.ok(pose.eyeSize > 0, `${state}: the eyes vanished @ ${distance}m`)
+        assert.ok(Number.isFinite(pose.pitch) && Number.isFinite(pose.roll), `${state}: a non-finite rotation`)
+      }
+    }
+  }
+  // a caller that passes nothing at all gets a usable pose, not a crash
+  const bare = beast.creaturePose({ state: 'chase' })
+  assert.equal(bare.present, true)
+  assert.ok(bare.eyeSize > 0)
+  assert.equal(bare.roll, 0, 'with no bearing there is no edge offset to apply')
+})
+
+test('creaturePose is a pure function — no clock of its own, no randomness', () => {
+  // §6.5's rule extended to the presentation: the same creature and the same frame
+  // give byte-identical numbers, forever. A pose that quietly read a clock or
+  // `Math.random` would make every capture a different screenshot and would put
+  // this code outside the reach of `verify.mjs` entirely.
+  const creature = beast.createCreature({ state: 'stagger', staggerSeconds: 0.8, awareness: 0.5 })
+  const frame = {
+    time: 7.25, distance: 33.5, elapsed: 0.2, offset: 1.1, sinceReemerge: 0.3,
+    chaseSeconds: 4, bearing: -0.3, viewHalfFov: VIEW_HALF_FOV,
+    view: { fov: VIEW_FOV, viewportHeight: 720 },
+  }
+  const first = beast.creaturePose(creature, frame)
+  for (let i = 0; i < 50; i++) {
+    assert.deepEqual(beast.creaturePose(creature, frame), first, `pose ${i} differed`)
+  }
+  // a fresh clone of the creature is the same creature
+  assert.deepEqual(beast.creaturePose({ ...creature }, frame), first)
+  // and the pose mutates nothing it was handed
+  const creatureBefore = JSON.stringify(creature)
+  beast.creaturePose(creature, frame)
+  assert.equal(JSON.stringify(creature), creatureBefore, 'creaturePose mutated the creature')
+  const frameBefore = JSON.stringify(frame)
+  beast.creaturePose(creature, frame)
+  assert.equal(JSON.stringify(frame), frameBefore, 'creaturePose mutated the frame')
+  // the tables it reads are frozen, so no amount of calling can drift the art
+  assert.ok(Object.isFrozen(beast.CREATURE_PRESENTATION.chase))
+  assert.ok(Object.isFrozen(beast.CREATURE_SHAPE))
+  assert.ok(Object.isFrozen(beast.RECOIL))
+  assert.ok(Object.isFrozen(beast.FADE_SECONDS))
+})
+
+test('§7.2: the awakening toll is the only door from Act I into Act II', () => {
+  // §8.1 says Act I cannot kill you, and §6.1 says a telegraph cannot be
+  // banished either — so the *only* edge out of TELEGRAPH that leads to a hunter
+  // is the pickup, and it must fire on the pickup and on nothing else ever.
+  // Asserted as a scan of the machine rather than as one example, because "and
+  // not before" is the half that is easy to get wrong.
+  const step = (creature, frame) => beast.creatureStep(creature, DT, { sounds: [], distance: 60, ...frame })
+  assert.equal(beast.inSightCone({ x: 0, z: 0, yaw: 0 }, { x: 0, z: -60 }), true, 'the fixture is a sighting in view')
+  for (let i = 0; i < 600; i++) {
+    const held = step(beast.createCreature({ state: 'telegraph' }), { sighting: true })
+    assert.equal(held.to, 'telegraph', `Act I ended on its own at frame ${i}`)
+    assert.equal(held.captured, false, '§8.1: Act I cannot kill you')
+    assert.equal(held.swing, null, 'and cannot be banished')
+  }
+  // the pickup toll is the awakening, and it is the one that works
+  const woken = step(beast.createCreature({ state: 'telegraph' }), { sighting: true, hammerPickup: true })
+  assert.equal(woken.to, 'stalk', '§7.2: the toll is the awakening')
+  assert.equal(woken.creature.hammerToll, true, 'and the flag rides on the creature, so it can toll once')
+  // and it cannot be repeated, because the creature is no longer in TELEGRAPH
+  assert.equal(step(woken.creature, { sighting: true, hammerPickup: true }).to, 'stalk', 'a second toll changes nothing')
+  // looking away is the *other* Act I exit, and it goes the other way
+  assert.equal(step(beast.createCreature({ state: 'telegraph' }), { sighting: false }).to, 'dormant', '§6.1: gone when you look back')
+  // and once awake, nothing puts it back to sleep: there is no edge into Act I
+  assert.notEqual(step(woken.creature, { sighting: false, hammerPickup: true }).to, 'telegraph', 'no edge back into Act I')
+})
+
+test('§9.1: a capture keeps the left column, resets the right, and permutes only the dressing', () => {
+  // The persistence table is the contract, and the easiest half to break by a
+  // careless refactor is the *right* column: a capture that quietly took a
+  // shuttered portal or the banish ladder with it would erase progress, and §8.5
+  // is explicit that it may not.
+  const earned = {
+    ...rules.createInitialState(hood.placeObjectives(1337, 1)),
+    portals: { A: true, B: true, C: false },
+    hammerHeld: true,
+    banishCount: 4,
+  }
+  earned.dusk = rules.duskForPortals(earned.portals)
+  const caught = rules.applyCapture(earned)
+  // keeps
+  assert.deepEqual(caught.portals, earned.portals, '§9.1: shuttered portals are permanent')
+  assert.equal(caught.hammerHeld, true, '§9.1: the hammer is not dropped')
+  assert.equal(caught.banishCount, 4, '§9.1: the banish ladder is run-long')
+  assert.equal(caught.dusk, earned.dusk, '§3.7: dusk tracks portals, never the loop')
+  // resets
+  assert.deepEqual(caught.player, { x: hood.SPAWN.position.x, z: hood.SPAWN.position.z }, 'and position returns to spawn')
+  assert.equal(caught.creature.reemergenceCount, 0, '§9.1: the pressure axis is the thing that resets')
+  assert.equal(caught.creature.awareness, 0)
+  assert.equal(caught.creature.state, 'stalk', '§9.1: back to STALK, because the hammer is still held')
+  assert.deepEqual(caught.sounds, [])
+  // increments
+  assert.equal(caught.loop, earned.loop + 1, '§9.2: the capture counter counts captures only')
+  // and the creature follows the same predicate the state does
+  const beforeHammer = rules.applyCapture({ ...earned, hammerHeld: false })
+  assert.equal(beforeHammer.creature.state, 'telegraph', 'Act I again, if the hammer was never collected')
+  assert.equal(beforeHammer.hammerHeld, false, 'and the hammer is still not held')
+  // the fixture pass is keyed on exactly that counter, so a capture permutes the
+  // dressing and nothing else — the streets and the objectives do not move
+  const pass1 = hood.fixturePass(1337, earned.loop)
+  const pass2 = hood.fixturePass(1337, caught.loop)
+  assert.notEqual(hood.fixtureSignature(pass2), hood.fixtureSignature(pass1), '§3.6: the dressing moves')
+  assert.equal(
+    hood.objectivesSignature(earned.objectives),
+    hood.objectivesSignature(caught.objectives),
+    'and the objectives do not',
+  )
+  assert.equal(hood.fixtureSignature(hood.fixturePass(1337, caught.loop)), hood.fixtureSignature(pass2), 'a loop is a fixed point')
+})
+
+test('the §7.4 ladder survives the mirror the world writes it back through', () => {
+  // This guards a real bug that shipped in slice 09: the world mirrored
+  // `state.banishCount` onto the creature every frame, silently overwriting the
+  // increment `creatureStep` had just made — so the ladder never moved and every
+  // banish in the run bought the first rung's eight seconds. The invariant that
+  // closes it is that the mirror is idempotent: writing the creature's own count
+  // back into the run is a no-op, and doing it twice cannot double-count.
+  const mirror = (creature, state) => ({ state, creature: { ...creature, banishCount: state.banishCount } })
+  let creature = beast.createCreature({ state: 'stalk', banishCount: 0 })
+  let state = { banishCount: 0 }
+  for (let rung = 1; rung <= 6; rung++) {
+    const step = beast.creatureStep(creature, DT, { distance: 2, swing: true })
+    assert.equal(step.swing.result, 'banish', `swing ${rung} did not connect`)
+    assert.equal(step.creature.banishCount, rung, `the ladder is on rung ${rung}`)
+    // the world's order: adopt the creature's count, *then* mirror
+    state = { banishCount: step.creature.banishCount }
+    creature = mirror(step.creature, state).creature
+    assert.equal(creature.banishCount, rung, 'the mirror clobbered the increment')
+    // and the mirror is idempotent, which is what makes the write-back safe
+    assert.equal(mirror(creature, state).creature.banishCount, state.banishCount)
+    // §7.4's window follows the rung, and the cap holds
+    assert.equal(step.banishSeconds, beast.banishDuration(rung), `rung ${rung} bought the wrong window`)
+    assert.ok(step.banishSeconds <= beast.BANISH_DURATION_CAP)
+    // run the removal out, then put a fresh hunter back in reach for the next swing
+    let elapsed = 0
+    while (elapsed < beast.STAGGER_SECONDS + DT) {
+      creature = beast.creatureStep(creature, DT, { distance: 60, sounds: [] }).creature
+      elapsed += DT
+    }
+    assert.equal(creature.state, 'dormant', `rung ${rung} did not complete its removal`)
+    creature = beast.createCreature({ ...creature, state: 'stalk' })
+    creature = mirror(creature, { banishCount: creature.banishCount }).creature
+  }
+  assert.equal(creature.banishCount, 6)
+  assert.equal(rules.applyCapture({ banishCount: creature.banishCount }).banishCount, 6, '§9.1: it survives a capture')
+  // and a swing at nothing moves no rung at all
+  const miss = beast.creatureStep(beast.createCreature({ state: 'stalk', banishCount: 3 }), DT, {
+    distance: beast.BANISH_RANGE + 0.1, swing: true,
+  })
+  assert.equal(miss.swing.result, 'miss')
+  assert.equal(miss.creature.banishCount, 3, 'a swing at the dark buys nothing')
+})
+
+// ---------------------------------------------------------------------------
 // PRNG + determinism (the learnable pattern)
 // ---------------------------------------------------------------------------
 
