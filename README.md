@@ -27,7 +27,7 @@ cost_usd: 0
 pure_checks: 35
 world_checks: 23
 build: pass
-deployed_url: "https://bell-loop-m7xph7s6z-project-by-aditya.vercel.app"
+deployed_url: "https://space-bunny.vercel.app"
 screenshots: ["cycle30-title.png", "cycle30-entry.png", "lit-candle.png", "cycle30-shrine.png", "cycle30-open-door.png", "cycle30-reset.png", "cycle30-pause.png", "cycle30-win.png", "cycle30-short-landscape.png", "cycle24-entry.png", "cycle20-door.png", "cycle18-reset.png", "cycle22-pause.png"]
 ---
 
@@ -48,7 +48,7 @@ This branch is a benchmark result built from `main` checkpoint `ea9affe`. The co
 | Checkpoint branch | `main` |
 | Checkpoint commit | `ea9affe` |
 | Status | Candidate |
-| Deployment | [Vercel production](https://bell-loop-m7xph7s6z-project-by-aditya.vercel.app) |
+| Deployment | [Vercel production](https://space-bunny.vercel.app) |
 
 ## Stats
 
