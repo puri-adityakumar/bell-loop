@@ -113,6 +113,60 @@ export function applyPortalHold(state, portalId, dt, holding) {
   }
 }
 
+/**
+ * The dusk curve, and the fog it drives (§3.7, §12.1).
+ *
+ * These numbers are RULES rather than art direction, and that is the whole reason
+ * they live here instead of in the renderer: "the fog closes as the run advances"
+ * is a promise the design makes to the player in §4 (dusk as a clock — the player
+ * always knows how far through the run they are without reading a number), so it
+ * has to be a pure function `verify.mjs` can fail on. A density table typed
+ * straight into `world.js` would be a number nobody can assert, and §3.7's
+ * "never driven by captures" would be a comment instead of a rule.
+ *
+ * The colours are NOT here. §12.3's palette anchors stay in the view layer
+ * (`streetView.js`), because a hex value is an art decision and this file is the
+ * rules; the split is deliberate and is the same split §15.2 draws between the
+ * two harnesses.
+ */
+export const DUSK_FOG = Object.freeze([
+  Object.freeze({ portals: 0, density: 0.01 }),
+  Object.freeze({ portals: 1, density: 0.0135 }),
+  Object.freeze({ portals: 2, density: 0.018 }),
+  Object.freeze({ portals: 3, density: 0.026 }),
+])
+
+/** Dusk below zero or above one is a caller bug, not a mood; clamp it. */
+export function fogDensityForDusk(dusk) {
+  const t = Number.isFinite(dusk) ? Math.max(0, Math.min(1, dusk)) : 0
+  const last = DUSK_FOG.length - 1
+  for (let i = 0; i < last; i += 1) {
+    const from = DUSK_FOG[i]
+    const to = DUSK_FOG[i + 1]
+    if (t <= to.portals / PORTAL_IDS.length) {
+      const span = to.portals / PORTAL_IDS.length - from.portals / PORTAL_IDS.length
+      const k = span > 0 ? (t - from.portals / PORTAL_IDS.length) / span : 0
+      return from.density + (to.density - from.density) * Math.max(0, Math.min(1, k))
+    }
+  }
+  return DUSK_FOG[last].density
+}
+
+/**
+ * fogVisibility — the distance at which fog is half opaque, metres.
+ *
+ * `FogExp2` is exp(-(d * density)^2), so half opacity sits at sqrt(ln 2) /
+ * density. It is a real distance rather than a feel-good number because §4
+ * promises the fog is a clock the player can read, and a clock nobody can convert
+ * to metres is a clock that cannot be balanced — the whole of §11.3 rests on the
+ * creature's 20 m detection range meaning something relative to how far you can
+ * see.
+ */
+export function fogVisibility(density) {
+  if (!Number.isFinite(density) || density <= 0) return Infinity
+  return Math.sqrt(Math.LN2) / density
+}
+
 // ---------------------------------------------------------------------------
 // breath (§7.3)
 // ---------------------------------------------------------------------------

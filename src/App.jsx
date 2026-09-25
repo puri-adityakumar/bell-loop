@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AudioManager } from './game/audio.js'
 import { PHASE, createInitialState, createStore, hudSnapshot } from './game/loop.js'
-import { BellLoopGame } from './game/world.js'
+import { LongQuietGame as BellLoopGame } from './game/world.js'
 import Hud from './ui/Hud.jsx'
 import StartOverlay from './ui/StartOverlay.jsx'
 import WinOverlay from './ui/WinOverlay.jsx'

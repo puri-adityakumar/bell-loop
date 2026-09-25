@@ -1850,6 +1850,264 @@ function sightingScript() {
 
 
 // ---------------------------------------------------------------------------
+// the swap (v2 slice 09): what the view layer draws, and the rule it draws it from
+// ---------------------------------------------------------------------------
+
+section('The swap (v2 slice 09)')
+
+/**
+ * The canonical draw window, restated from `neighborhood.js` rather than from the
+ * view layer, so this is a specification of the wrap and not an echo of the code
+ * that implements it: the tile that is drawn is one period wide, starting at the
+ * western face of block 0.
+ */
+const WINDOW_MIN = hood.roadAxisToWorld(0)
+const WINDOW_MAX = WINDOW_MIN + hood.WORLD_EXTENT
+
+/** The AABB a structural fixture contributes to the collider set. */
+function fixtureBox(fixture) {
+  return {
+    x0: fixture.x - fixture.w / 2,
+    x1: fixture.x + fixture.w / 2,
+    z0: fixture.z - fixture.d / 2,
+    z1: fixture.z + fixture.d / 2,
+    kind: fixture.kind,
+  }
+}
+
+test('the wrapped copies cover the player in all four directions', () => {
+  // the rule: after snapping, the player's position in the copy's own frame is
+  // inside the tile that copy draws. `round(x / WORLD_EXTENT)` is 32 m out, and
+  // the error hides in one strip of the tile, which is exactly why it is asserted
+  // over a grid rather than at four hand-picked points
+  for (let i = -30; i <= 30; i += 1) {
+    for (const x of [i * 15, i * 15.5 + 0.25, i * 63.9]) {
+      const periods = Math.floor((x - 2 * WINDOW_MIN) / hood.WORLD_EXTENT)
+      const origin = WINDOW_MIN + periods * hood.WORLD_EXTENT
+      const local = x - origin
+      assert.ok(
+        local >= WINDOW_MIN && local < WINDOW_MAX,
+        `x=${x} folded to ${local}, outside the drawn tile [${WINDOW_MIN}, ${WINDOW_MAX})`,
+      )
+    }
+  }
+  // and the four directions, by hand, because this is the check the manual pass
+  // for this slice is looking at
+  for (const x of [240, -240, 0, 1, -1, hood.WORLD_HALF, -hood.WORLD_HALF, 896, -896]) {
+    const periods = Math.floor((x - 2 * WINDOW_MIN) / hood.WORLD_EXTENT)
+    const local = x - (WINDOW_MIN + periods * hood.WORLD_EXTENT)
+    assert.ok(local >= WINDOW_MIN && local < WINDOW_MAX, `x=${x} is not inside the drawn tile`)
+  }
+  // the fold window and the draw window really are 32 m out of step, so a check
+  // written against the fold would not have caught the bug
+  assert.notEqual(WINDOW_MIN, -hood.WORLD_HALF, 'the draw window is not the fold window')
+  assert.equal(WINDOW_MAX - WINDOW_MIN, hood.WORLD_EXTENT, 'and the tile is exactly one period')
+})
+
+test('the collider set is correct after a fixture permutation', () => {
+  for (const loop of VERIFY_LOOPS) {
+    const pass = hood.fixturePass(1337, loop)
+    const boxes = pass.fixtures.filter((fixture) => fixture.collides).map(fixtureBox)
+    assert.ok(boxes.length > 40, `loop ${loop} produced only ${boxes.length} colliders`)
+    // and the pass dresses all four frontages of the block, not two of them: a
+    // fixture pass that skips a side is invisible in a screenshot and is the
+    // shape a "half the world is empty" bug takes
+    for (const side of hood.SIDE_NAMES) {
+      const dressed = pass.fixtures.filter((fixture) => fixture.collides && fixture.lot === side).length
+      assert.ok(dressed > 8, `loop ${loop}: only ${dressed} colliders on the ${side} lots`)
+    }
+    for (const box of boxes) {
+      // rule 1, as a collider rather than as a fixture: nothing solid may stand
+      // in a road, in any of the four directions
+      for (let axis = 0; axis < hood.GRID; axis += 1) {
+        const line = hood.roadAxisToWorld(axis)
+        for (const [lo, hi] of [
+          [line - hood.STREET_HALF_WIDTH, line + hood.STREET_HALF_WIDTH],
+          [-hood.WORLD_HALF, hood.WORLD_HALF],
+        ]) {
+          const inRoad = box.z1 > lo && box.z0 < hi
+          if (!inRoad) continue
+          const acrossX = box.x0 < line + hood.STREET_HALF_WIDTH && box.x1 > line - hood.STREET_HALF_WIDTH
+          const acrossZ = box.z0 < line + hood.STREET_HALF_WIDTH && box.z1 > line - hood.STREET_HALF_WIDTH
+          assert.ok(!(acrossX || acrossZ), `loop ${loop}: a ${box.kind} is standing in the road at x=${line}`)
+        }
+      }
+    }
+    // rules 2 and 3, restated against the boxes the view layer actually builds
+    for (const anchor of pass.objectives.all) {
+      const approach = hood.lotApproach(anchor.lot)
+      for (const box of boxes) {
+        assert.ok(
+          !hood.rectsOverlap(box, approach),
+          `loop ${loop}: a ${box.kind} blocks the approach to ${anchor.id}`,
+        )
+      }
+    }
+    // rule 4: nothing the player can be inside of, at the point they wake up
+    const spawn = hood.SPAWN.position
+    for (const box of boxes) {
+      const inside =
+        spawn.x > box.x0 - 0.36 && spawn.x < box.x1 + 0.36 && spawn.z > box.z0 - 0.36 && spawn.z < box.z1 + 0.36
+      assert.ok(!inside, `loop ${loop}: a ${box.kind} is on the spawn point`)
+    }
+  }
+})
+
+test('the collider set is a function of the loop and not of the build order', () => {
+  const boxesFor = (order) =>
+    order
+      .flatMap(({ cx, cz }) => hood.chunkFixtures(1337, 2, cx, cz, hood.reservedLots(hood.placeObjectives(1337))))
+      .filter((fixture) => fixture.collides)
+      .map(fixtureBox)
+      .map((box) => `${box.x0},${box.z0},${box.x1},${box.z1},${box.kind}`)
+  const inOrder = []
+  for (let cx = 0; cx < hood.GRID; cx += 1) for (let cz = 0; cz < hood.GRID; cz += 1) inOrder.push({ cx, cz })
+  const forward = boxesFor(inOrder)
+  // as a SET, not as a sequence: §3.2's contract is that the world a run draws
+  // does not depend on the order the chunks were built in, and instance indices
+  // are exactly the thing that legitimately changes
+  const shuffled = boxesFor([...inOrder].reverse()).sort()
+  assert.deepEqual(shuffled, [...forward].sort(), 'generation order changed the collider set')
+  assert.equal(new Set(forward).size, forward.length, 'two fixtures share a footprint')
+
+  // and the permuted loop really is a different world: a fixture pass that never
+  // changes is a silent failure, and the collider set is where it would show
+  const loop1 = hood.fixturePass(1337, 1)
+  const loop2 = hood.fixturePass(1337, 2)
+  assert.notEqual(hood.fixtureSignature(loop1), hood.fixtureSignature(loop2), 'loops 1 and 2 are identical')
+  assert.notEqual(
+    loop1.fixtures.filter((f) => f.collides).map(fixtureBox).map((b) => b.kind).join(''),
+    loop2.fixtures.filter((f) => f.collides).map(fixtureBox).map((b) => b.kind).join(''),
+    'the two loops have the same structural dressing',
+  )
+  // the geometry underneath is fixed for the run, which is the whole point
+  assert.equal(hood.placeObjectives(1337, 1).signature, hood.placeObjectives(1337, 2).signature)
+})
+
+test('the fog closes as the run advances', () => {
+  // one stage per portal shut, plus the stage the run opens in
+  const stages = [0, 1, 2, 3].map((shut) => rules.fogDensityForDusk(shut / hood.PORTAL_IDS.length))
+  assert.equal(stages.length, 4, 'three portals, four stages')
+  for (let i = 1; i < stages.length; i += 1) {
+    assert.ok(stages[i] > stages[i - 1], `fog did not close at portal ${i}: ${stages}`)
+  }
+  const open = rules.fogVisibility(stages[0])
+  const finale = rules.fogVisibility(stages[stages.length - 1])
+  assert.ok(Number.isFinite(open) && open > 60, `Act I should see at least 60 m, got ${open}`)
+  assert.ok(open / finale > 2, `the finale should close the world by half, got ${open / finale}`)
+  // the exact values a player would see, and the clamp
+  assert.equal(rules.fogDensityForDusk(0), rules.DUSK_FOG[0].density)
+  assert.equal(rules.fogDensityForDusk(1), rules.DUSK_FOG[3].density)
+  assert.equal(rules.fogDensityForDusk(-4), rules.DUSK_FOG[0].density, 'a negative dusk is clamped')
+  assert.equal(rules.fogDensityForDusk(9), rules.DUSK_FOG[3].density, 'a dusk past the end is clamped')
+  assert.equal(rules.fogVisibility(0), Infinity, 'no fog means no horizon')
+  // §3.7: the fog is keyed to progress, so a capture cannot reopen the world
+  const state = rules.createInitialState(hood.placeObjectives(1337))
+  const shut = rules.applyPortalHold({ ...state, progress: { A: 0.999 } }, 'A', 1 / 60, true)
+  assert.equal(shut.dusk > 0, true, 'the first portal advanced dusk')
+  const caught = rules.applyCapture(shut)
+  assert.equal(caught.dusk, shut.dusk, 'a capture changed the dusk')
+  assert.equal(rules.fogDensityForDusk(caught.dusk), rules.fogDensityForDusk(shut.dusk))
+})
+
+const STREET_VIEW_SOURCE = readFileSync(new URL('./src/game/streetView.js', import.meta.url), 'utf8')
+const WORLD_SOURCE = readFileSync(new URL('./src/game/world.js', import.meta.url), 'utf8')
+const APP_SOURCE = readFileSync(new URL('./src/App.jsx', import.meta.url), 'utf8')
+
+test('the view layer is drawn from the pure modules and never from v1', () => {
+  // §15.1's split, asserted rather than described: `streetView.js` may reach for
+  // the generator and the AI's occluder table, and for nothing else
+  assert.equal(/from ['"]\.\/maze\.js['"]/.test(STREET_VIEW_SOURCE), false, 'streetView imports v1 maze.js')
+  assert.equal(/from ['"]\.\/loop\.js['"]/.test(STREET_VIEW_SOURCE), false, 'streetView imports v1 loop.js')
+  assert.equal(/from ['"]three['"]/.test(STREET_VIEW_SOURCE), true, 'streetView should be the Three.js half')
+  for (const module of ['./neighborhood.js', './creature.js']) {
+    assert.ok(STREET_VIEW_SOURCE.includes(`from '${module}'`), `streetView should import ${module}`)
+  }
+  // and the world adopted the v2 simulation rather than the v1 one
+  assert.equal(/from ['"]\.\/maze\.js['"]/.test(WORLD_SOURCE), false, 'world.js still imports v1 maze.js')
+  for (const module of ['./streetView.js', './creature.js', './rules.js', './neighborhood.js']) {
+    assert.ok(WORLD_SOURCE.includes(`from '${module}'`), `world.js should import ${module}`)
+  }
+  // v1 is still on disk (slice 16 deletes it) and nothing reaches it any more
+  assert.equal(/from ['"]\.\/maze\.js['"]/.test(APP_SOURCE), false, 'App.jsx still imports v1 maze.js')
+  // a comment may say "shrines" — this file's own header does — but no code may
+  assert.equal(/SHRINE_IDS/.test(WORLD_SOURCE), false, 'world.js still uses the v1 shrine ids')
+  assert.equal(/this\.shrines\b/.test(WORLD_SOURCE), false, 'world.js still holds shrines')
+  assert.equal(/isInsideChamber\(/.test(WORLD_SOURCE), false, 'world.js still calls v1 win geometry')
+})
+
+test('the swap is one line of App.jsx', () => {
+  // §15.1: the React side changes at the line that constructs the game class and
+  // nowhere else, which is what makes the whole build revertible
+  const constructions = APP_SOURCE.match(/new\s+\w*Game\s*\(/g) ?? []
+  assert.equal(constructions.length, 1, `App.jsx constructs a game ${constructions.length} times`)
+  const worldImports = APP_SOURCE.match(/from '\.\/game\/world\.js'/g) ?? []
+  assert.equal(worldImports.length, 1, 'App.jsx imports world.js once')
+  const localName = /import\s*\{\s*(\w+)(?:\s+as\s+(\w+))?\s*\}\s*from\s*'\.\/game\/world\.js'/.exec(APP_SOURCE)
+  assert.ok(localName, 'App.jsx imports the game class from world.js')
+  const bound = localName[2] ?? localName[1]
+  assert.ok(
+    new RegExp(`new\\s+${bound}\\s*\\(`).test(APP_SOURCE),
+    `App.jsx binds ${localName[1]} but constructs ${bound}`,
+  )
+})
+
+test('a scripted run: three portals, a capture in the middle, and the exit', () => {
+  // the §10.5 shape end to end, in pure functions: progress survives a capture,
+  // the finale opens on the third portal and only the third, and the win needs
+  // both the geometry and the flag
+  let state = rules.createInitialState(hood.placeObjectives(1337))
+  assert.equal(state.finale, false)
+  const shutIn = []
+  for (const id of hood.PORTAL_IDS) {
+    // a capture halfway through the run, between the first and second portal
+    if (id === 'B') {
+      state = rules.applyCapture(state)
+      assert.equal(state.loop, 2, 'the capture counter advanced')
+      assert.equal(state.portals.A, true, '§5.3: a shut portal is permanent')
+    }
+    // hold E long enough to finish the shutdown
+    let guard = 0
+    while (!state.portals[id] && guard < 600) {
+      state = rules.applyPortalHold(state, id, 1 / 60, true)
+      guard += 1
+    }
+    assert.equal(state.portals[id], true, `portal ${id} never shut`)
+    assert.equal(state.finale, id === 'C', `the finale state after ${id} is wrong`)
+    shutIn.push(id)
+    state = { ...state, progress: { ...state.progress, [id]: 0 } }
+  }
+  assert.deepEqual(shutIn, [...hood.PORTAL_IDS], 'all three, in order')
+  assert.equal(state.dusk, 1, 'the run is as dark as it gets')
+  assert.equal(state.finale, true)
+  // the exit: geometry alone is not the win, and the flag alone is not either
+  const exit = state.exitAnchor.position
+  assert.equal(rules.checkExitWin(state, { x: exit.x, z: exit.z }), true, 'standing in the exit did not win')
+  assert.equal(rules.checkExitWin(state, { x: exit.x + 3, z: exit.z }), false, 'won from three metres away')
+  assert.equal(
+    rules.checkExitWin({ ...state, finale: false }, { x: exit.x, z: exit.z }),
+    false,
+    'won without the finale',
+  )
+  // and a replay of the same run produces the same state object, field for field
+  const replay = (() => {
+    let next = rules.createInitialState(hood.placeObjectives(1337))
+    for (const id of hood.PORTAL_IDS) {
+      if (id === 'B') next = rules.applyCapture(next)
+      let guard = 0
+      while (!next.portals[id] && guard < 600) {
+        next = rules.applyPortalHold(next, id, 1 / 60, true)
+        guard += 1
+      }
+      next = { ...next, progress: { ...next.progress, [id]: 0 } }
+    }
+    return next
+  })()
+  assert.equal(JSON.stringify(replay), JSON.stringify(state), 'the same script produced a different run')
+})
+
+
+// ---------------------------------------------------------------------------
 // PRNG + determinism (the learnable pattern)
 // ---------------------------------------------------------------------------
 

@@ -51,6 +51,7 @@ Branch: `cline/space-bunny-alpha`
 | 06 creature.js awareness + state machine | 1411e29 | 101/101 | non-interactive background cline per slice (no tmux); 7 states incl. STAGGER/REPOSITION; awareness held by sight |
 | 07 pathing + the two ladders | (this commit) | 115/115 | BFS on the 49-node street graph; §7.4 ladder 8→24 capped; §11.2 aggression strictly up, delay strictly down; §8.2 phase-out at 12 s; §8.3 placement cascade; §11.3 pure trend |
 | 08 player breath + two verbs | (this commit) | 123/123 | +8 checks; `player.js` lost its `three` import (Vec3/Vec2) so §15.1's "pure, importable by verify.mjs" is now literally true; E=interact hold, LMB=swing edge; exhausted breath is a continuous `still` event on the creature's table |
+| 09 THE SWAP | (this commit) | 130/130 | `streetView.js` (49 chunks x 3 wrapped copies, ~760 colliders, 18 instanced pools); `world.js` rewritten as `LongQuietGame` on the v2 simulation; `App.jsx` changed at exactly one line; v1 `maze.js`/`loop.js` now dead but not deleted |
 
 ### Slice 08 decisions (recorded for the next slice)
 
@@ -82,6 +83,59 @@ Branch: `cline/space-bunny-alpha`
   `BREATH_DRAIN_PER_SEC`, dropping the stride gate, and emitting a footstep per frame
   are each caught (the last two by the sound-table and standing-still checks).
 
+### Slice 09 decisions (recorded for the next slice)
+
+- **THE WRAP IS A DRAW-WINDOW PROBLEM, NOT A FOLD PROBLEM.** The obvious snap,
+  `round(x / WORLD_EXTENT) * WORLD_EXTENT`, is 32 m out: the block grid runs from
+  the first road axis to one block *past* the last, so the fold window
+  `[-224, +224)` and the drawn tile `[-192, +256)` are out of step. The error
+  hides in one 32 m strip along the western edge, where the player stands on bare
+  asphalt with the neighbourhood 32 m behind them. `originFor` in `streetView.js`
+  derives the period index from `roadAxisToWorld(0)` instead, and `verify.mjs`
+  asserts the folded position is inside the tile over a 3,000-point grid plus the
+  four directions by hand. This is the single most valuable thing the slice found.
+- **THE PLAYER NEVER WRAPS; THE WORLD DOES.** `recentre()` moves the whole street
+  group by whole periods, nearest copy to the player, and the collider and
+  occluder lists are composed against the same origin — so "walking into a hedge
+  collides" cannot decay into "walking into the same hedge 448 m away does not".
+  Only the canonical copy contributes colliders (760 boxes, not 1,800).
+- **THE EXIT CAR IS PARKED BESIDE ITS ANCHOR, NEVER ON IT.** `isInsideExit` is a
+  1.15 m radius and the player radius is 0.36 m, so a car body centred on the
+  anchor makes the win condition geometrically unreachable. The anchor sits at the
+  driver's door instead.
+- **CANONICAL VS WORLD FRAME IS NOW EXPLICIT.** Anchors, the creature's position
+  and the AI's occluders are all canonical (folded); the player and everything
+  drawn are not. Every crossing goes through `streetView.worldOf` or
+  `creature.js`'s `wrapDelta` — including the win test, which re-frames
+  `state.exitAnchor` before handing it to `rules.checkExitWin` so §10.4's rule
+  stays the pure one slice 05 asserted.
+- **TELEGRAPH PLACEMENT IS §8.3 INVERTED, ON PURPOSE.** A re-emergence must never
+  be in line of sight; a telegraph must be, or §6.1's "appears at long range and is
+  gone when you look back" is not a sentence. Same distance floor, inverted sight
+  rule, hashed so a replay is the same apparition. `sighting` is therefore the
+  view cone alone — the detection range belongs to the hunter Act II turns it into.
+- **TEXTURES ARE PIXEL-ONLY, DELIBERATELY.** Every procedural texture in
+  `streetView.js` is `createImageData`/`putImageData` and nothing else, so the v2
+  world constructs inside `verify-world.mjs`'s existing five-member canvas stub.
+  Slice 09 was smoke-tested headlessly with that stub unchanged; slice 14 still
+  owns repairing the harness, and the failure it reports is unchanged
+  (`TypeError: ctx.beginPath`) rather than a new one.
+- **App.jsx IS ONE LINE.** `import { LongQuietGame as BellLoopGame } from
+  './game/world.js'`. The alias keeps the diff to the single line §15.1 promises
+  while `world.js` exports the honest name, and it keeps `verify-world.mjs`'s
+  `import { BellLoopGame }` resolving until slice 14 rewrites that file.
+- **SMALL OVERLAP WITH SLICES 12/13, DELIBERATE AND BOUNDED.** The world mirrors
+  the v2 portal state into the v1 HUD's `candles`/`timeLeft`/`prompt` fields and
+  pins the heartbeat line full (v2 has no countdown), and the finale's *visible*
+  consequences — one dusk step, the headlights, the win check — are wired here.
+  Slice 12 still owns the HUD and slice 13 still owns the enrage presentation and
+  the finale's world checks.
+- **Gate:** lint clean, 130/130 pure checks, `vite build` clean. The new checks
+  were mutation-tested (flattening a dusk fog row, constructing the game twice in
+  `App.jsx`, and removing every N-side fixture are each caught). The world harness
+  is still out of the gate by design; a temporary 14-check node smoke run against
+  the existing stub passed and is not committed.
+
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
 - New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.
@@ -90,6 +144,6 @@ Branch: `cline/space-bunny-alpha`
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 09–16 in order (09 THE SWAP, 10 creature view, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures+cleanup+result README).
+- Slices 10–16 in order (10 creature view + capture loop, 11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slice 09 is landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`.
 - Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.

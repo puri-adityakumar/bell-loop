@@ -1,471 +1,105 @@
 /**
- * world.js — the vanilla Three.js world: scene, maze, shrines, door, lights,
- * the bell-reset animation and the whole simulation loop.
+ * world.js — the scene, the lights, the fog, the phase machine and the whole v2
+ * simulation loop.
  *
- * React never touches this file except to construct one instance and to call
- * start()/restart()/dispose(). All game state flows out through the store.
+ * THIS IS THE SWAP (slice 09)
+ * ---------------------------
+ * v1's file drew a maze: walls that rose out of the floor, three shrines with
+ * candles, a double door, and a 60-second bell. Every one of those is gone. What
+ * is left is the half of the game that is not the street — §15.1's split, with
+ * the street itself in `streetView.js` and (from slice 10) the creature in
+ * `creatureView.js`.
+ *
+ * The world owns the clock, the state object and the verbs. The rules are not in
+ * this file and must not be: `rules.js` owns the portal hold, the breath, the
+ * capture table and the win test, `creature.js` owns awareness and the state
+ * machine, and `neighborhood.js` owns the geometry and the wrap. This file's job
+ * is to hand them a frame and then draw the answer.
+ *
+ * WHY THE DUSK IS HERE AND NOT IN THE RULES
+ * ------------------------------------------
+ * §3.7 makes dusk a function of portals shut and never of captures, because
+ * keying darkness to the loop would make dying cost you visibility — a death
+ * spiral in a game you have already died in. The *number* is
+ * `rules.fogDensityForDusk` and the gate asserts it; the *colours* are §12.3's
+ * palette and they are art, so they interpolate here, in one place, from three
+ * stops.
+ *
+ * WHAT IS STILL IMPORTED FROM v1
+ * -----------------------------
+ * `PHASE`, `createStore` and `LOOP_SECONDS` only, from `loop.js`. §10.5 is
+ * explicit that `PHASE` keeps its meaning — start / playing / reset / won — and
+ * that the finale is a flag rather than a fifth phase, so re-typing four string
+ * constants here to make a module look clean would be the worst of both worlds: a
+ * second definition of the phase machine, and an `App.jsx` diff larger than the
+ * one line the design promised. Everything else in `loop.js` — candles, the door,
+ * the wall rise, the countdown — is dead code, and so is all of `maze.js`. Slice
+ * 16 deletes both files and folds `PHASE` into wherever the HUD ends up.
  */
 import * as THREE from 'three'
-import {
-  generateMaze,
-  mulberry32,
-  GRID,
-  CELL_SIZE,
-  WALL_HEIGHT,
-  WALL_THICKNESS,
-  SHRINE_IDS,
-  APPROACH_YAW,
-  cellToWorld,
-  cellKey,
-  chebyshev,
-  DIRS,
-  distanceMap,
-  hasWall,
-} from './maze.js'
-import {
-  PHASE,
-  LOOP_SECONDS,
-  RESET_TIMELINE,
-  RESET_SWAP_AT,
-  advanceTimer,
-  applyLightCandle,
-  beginLoop,
-  candlesLit,
-  createInitialState,
-  createStore,
-  DOOR_WIN_RADIUS,
-  isInsideChamber,
-  resetFade,
-  restartState,
-  shouldDoorOpenAtLoopStart,
-  wallRiseDelay,
-  wallRiseProgress,
-} from './loop.js'
+import { createStore, LOOP_SECONDS, PHASE } from './loop.js'
 import { PlayerController } from './player.js'
+import { PALETTE, StreetView } from './streetView.js'
+import * as beast from './creature.js'
+import * as rules from './rules.js'
+import { streamAt } from './hash.js'
+import * as hood from './neighborhood.js'
+import { SPAWN, placeObjectives, streetNodeToWorld } from './neighborhood.js'
 
-/** Palette (PLAN.md §2) — loop-1 atmosphere pass: colder, deader, darker. */
-export const PALETTE = Object.freeze({
-  bg: 0x030407,
-  fog: 0x04060c,
-  wall: 0x232832,
-  floor: 0x10131a,
-  ceiling: 0x07090e,
-  wood: 0x3d2a1a,
-  flame: 0xffa54a,
-  candleLight: 0xff9236,
-  ivory: 0xd9cfba,
-  brass: 0x7d6c39,
-  cold: 0x3a4a5c,
-  flashlight: 0xffe2a8,
-})
+export { PALETTE }
 
-const MAX_WALL_INSTANCES = 400
-const FLOOR_SIZE = GRID * CELL_SIZE + 12
-const PROMPT_RANGE = 2.4 // metres: an unlit shrine is "in reach"
-const INTRO_FADE_SECONDS = 1.4
-/** How far the double door swings once it "stands open" (ajar, leaking light). */
-const DOOR_AJAR_SWING = 0.12
-/** Facing into the maze from the (0,0) corner spawn. */
-const ENTRANCE_YAW = -Math.PI * 0.75
+/** Facing north-west, into the corner intersection the player spawns beside. */
+const SPAWN_YAW = Math.PI * 0.25
+
+/** The cross-fade at a capture, seconds. §9.3's beat, and the only one v2 has. */
+const CAPTURE_FADE_SECONDS = 1.1
+
+/** Point lights given to the sodium lamps; the rest of the grid is unlit. */
+const LAMP_LIGHTS = 4
+/** How far a lamp light reaches before the pool stops looking for another. */
+const LAMP_RADIUS = 40
 
 function clamp01(t) {
   return t < 0 ? 0 : t > 1 ? 1 : t
 }
 
-function easeOutCubic01(t) {
-  const c = clamp01(t)
-  return 1 - (1 - c) ** 3
+/** Linear interpolation across §12.3's three stops, clamped at both ends. */
+function lerpStops(stops, t) {
+  const span = stops.length - 1
+  const k = clamp01(t) * span
+  const index = Math.min(Math.max(0, stops.length - 2), Math.floor(k))
+  return new THREE.Color(stops[index]).lerp(new THREE.Color(stops[index + 1]), k - index)
 }
 
-function easeInOut01(t) {
-  const c = clamp01(t)
-  return c < 0.5 ? 2 * c * c : 1 - ((-2 * c + 2) * (-2 * c + 2)) / 2
-}
-
-/** Cheap irregular flicker signal in [-1, 1] (three detuned sines). */
-function flickerNoise(t) {
-  return (Math.sin(t * 11.7) + Math.sin(t * 5.3 + 1.7) + Math.sin(t * 23.9 + 3.1)) / 3
-}
-
-// ---------------------------------------------------------------------------
-// procedural textures (canvas only — no downloads)
-// ---------------------------------------------------------------------------
-
-/** Smooth value-noise field: a coarse random grid, bilinearly interpolated. */
-function valueNoiseField(size, cells, rand) {
-  const grid = []
-  for (let y = 0; y <= cells; y++) {
-    const row = []
-    for (let x = 0; x <= cells; x++) row.push(rand())
-    grid.push(row)
-  }
-  const smooth = (t) => t * t * (3 - 2 * t)
-  return (x, y) => {
-    const gx = (x / size) * cells
-    const gy = (y / size) * cells
-    const x0 = Math.floor(gx)
-    const y0 = Math.floor(gy)
-    const x1 = Math.min(x0 + 1, cells)
-    const y1 = Math.min(y0 + 1, cells)
-    const tx = smooth(gx - x0)
-    const ty = smooth(gy - y0)
-    const top = grid[y0][x0] * (1 - tx) + grid[y0][x1] * tx
-    const bottom = grid[y1][x0] * (1 - tx) + grid[y1][x1] * tx
-    return top * (1 - ty) + bottom * ty
-  }
-}
-
-function seededRandom(seed) {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
 
 /**
- * Grayscale value-noise tile used as bump + roughness variation so the wall
- * instancing does not read as flat plastic.
+ * LongQuietGame — THE LONG QUIET, constructed once by `App.jsx`.
+ *
+ * @param {HTMLElement} container
+ * @param {{ store?: object, audio?: object, seed?: number,
+ *           createRenderer?: (container: HTMLElement) => object }} [options]
+ *   `createRenderer` exists so a headless smoke test can drive the whole
+ *   simulation without a WebGL context; it is the same door v1 had.
  */
-function makeNoiseTexture(size = 128, seed = 1337) {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const image = ctx.createImageData(size, size)
-  const octaves = [
-    { cells: 4, weight: 0.5, rand: seededRandom(seed) },
-    { cells: 9, weight: 0.3, rand: seededRandom(seed + 1) },
-    { cells: 21, weight: 0.2, rand: seededRandom(seed + 2) },
-  ].map((o) => ({ ...o, field: valueNoiseField(size, o.cells, o.rand) }))
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      let v = 0
-      for (const o of octaves) v += o.field(x, y) * o.weight
-      const c = Math.max(0, Math.min(255, Math.round(v * 255)))
-      const i = (y * size + x) * 4
-      image.data[i] = c
-      image.data[i + 1] = c
-      image.data[i + 2] = c
-      image.data[i + 3] = 255
-    }
-  }
-  ctx.putImageData(image, 0, 0)
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.wrapS = THREE.RepeatWrapping
-  texture.wrapT = THREE.RepeatWrapping
-  return texture
-}
-
-/** Dark cobblestone: rounded, jittered stones in dark grout with speckle. */
-function makeCobbleTexture(size = 256, cells = 5, seed = 99) {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const rand = seededRandom(seed)
-  ctx.fillStyle = '#0b0d12'
-  ctx.fillRect(0, 0, size, size)
-  const cell = size / cells
-  for (let j = 0; j < cells; j++) {
-    for (let i = 0; i < cells; i++) {
-      const cx = (i + 0.3 + rand() * 0.4) * cell
-      const cy = (j + 0.3 + rand() * 0.4) * cell
-      const rx = cell * (0.36 + rand() * 0.1)
-      const ry = cell * (0.32 + rand() * 0.1)
-      const v = 0.3 + rand() * 0.4
-      // the stone
-      ctx.fillStyle = `rgb(${Math.round(30 + 44 * v)},${Math.round(34 + 46 * v)},${Math.round(42 + 52 * v)})`
-      ctx.beginPath()
-      ctx.ellipse(cx, cy, rx, ry, rand() * Math.PI, 0, Math.PI * 2)
-      ctx.fill()
-      // worn highlight, top-left
-      ctx.strokeStyle = `rgba(190,200,215,${0.05 + rand() * 0.07})`
-      ctx.lineWidth = Math.max(1.5, cell * 0.06)
-      ctx.beginPath()
-      ctx.ellipse(cx, cy, rx * 0.82, ry * 0.82, 0, Math.PI * 1.05, Math.PI * 1.75)
-      ctx.stroke()
-      // seated shadow, bottom-right
-      ctx.strokeStyle = 'rgba(0,0,0,0.4)'
-      ctx.beginPath()
-      ctx.ellipse(cx, cy, rx * 0.85, ry * 0.85, 0, Math.PI * 0.1, Math.PI * 0.8)
-      ctx.stroke()
-    }
-  }
-  // dust speckle
-  ctx.globalAlpha = 0.2
-  for (let i = 0; i < 1100; i++) {
-    const v = Math.floor(rand() * 60)
-    ctx.fillStyle = `rgb(${v},${v},${v + 5})`
-    ctx.fillRect(Math.floor(rand() * size), Math.floor(rand() * size), 1, 1)
-  }
-  ctx.globalAlpha = 1
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.wrapS = THREE.RepeatWrapping
-  texture.wrapT = THREE.RepeatWrapping
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
-/** Dark plank ceiling tile: long boards with seams and grain streaks. */
-function makePlankTexture(size = 128, boards = 5, seed = 606) {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const rand = seededRandom(seed)
-  const boardH = size / boards
-  for (let b = 0; b < boards; b++) {
-    const v = 0.32 + rand() * 0.3
-    ctx.fillStyle = `rgb(${Math.round(34 * v + 10)},${Math.round(24 * v + 7)},${Math.round(15 * v + 5)})`
-    ctx.fillRect(0, b * boardH, size, boardH)
-    // grain streaks
-    ctx.globalAlpha = 0.25
-    for (let s = 0; s < 9; s++) {
-      ctx.fillStyle = rand() > 0.5 ? '#0a0705' : '#4a3826'
-      ctx.fillRect(0, b * boardH + rand() * boardH, size, 1)
-    }
-    ctx.globalAlpha = 1
-    // seam shadow between boards
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'
-    ctx.fillRect(0, b * boardH, size, 2)
-  }
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.wrapS = THREE.RepeatWrapping
-  texture.wrapT = THREE.RepeatWrapping
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
-/**
- * Dark stone-brick wall tile (loop 4): rows of offset bricks with recessed
- * mortar lines, per-brick value variation and speckle noise. The same canvas
- * doubles as bumpMap, so mortar lines read as real recesses.
- */
-function makeBrickTexture(size = 256, seed = 4242) {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const rand = seededRandom(seed)
-  const rows = 6
-  const brickH = size / rows
-  const brickW = size / 3
-  const mortar = 4
-  ctx.fillStyle = '#1a1d24' // mortar
-  ctx.fillRect(0, 0, size, size)
-  for (let row = 0; row < rows; row++) {
-    const offset = (row % 2) * (brickW / 2)
-    for (let col = -1; col <= 3; col++) {
-      const x = col * brickW + offset
-      const y = row * brickH
-      // per-brick value: cold grey with occasional warmer stone
-      const v = 0.52 + rand() * 0.4
-      const warm = rand() < 0.22 ? 10 : 0
-      const r = Math.round(38 * v + warm)
-      const g = Math.round(42 * v + warm * 0.7)
-      const b = Math.round(52 * v)
-      ctx.fillStyle = `rgb(${r},${g},${b})`
-      ctx.fillRect(x + mortar / 2, y + mortar / 2, brickW - mortar, brickH - mortar)
-      // chipped highlight on one edge, shadow on the other
-      ctx.fillStyle = `rgba(255,255,255,${0.03 + rand() * 0.05})`
-      ctx.fillRect(x + mortar / 2, y + mortar / 2, brickW - mortar, 2)
-      ctx.fillStyle = 'rgba(0,0,0,0.22)'
-      ctx.fillRect(x + mortar / 2, y + brickH - mortar / 2 - 2, brickW - mortar, 2)
-    }
-  }
-  // grime speckle + vertical damp streaks
-  ctx.globalAlpha = 0.16
-  for (let i = 0; i < 1400; i++) {
-    const v = Math.floor(rand() * 70)
-    ctx.fillStyle = `rgb(${v},${v},${v + 6})`
-    ctx.fillRect(Math.floor(rand() * size), Math.floor(rand() * size), 1, 1)
-  }
-  ctx.globalAlpha = 0.08
-  for (let i = 0; i < 7; i++) {
-    const x = rand() * size
-    ctx.fillStyle = '#06070b'
-    ctx.fillRect(x, 0, 3 + rand() * 7, size)
-  }
-  ctx.globalAlpha = 1
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.wrapS = THREE.RepeatWrapping
-  texture.wrapT = THREE.RepeatWrapping
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
-/** Soft teardrop glow used by the layered flame sprites (loop 7). */
-function makeFlameSpriteTexture(size = 64) {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const gradient = ctx.createRadialGradient(size / 2, size * 0.62, 2, size / 2, size * 0.62, size * 0.5)
-  gradient.addColorStop(0, 'rgba(255,240,200,1)')
-  gradient.addColorStop(0.35, 'rgba(255,170,70,0.85)')
-  gradient.addColorStop(0.7, 'rgba(200,80,20,0.3)')
-  gradient.addColorStop(1, 'rgba(120,30,0,0)')
-  ctx.fillStyle = gradient
-  ctx.beginPath()
-  ctx.ellipse(size / 2, size * 0.58, size * 0.32, size * 0.46, 0, 0, Math.PI * 2)
-  ctx.fill()
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
-/**
- * loop 15: procedural engraved-glyph decals — angular scratched strokes, no
- * lettering anywhere. Three variants are generated once and shared across the
- * six wall engravings; per-placement seeds vary height, tilt and which wall.
- */
-function makeGlyphTexture(seed) {
-  const size = 256
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')
-  const rng = mulberry32(seed)
-
-  // one random angular scratch: square-cornered turns with occasional diagonals
-  const scratchPoints = () => {
-    const points = [[0, 0]]
-    let x = 0
-    let y = 0
-    const segments = 2 + Math.floor(rng() * 4)
-    for (let i = 0; i < segments; i++) {
-      const step = 14 + rng() * 26
-      const angle = (Math.floor(rng() * 4) * Math.PI) / 2 + (rng() < 0.3 ? Math.PI / 4 : 0)
-      x += Math.cos(angle) * step
-      y += Math.sin(angle) * step
-      points.push([x, y])
-    }
-    return points
-  }
-  const strokePts = (points, dx, dy, color, width) => {
-    ctx.strokeStyle = color
-    ctx.lineWidth = width
-    ctx.lineCap = 'square'
-    ctx.beginPath()
-    points.forEach(([px, py], i) => {
-      if (i === 0) ctx.moveTo(px + dx, py + dy)
-      else ctx.lineTo(px + dx, py + dy)
-    })
-    ctx.stroke()
-  }
-
-  const glyphs = 2 + Math.floor(rng() * 2)
-  for (let g = 0; g < glyphs; g++) {
-    ctx.save()
-    ctx.translate(40 + rng() * 150, 40 + rng() * 150)
-    ctx.rotate((rng() - 0.5) * 0.9)
-    const points = scratchPoints()
-    // shadow pass first, then the lit scratch on top: reads as carved-in stone
-    strokePts(points, 2.5, 3.5, 'rgba(0,0,0,0.6)', 7)
-    strokePts(points, 0, 0, 'rgba(216,206,178,0.92)', 4.5)
-    // a closing mark: scratch circle or chevron at the end of the walk
-    const end = points[points.length - 1]
-    const roll = rng()
-    if (roll < 0.4) {
-      ctx.strokeStyle = 'rgba(216,206,178,0.92)'
-      ctx.lineWidth = 4
-      ctx.beginPath()
-      ctx.arc(end[0] + 8, end[1] - 6, 5 + rng() * 4, 0, Math.PI * 2)
-      ctx.stroke()
-    } else if (roll < 0.7) {
-      ctx.strokeStyle = 'rgba(216,206,178,0.92)'
-      ctx.lineWidth = 4
-      ctx.beginPath()
-      ctx.moveTo(end[0], end[1])
-      ctx.lineTo(end[0] + 12, end[1] - 12)
-      ctx.lineTo(end[0] + 24, end[1])
-      ctx.stroke()
-    }
-    ctx.restore()
-  }
-  // grime pits so the decal never reads as a clean sticker
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'
-  for (let i = 0; i < 40; i++) {
-    ctx.fillRect(rng() * size, rng() * size, 1 + rng() * 3, 1 + rng() * 3)
-  }
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
-/**
- * loop 15: a smeared handprint decal — palm blob, five fanned fingers, a low
- * thumb — then speckle-eroded so only patches survive on the stone.
- */
-function makeHandprintTexture(seed) {
-  const w = 128
-  const h = 160
-  const canvas = document.createElement('canvas')
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext('2d')
-  const rng = mulberry32(seed)
-  ctx.fillStyle = 'rgba(255,255,255,0.95)'
-
-  const blob = (x, y, rx, ry, rot = 0) => {
-    ctx.beginPath()
-    ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  blob(64, 104, 30, 34) // palm
-  for (let i = 0; i < 4; i++) {
-    const angle = -0.34 + i * 0.22
-    const fx = 64 + Math.sin(angle) * 34
-    const fy = 66 - Math.cos(angle) * 18 - rng() * 6
-    blob(fx, fy, 7.5, 20 + rng() * 7, -angle * 0.8)
-  }
-  blob(30, 96, 9, 22, 1.05) // thumb, low and to the side
-  // erosion: punch speckle holes so it reads as a partial print, not a stamp
-  ctx.globalCompositeOperation = 'destination-out'
-  for (let i = 0; i < 260; i++) {
-    ctx.beginPath()
-    ctx.arc(rng() * w, rng() * h, 1 + rng() * 2.6, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  ctx.globalCompositeOperation = 'source-over'
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
-// ---------------------------------------------------------------------------
-// the game
-// ---------------------------------------------------------------------------
-
-export class BellLoopGame {
-  /**
-   * @param {HTMLElement} container
-   * @param {{ store?: object, audio?: object,
-   *           createRenderer?: (container: HTMLElement) => object }} [options]
-   *   `createRenderer` exists so a headless smoke test (verify-world.mjs) can
-   *   drive the whole simulation without a WebGL context.
-   */
+export class LongQuietGame {
   constructor(container, options = {}) {
     this.container = container
-    this.store = options.store ?? createStore(createInitialState(1, PHASE.START))
+    this.store = options.store ?? createStore()
     this.audio = options.audio ?? null
+    this.seed = options.seed ?? 1337
     this.disposed = false
 
     // --- renderer -----------------------------------------------------------
     this.renderer = options.createRenderer
       ? options.createRenderer(container)
       : new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)) // loop 14: DPR clamp
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 450, false)
-    this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.renderer.shadowMap.enabled = false
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    // loop 1: colder cellar dread — darker exposure, desaturated via ACES film
-    this.renderer.toneMappingExposure = 0.92
+    // v1 sat at 0.92 for a cellar; §12.1 is a lit horizon over a dark street,
+    // which wants slightly more of it, and the dusk curve takes it down from there
+    this.renderer.toneMappingExposure = 0.95
     this.canvas = this.renderer.domElement
     this.canvas.style.display = 'block'
     this.canvas.style.width = '100%'
@@ -474,22 +108,16 @@ export class BellLoopGame {
 
     // --- scene --------------------------------------------------------------
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(PALETTE.bg)
-    this.scene.fog = new THREE.FogExp2(PALETTE.fog, 0.135)
-    this.camera = new THREE.PerspectiveCamera(72, this._aspect(), 0.05, 160)
+    // The far plane has to outlast the fog. At the tightest dusk the world is
+    // opaque at about 40 m, and a far plane inside that would clip the fog into a
+    // visible wall; 260 m is comfortably past the tightest visibility.
+    this.camera = new THREE.PerspectiveCamera(72, this._aspect(), 0.05, 260)
 
-    this.noiseTexture = makeNoiseTexture()
-    this.cobbleTexture = makeCobbleTexture()
-    this.plankTexture = makePlankTexture()
-    this.brickTexture = makeBrickTexture()
-    this.flameSpriteTexture = makeFlameSpriteTexture()
+    this.objectives = placeObjectives(this.seed, 1)
+    this.streetView = new StreetView(this.scene, { seed: this.seed, objectives: this.objectives, loop: 1 })
 
     this._buildLights()
-    this._buildStaticGeometry()
-    this._buildWalls()
-    this._buildShrines()
-    this._buildDoor()
-    this._buildMicroStory() // loop 15: engravings, handprint, toy boat
+    this._applyDusk(0)
 
     // --- player -------------------------------------------------------------
     this.player = new PlayerController(this.camera, this.canvas, {
@@ -497,46 +125,46 @@ export class BellLoopGame {
     })
     this.player.attach()
     this.player.enabled = false
+    this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
+    this.player.setColliders(this.streetView.colliders())
+    this._colliderRevision = this.streetView.revision
 
-    // --- runtime state ------------------------------------------------------
-    this.phase = this.store.get().phase
+    // --- the run ------------------------------------------------------------
+    /** The v2 state object: `rules.js`'s, not v1's. */
+    this.state = rules.createInitialState(this.objectives, { loop: 1 })
+    this.creature = beast.createCreature({ state: 'telegraph' })
+    this.creaturePosition = this._firstSightingPoint()
+    this.banishElapsed = 0
+    /** §6.2 sound events the creature has not heard yet. */
+    this.soundEvents = []
+    this.hammerHold = 0
+    this.portalNoiseElapsed = 0
+    /** One-frame flag: the hammer was picked up on this frame (§7.2's toll). */
+    this._hammerToll = false
+    this.creatureAwareness = 0
+    this._lampKey = ''
+    this._candleKey = ''
+    this._prompt = null
+
+    // --- runtime ------------------------------------------------------------
+    this.phase = this.store.get().phase ?? PHASE.START
     this.resetElapsed = 0
-    this.swapped = false
-    this.nextLoopNumber = 1
-    this.introElapsed = 0
-    this.introActive = false
     this.startedOnce = false
     this.animTime = 0
-    // loop 11: cinematic screenshake — amplitude decays, applied as a temporary
-    // camera offset after the player writes its pose each frame
-    this.shake = 0 // current shake amplitude (world units)
-    this._shakeSeed = Math.random() * 100
-    // loop 11: wall animation — during RESET walls travel between layouts over
-    // time instead of popping at the swap
-    this.wallAnimFrom = null // map "axis:x|z" -> { x, z, y } old positions
-    this.wallAnimT = 0 // 0..1 progress of the cross-fade
-    this.nearestShrine = null
-    this.doorOpened = false
-    this.maze = null
-    this.wallEntries = []
-    this.meterAccum = 0
-    // loop 14: rolling FPS meter (sampled twice a second, hidden unless F)
+    this.fade = this.phase === PHASE.START ? 1 : 0
+    this.shake = 0
     this._fpsFrames = 0
     this._fpsAccum = 0
-    /** Authoritative countdown; mirror into the store at ~20Hz. */
-    this.timeLeft = LOOP_SECONDS
     this.clock = new THREE.Clock()
 
     // --- input --------------------------------------------------------------
+    // `E` and LMB are the two verbs of §5.2 and both belong to the player, which
+    // is why neither is wired here: `player.js` turns them into an interact hold
+    // and a swing edge, and the world consumes both once per frame.
     this._onKeyDown = (e) => {
-      if (e.code === 'KeyE' || e.code === 'Space') this.tryLight()
-      // loop 14: hidden performance counter, toggled with F
-      if (e.code === 'KeyF') {
-        this.store.update((state) => ({ ...state, showFps: !state.showFps }))
-      }
+      if (e.code === 'KeyF') this.store.update((state) => ({ ...state, showFps: !state.showFps }))
     }
     this._onMouseDown = () => {
-      this.tryLight()
       if (this.startedOnce && this.phase !== PHASE.WON && !this.player.locked) this.player.requestLock()
     }
     window.addEventListener('keydown', this._onKeyDown)
@@ -548,10 +176,8 @@ export class BellLoopGame {
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => this.resize())
     this._resizeObserver?.observe(container)
 
-    // --- first layout; walls stay sunk in the floor until BEGIN -------------
-    this._loadMaze(1, { doorOpen: false })
-    this._updateWallMatrices(() => 0)
-    this.store.set({ fade: this.phase === PHASE.START ? 1 : 0 })
+    this.store.set({ fade: this.fade })
+    this._syncHud()
 
     this._animate = this._animate.bind(this)
     this.rafId = requestAnimationFrame(this._animate)
@@ -571,935 +197,91 @@ export class BellLoopGame {
   }
 
   // -------------------------------------------------------------------------
-  // scene construction
+  // scene construction — §12: two light families, and a dusk that closes
   // -------------------------------------------------------------------------
 
+  /**
+   * The lights.
+   *
+   * Three kinds, and the mix is the art direction rather than a budget:
+   *
+   *  - a hemisphere and one very dim directional, standing in for the *lit
+   *    horizon* of §12.1. This is the reason the game is dusk and not night, and
+   *    it is why a silhouette two blocks away is still a silhouette and not a
+   *    hole. Both fade with dusk but never to nothing.
+   *  - a pool of four point lights that snap to the nearest sodium lamps. Forty-
+   *    nine lamps is a landmark grid; forty-nine *lights* is a shader bill the
+   *    browser will not thank us for, and §4 only needs the nearest handful to
+   *    read as "the streetlights have already come on".
+   *  - a whisper of warm fill at the camera. §12.1 again: readable silhouettes,
+   *    and the smallest possible admission that the player is the one thing in
+   *    the world carrying a light source.
+   *
+   * The portal lights are the third family and they belong to `streetView.js`,
+   * because they are attached to geometry rather than to the player.
+   */
   _buildLights() {
-    // a whisper of ambient so unlit faces are not pure black (colder blue now)
-    this.hemisphere = new THREE.HemisphereLight(0x141c2a, 0x030407, 0.2)
+    this.hemisphere = new THREE.HemisphereLight(PALETTE.skyStops[0], 0x0d0b12, 0.5)
     this.scene.add(this.hemisphere)
 
-    // the flashlight (loop 6): a warm lamp cone with a soft penumbra edge. It
-    // is the scene's ONLY shadow-casting light — candle points stay shadow-free
-    // for speed — and its target lags behind the view direction (that lag is
-    // the horror).
-    this.flashlight = new THREE.SpotLight(0xffdca0, 55, 34, 0.5, 0.62, 1.8)
-    this.flashlight.castShadow = true
-    this.flashlight.shadow.mapSize.set(1024, 1024)
-    this.flashlight.shadow.camera.near = 0.2
-    this.flashlight.shadow.camera.far = 32
-    this.flashlight.shadow.bias = -0.0015
-    this.flashlight.shadow.normalBias = 0.03
-    this.flashlightTarget = new THREE.Object3D()
-    this.flashlight.target = this.flashlightTarget
-    this.scene.add(this.flashlight)
-    this.scene.add(this.flashlightTarget)
+    this.sunset = new THREE.DirectionalLight(0x6b4a6b, 0.32)
+    this.sunset.position.set(-1, 0.28, -0.6)
+    this.scene.add(this.sunset)
 
-    // a faint warm lamp at the entrance so every reset has an anchor point
-    this.spawnLight = new THREE.PointLight(0xffd9a0, 0, 9, 2)
-    this.scene.add(this.spawnLight)
-  }
-
-  _buildStaticGeometry() {
-    const repeat = FLOOR_SIZE / (CELL_SIZE * 2)
-    this.cobbleTexture.repeat.set(repeat, repeat)
-    this.floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE),
-      new THREE.MeshStandardMaterial({
-        color: PALETTE.floor,
-        map: this.cobbleTexture,
-        bumpMap: this.cobbleTexture,
-        bumpScale: 0.05,
-        roughness: 1,
-        metalness: 0,
-      }),
-    )
-    this.floor.rotation.x = -Math.PI / 2
-    this.floor.receiveShadow = true
-    this.scene.add(this.floor)
-
-    // ceiling: dark planks
-    const plankRepeat = FLOOR_SIZE / (CELL_SIZE * 4)
-    this.plankTexture.repeat.set(plankRepeat, plankRepeat)
-    this.ceiling = new THREE.Mesh(
-      new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE),
-      new THREE.MeshStandardMaterial({
-        color: PALETTE.ceiling,
-        map: this.plankTexture,
-        roughness: 1,
-        metalness: 0,
-      }),
-    )
-    this.ceiling.rotation.x = Math.PI / 2
-    this.ceiling.position.y = WALL_HEIGHT
-    this.scene.add(this.ceiling)
-
-    // --- loop 5: dark wooden ceiling beams every few cells ------------------
-    const beamMaterial = new THREE.MeshStandardMaterial({
-      color: 0x241a10,
-      roughness: 0.92,
-      metalness: 0.04,
-      bumpMap: this.noiseTexture,
-      bumpScale: 0.02,
-    })
-    const span = GRID * CELL_SIZE
-    const beamStep = CELL_SIZE * 3
-    const beamY = WALL_HEIGHT - 0.09
-    const longBeamGeometry = new THREE.BoxGeometry(span + 6, 0.16, 0.26)
-    const crossBeamGeometry = new THREE.BoxGeometry(0.26, 0.16, span + 6)
-    for (let k = -2; k * beamStep <= span + beamStep; k++) {
-      const pos = k * beamStep + span / 2
-      const alongX = new THREE.Mesh(longBeamGeometry, beamMaterial)
-      alongX.position.set(span / 2, beamY, pos)
-      const alongZ = new THREE.Mesh(crossBeamGeometry, beamMaterial)
-      alongZ.position.set(pos, beamY, span / 2)
-      for (const beam of [alongX, alongZ]) {
-        beam.castShadow = true
-        beam.receiveShadow = true
-        this.scene.add(beam)
-      }
+    this.lampLights = []
+    for (let i = 0; i < LAMP_LIGHTS; i += 1) {
+      const light = new THREE.PointLight(PALETTE.sodium, 0, 30, 2)
+      light.visible = false
+      this.scene.add(light)
+      this.lampLights.push(light)
     }
 
-    // --- occasional hanging chains (curved tube segments) --------------------
-    const chainMaterial = new THREE.MeshStandardMaterial({
-      color: 0x2a2d33,
-      roughness: 0.55,
-      metalness: 0.8,
-    })
-    const chainRng = mulberry32(0xca10) // fixed stream, static dressing
-    const anchors = [
-      cellToWorld(0, 0), // always open: the entrance cell
-      cellToWorld(7, 7), // always open: the centre chamber
-    ]
-    for (let i = 0; i < 4; i++) {
-      const c = Math.floor(chainRng() * GRID)
-      const r = Math.floor(chainRng() * GRID)
-      anchors.push(cellToWorld(r, c))
-    }
-    for (const anchor of anchors) {
-      const sag = 0.22 + chainRng() * 0.3
-      const drop = 0.7 + chainRng() * 0.5
-      const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(anchor.x, WALL_HEIGHT - 0.02, anchor.z),
-        new THREE.Vector3(anchor.x + sag * 0.4, WALL_HEIGHT - drop * 0.55 - sag * 0.2, anchor.z + sag * 0.3),
-        new THREE.Vector3(anchor.x + sag * 0.7, WALL_HEIGHT - drop, anchor.z + sag * 0.6),
-      ])
-      const link = new THREE.Mesh(new THREE.TubeGeometry(curve, 14, 0.022, 6), chainMaterial)
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.014, 5, 10), chainMaterial)
-      ring.position.set(anchor.x, WALL_HEIGHT - 0.02, anchor.z)
-      this.scene.add(link, ring)
-    }
+    this.fill = new THREE.PointLight(0xffb877, 0.9, 9, 2)
+    this.scene.add(this.fill)
   }
 
   /**
-   * Walls are two InstancedMeshes (one per orientation) of a single box
-   * geometry with per-instance colour jitter and a shared noise bump/roughness
-   * map, so 240+ wall segments cost two draw calls.
+   * _applyDusk — §3.7 and §12.3, applied to the renderer in one place.
+   *
+   * The fog colour and the sky are the same colour on purpose. `FogExp2` fades
+   * geometry towards `fog.color` but leaves `scene.background` alone, so any
+   * difference between the two draws a hard horizon line across the world at
+   * exactly the distance the fog is supposed to hide things. Matching them is the
+   * whole trick of a fogged outdoor scene.
    */
-  _buildWalls() {
-    this.wallMaterial = new THREE.MeshStandardMaterial({
-      color: PALETTE.wall,
-      // loop 4: real stone-brick surface — the map carries the brick pattern,
-      // the same tile doubles as bumpMap so mortar lines recess
-      map: this.brickTexture,
-      roughness: 0.95,
-      metalness: 0,
-      bumpMap: this.brickTexture,
-      bumpScale: 0.035,
-      roughnessMap: this.noiseTexture,
-    })
-    this.wallMeshX = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(CELL_SIZE + WALL_THICKNESS, WALL_HEIGHT, WALL_THICKNESS),
-      this.wallMaterial,
-      MAX_WALL_INSTANCES,
-    )
-    this.wallMeshZ = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(WALL_THICKNESS, WALL_HEIGHT, CELL_SIZE + WALL_THICKNESS),
-      this.wallMaterial,
-      MAX_WALL_INSTANCES,
-    )
-    for (const mesh of [this.wallMeshX, this.wallMeshZ]) {
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-      mesh.castShadow = true
-      mesh.receiveShadow = true
-      mesh.frustumCulled = false
-      mesh.count = 0
-      this.scene.add(mesh)
-    }
-    this._wallMatrix = new THREE.Matrix4()
-    this._wallOffset = new THREE.Vector3()
-    this._wallQuat = new THREE.Quaternion()
-    this._wallScale = new THREE.Vector3(1, 1, 1)
-    this._wallColor = new THREE.Color()
+  _applyDusk(dusk) {
+    const t = clamp01(dusk)
+    this.scene.fog = new THREE.FogExp2(lerpStops(PALETTE.fogStops, t).getHex(), rules.fogDensityForDusk(t))
+    this.scene.background = this.scene.fog.color
+    this.hemisphere.color.copy(lerpStops(PALETTE.skyStops, t))
+    this.hemisphere.intensity = 0.5 - 0.22 * t
+    this.sunset.intensity = 0.32 - 0.2 * t
+    this.renderer.toneMappingExposure = 0.95 - 0.17 * t
   }
 
   /**
-   * Write every wall instance, offsetting each one's Y by its rise progress:
-   * 0 = sunk below the floor, 1 = standing.
-   * @param {(entry: object) => number} progressFor
+   * _updateLampPool — the sodium family, re-aimed every frame.
+   *
+   * Only re-aimed when the set of nearest lamps changes, which for a player
+   * walking at 3.6 m/s is a couple of times a second rather than 60 times.
    */
-  _updateWallMatrices(progressFor) {
-    const counts = { x: 0, z: 0 }
-    const slide = this.wallAnimFrom ? easeInOut01(this.wallAnimT) : 1
-    for (const entry of this.wallEntries) {
-      let p = progressFor(entry)
-      if (p < 0) p = 0
-      else if (p > 1) p = 1
-      let x = entry.x
-      let z = entry.z
-      // loop 11: while the cross-fade runs, walls that exist in BOTH layouts
-      // glide from their old cell to the new one; the rest just rise/sink
-      if (slide < 1) {
-        const key = `${entry.axis}:${Math.round(entry.x * 2)}|${Math.round(entry.z * 2)}`
-        const from = this.wallAnimFrom.get(key)
-        if (from) {
-          x = from.x + (entry.x - from.x) * slide
-          z = from.z + (entry.z - from.z) * slide
-        }
-      }
-      const y = entry.y - (1 - p) * (WALL_HEIGHT + 0.5)
-      this._wallOffset.set(x, y, z)
-      this._wallMatrix.compose(this._wallOffset, this._wallQuat, this._wallScale)
-      const mesh = entry.axis === 'x' ? this.wallMeshX : this.wallMeshZ
-      const index = counts[entry.axis]
-      mesh.setMatrixAt(index, this._wallMatrix)
-      this._wallColor.setRGB(entry.tintR, entry.tintG, entry.tintB)
-      mesh.setColorAt(index, this._wallColor)
-      counts[entry.axis] += 1
-    }
-    this.wallMeshX.count = counts.x
-    this.wallMeshZ.count = counts.z
-    this.wallMeshX.instanceMatrix.needsUpdate = true
-    this.wallMeshZ.instanceMatrix.needsUpdate = true
-    if (this.wallMeshX.instanceColor) this.wallMeshX.instanceColor.needsUpdate = true
-    if (this.wallMeshZ.instanceColor) this.wallMeshZ.instanceColor.needsUpdate = true
-  }
-
-  /** loop 11: snapshot the standing walls so the next layout can glide in. */
-  _captureWallPositions() {
-    this.wallAnimFrom = new Map()
-    for (const entry of this.wallEntries) {
-      // only walls currently standing take part in the slide
-      if (entry.y > 0) {
-        this.wallAnimFrom.set(`${entry.axis}:${Math.round(entry.x * 2)}|${Math.round(entry.z * 2)}`, {
-          x: entry.x,
-          z: entry.z,
-        })
-      }
-    }
-  }
-
-  /**
-   * Build a loop's layout: maze graph, wall instances (with per-wall rise
-   * delays), the player's colliders + spawn, the three shrines and the door.
-   */
-  _loadMaze(loopNumber, { doorOpen = false } = {}) {
-    const maze = generateMaze(loopNumber)
-    this.maze = maze
-    const entrance = cellToWorld(maze.entrance.r, maze.entrance.c)
-    const jitterRng = mulberry32(0x9e37 + loopNumber * 7919)
-    let maxDistance = 1
-    this.wallEntries = maze.walls.map((wall) => {
-      const distance = Math.hypot(wall.cx - entrance.x, wall.cz - entrance.z)
-      if (distance > maxDistance) maxDistance = distance
-      // per-instance tint: slight value + warm/cool drift so no two walls clone
-      const v = 0.86 + jitterRng() * 0.2
-      const tint = jitterRng() < 0.5 ? 1 : -1
-      return {
-        axis: wall.axis,
-        x: wall.cx,
-        y: WALL_HEIGHT / 2,
-        z: wall.cz,
-        distance,
-        tintR: v + tint * 0.035 * jitterRng(),
-        tintG: v + tint * 0.012 * jitterRng(),
-        tintB: v - tint * 0.03 * jitterRng(),
-        delay: 0,
-      }
-    })
-    for (const entry of this.wallEntries) {
-      entry.delay = wallRiseDelay(entry.distance, maxDistance)
-    }
-
-    this.player.setColliders(maze.walls)
-    this.player.teleport(entrance.x, entrance.z, ENTRANCE_YAW)
-    this.spawnLight.position.set(entrance.x, 1.95, entrance.z)
-    this.spawnElapsed = 0
-
-    this._repositionShrines(maze)
-    this._positionDoor(maze)
-    this._positionMicroStory(maze)
-    this._setDoorOpen(doorOpen, true)
-    return maze
-  }
-
-  // -------------------------------------------------------------------------
-  // shrines + candles
-  // -------------------------------------------------------------------------
-
-  /**
-   * Proper 3D candle shrines (loop 2): a chipped stone pedestal — beveled
-   * square base, fluted column, irregular chipped cap — an iron drip-ring
-   * holder, and a stubby wax candle with drips frozen down its side. Built
-   * once, moved per loop.
-   */
-  _buildShrines() {
-    // cold graveyard stone; the shared noise tile reads as pitted surface
-    const stoneMaterial = new THREE.MeshStandardMaterial({
-      color: 0x3d434e,
-      roughness: 0.97,
-      metalness: 0.02,
-      bumpMap: this.noiseTexture,
-      bumpScale: 0.035,
-    })
-    const stoneDark = new THREE.MeshStandardMaterial({
-      color: 0x2c313a,
-      roughness: 0.98,
-      metalness: 0.02,
-      bumpMap: this.noiseTexture,
-      bumpScale: 0.045,
-    })
-    const ironMaterial = new THREE.MeshStandardMaterial({
-      color: 0x22252b,
-      roughness: 0.52,
-      metalness: 0.85,
-    })
-    this.shrines = new Map()
-    const dripRng = mulberry32(0xbea2) // one stream, so the three shrines differ
-    for (const id of SHRINE_IDS) {
-      const group = new THREE.Group()
-
-      // beveled square plinth (a 4-sided frustum rotated 45° reads as chamfered)
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.47, 0.16, 4), stoneDark)
-      base.position.y = 0.08
-      base.rotation.y = Math.PI / 4
-
-      // fluted column with a waist
-      const column = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 0.62, 6), stoneMaterial)
-      column.position.y = 0.47
-      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.19, 0.05, 6), stoneDark)
-      collar.position.y = 0.72
-
-      // chipped cap: irregular 7-gon slab, uneven rim
-      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.2, 0.1, 7), stoneMaterial)
-      cap.position.y = 0.83
-      cap.rotation.y = dripRng() * Math.PI
-      for (const part of [base, column, collar, cap]) {
-        part.castShadow = true
-        part.receiveShadow = true
-      }
-
-      // iron holder ring + drip dish on the cap
-      const dish = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.03, 10), ironMaterial)
-      dish.position.y = 0.9
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.018, 6, 14), ironMaterial)
-      ring.rotation.x = Math.PI / 2
-      ring.position.y = 0.935
-      dish.castShadow = true
-
-      // the candle: wax stub with drips frozen down its side
-      const candleMaterial = new THREE.MeshStandardMaterial({
-        color: PALETTE.ivory,
-        roughness: 0.62,
-      })
-      const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.095, 0.34, 9), candleMaterial)
-      candle.position.y = 1.05
-      candle.castShadow = true
-      const dripCount = 3 + Math.floor(dripRng() * 3)
-      const drips = []
-      for (let i = 0; i < dripCount; i++) {
-        const h = 0.07 + dripRng() * 0.13
-        const angle = dripRng() * Math.PI * 2
-        const r = 0.082
-        const drip = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.026, h, 5), candleMaterial)
-        drip.position.set(Math.cos(angle) * r, 1.12 - h / 2, Math.sin(angle) * r)
-        const blob = new THREE.Mesh(new THREE.SphereGeometry(0.026, 5, 4), candleMaterial)
-        blob.position.set(Math.cos(angle) * r, 1.12 - h, Math.sin(angle) * r)
-        blob.scale.set(1, 0.55, 1)
-        drips.push(drip, blob)
-      }
-
-      // layered sprite flame (loop 7): three additive teardrops that wobble at
-      // different frequencies, replacing the old stretched sphere
-      const flames = [0, 1, 2].map((layer) => {
-        const sprite = new THREE.Sprite(
-          new THREE.SpriteMaterial({
-            map: this.flameSpriteTexture,
-            color: PALETTE.flame,
-            transparent: true,
-            opacity: 0,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-          }),
-        )
-        sprite.position.y = 1.3 + layer * 0.02
-        sprite.visible = false
-        return sprite
-      })
-
-      const halo = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 10, 10),
-        new THREE.MeshBasicMaterial({
-          color: PALETTE.flame,
-          transparent: true,
-          opacity: 0.13,
-          depthWrite: false,
-        }),
-      )
-      halo.position.y = 1.34
-
-      // tiny embers rising from a lit candle (loop 7): one Points cloud per
-      // shrine, recycled positions, only simulated while lit
-      const EMBER_COUNT = 12
-      const emberPositions = new Float32Array(EMBER_COUNT * 3)
-      const emberSpeeds = new Float32Array(EMBER_COUNT)
-      for (let i = 0; i < EMBER_COUNT; i++) {
-        emberPositions[i * 3] = (dripRng() - 0.5) * 0.06
-        emberPositions[i * 3 + 1] = 1.2 + dripRng() * 0.5
-        emberPositions[i * 3 + 2] = (dripRng() - 0.5) * 0.06
-        emberSpeeds[i] = 0.18 + dripRng() * 0.3
-      }
-      const emberGeometry = new THREE.BufferGeometry()
-      emberGeometry.setAttribute('position', new THREE.BufferAttribute(emberPositions, 3))
-      const embers = new THREE.Points(
-        emberGeometry,
-        new THREE.PointsMaterial({
-          color: 0xffb35c,
-          size: 0.035,
-          transparent: true,
-          opacity: 0.75,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          sizeAttenuation: true,
-        }),
-      )
-      embers.visible = false
-      embers.frustumCulled = false
-
-      const flameLight = new THREE.PointLight(PALETTE.candleLight, 0, 8, 2)
-      flameLight.position.y = 1.38
-
-      // a cold glimmer marks an UNLIT shrine: findable in the dark, clearly off
-      const glimmer = new THREE.PointLight(PALETTE.cold, 1.2, 2.8, 2)
-      glimmer.position.y = 1.15
-
-      group.add(
-        base,
-        column,
-        collar,
-        cap,
-        dish,
-        ring,
-        candle,
-        ...drips,
-        ...flames,
-        halo,
-        embers,
-        flameLight,
-        glimmer,
-      )
-      this.scene.add(group)
-
-      this.shrines.set(id, {
-        id,
-        group,
-        candle,
-        candleMaterial,
-        flames,
-        embers,
-        emberSpeeds,
-        halo,
-        flameLight,
-        glimmer,
-        cell: null,
-        lit: false,
-        level: 0, // ramps 0 -> 1 while the candle ignites
-        flicker: (id.charCodeAt(0) - 64) * 3.7,
-        baseIntensity: 14,
-      })
-    }
-    // waxy-dead unlit candle: greyer, duller wax, melted sheen gone
-    this._unlitCandleColor = new THREE.Color(0x57554e)
-    this._ivoryColor = new THREE.Color(PALETTE.ivory)
-  }
-
-  _repositionShrines(maze) {
-    for (const id of SHRINE_IDS) {
-      const shrine = this.shrines.get(id)
-      const cell = maze.shrineCells[id]
-      shrine.cell = cell
-      const { x, z } = cellToWorld(cell.r, cell.c)
-      shrine.group.position.set(x, 0, z)
-      // deterministic yaw per shrine id so the three pedestals never line up
-      shrine.group.rotation.y = ((id.charCodeAt(0) - 65) * 2.1 + maze.loop * 0.7) % (Math.PI * 2)
-    }
-    this._applyShrineStates()
-  }
-
-  /** Push the persisted lit/unlit truth from the store into the 3D shrines. */
-  _applyShrineStates() {
-    const { candles } = this.store.get()
-    for (const id of SHRINE_IDS) {
-      const shrine = this.shrines.get(id)
-      const lit = Boolean(candles[id])
-      shrine.lit = lit
-      shrine.level = lit ? 1 : 0
-      for (const flame of shrine.flames) flame.visible = lit
-      shrine.embers.visible = lit
-      shrine.halo.visible = lit
-      shrine.flameLight.intensity = lit ? shrine.baseIntensity : 0
-      shrine.flameLight.distance = lit ? 8 : 0
-      shrine.glimmer.intensity = lit ? 0 : 1.2
-      // waxy-dead when unlit: greyer, duller wax
-      shrine.candleMaterial.color.copy(lit ? this._ivoryColor : this._unlitCandleColor)
-      shrine.candleMaterial.roughness = lit ? 0.62 : 0.88
-    }
-  }
-
-  /** Light a shrine for good (the store is the source of truth). */
-  _lightShrine(shrine) {
-    if (!shrine || shrine.lit) return false
-    this.store.update((state) => applyLightCandle(state, shrine.id))
-    shrine.lit = true
-    shrine.level = 0
-    for (const flame of shrine.flames) flame.visible = true
-    shrine.embers.visible = true
-    shrine.halo.visible = true
-    shrine.glimmer.intensity = 0
-    shrine.candleMaterial.color.copy(this._ivoryColor)
-    shrine.candleMaterial.roughness = 0.62
-    this.audio?.candleWhoosh()
-    this._vibrate(12) // loop 15: a candle catching, felt in the controller
-    if (candlesLit(this.store.get().candles) === SHRINE_IDS.length) {
-      // all three are burning: something changed at the centre of the maze
-      this.audio?.bellToll(0.25, 330, 0.3)
-    }
-    return true
-  }
-
-  // -------------------------------------------------------------------------
-  // the exit door at the centre of the maze
-  // -------------------------------------------------------------------------
-
-  /**
-   * The exit door at the centre of the maze (loop 3 rework): an arched stone
-   * frame — jambs plus radial voussoirs with a keystone — holding an
-   * iron-banded double door. Closed while the shrines burn; slightly ajar with
-   * warm light leaking through the centre crack once it stands open; it can
-   * then swing fully wide (the win sequence). One canonical "approach from the
-   * north" frame is yawed into place, so one geometry serves all approaches.
-   */
-  _buildDoor() {
-    const woodMaterial = new THREE.MeshStandardMaterial({
-      color: PALETTE.wood,
-      roughness: 0.82,
-      metalness: 0.08,
-    })
-    const brassMaterial = new THREE.MeshStandardMaterial({
-      color: PALETTE.brass,
-      roughness: 0.45,
-      metalness: 0.7,
-    })
-    const ironMaterial = new THREE.MeshStandardMaterial({
-      color: 0x23262c,
-      roughness: 0.5,
-      metalness: 0.82,
-    })
-    const stoneMaterial = new THREE.MeshStandardMaterial({
-      color: 0x39404b,
-      roughness: 0.96,
-      metalness: 0.02,
-      bumpMap: this.noiseTexture,
-      bumpScale: 0.04,
-    })
-    const group = new THREE.Group()
-    const openingHalf = CELL_SIZE / 2 - WALL_THICKNESS / 2 // 1.33m
-    const frameZ = -CELL_SIZE / 2
-
-    // --- arched stone frame -------------------------------------------------
-    const jambGeometry = new THREE.BoxGeometry(0.3, 2.24, 0.52)
-    const jambLeft = new THREE.Mesh(jambGeometry, stoneMaterial)
-    jambLeft.position.set(-openingHalf - 0.02, 1.12, frameZ)
-    const jambRight = new THREE.Mesh(jambGeometry, stoneMaterial)
-    jambRight.position.set(openingHalf + 0.02, 1.12, frameZ)
-    // voussoirs: radial wedge boxes along a squashed semicircle + a keystone
-    const voussoirs = []
-    const ARCH_SPRING = 2.16
-    const ARCH_RISE = 0.56
-    for (let i = 0; i <= 8; i++) {
-      const a = Math.PI - (i / 8) * Math.PI
-      const isKeystone = i === 4
-      const wedge = new THREE.Mesh(
-        new THREE.BoxGeometry(isKeystone ? 0.46 : 0.4, isKeystone ? 0.26 : 0.22, 0.56),
-        stoneMaterial,
-      )
-      wedge.position.set(
-        Math.cos(a) * (openingHalf + 0.06),
-        ARCH_SPRING + Math.sin(a) * ARCH_RISE,
-        frameZ,
-      )
-      wedge.rotation.z = a
-      voussoirs.push(wedge)
-    }
-    for (const part of [jambLeft, jambRight, ...voussoirs]) {
-      part.castShadow = true
-      part.receiveShadow = true
-    }
-
-    // --- iron-banded double door --------------------------------------------
-    const hingeL = new THREE.Group()
-    hingeL.position.set(-openingHalf + 0.14, 0, frameZ)
-    const hingeR = new THREE.Group()
-    hingeR.position.set(openingHalf - 0.14, 0, frameZ)
-    const panelWidth = openingHalf - 0.18
-    const panelGeometry = new THREE.BoxGeometry(panelWidth, 2.34, 0.1)
-    const panelL = new THREE.Mesh(panelGeometry, woodMaterial)
-    panelL.position.set(panelWidth / 2, 1.17, 0)
-    const panelR = new THREE.Mesh(panelGeometry, woodMaterial)
-    panelR.position.set(-panelWidth / 2, 1.17, 0)
-    for (const panel of [panelL, panelR]) {
-      panel.castShadow = true
-      panel.receiveShadow = true
-    }
-    // two iron bands per leaf + a ring handle
-    for (const hinge of [hingeL, hingeR]) {
-      const sign = hinge === hingeL ? 1 : -1
-      for (const bandY of [0.52, 1.78]) {
-        const band = new THREE.Mesh(new THREE.BoxGeometry(panelWidth * 0.94, 0.09, 0.035), ironMaterial)
-        band.position.set(sign * (panelWidth / 2), bandY, 0.07)
-        hinge.add(band)
-      }
-      const handle = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.02, 6, 14), brassMaterial)
-      handle.position.set(sign * (panelWidth - 0.22), 1.12, 0.09)
-      hinge.add(handle)
-    }
-    hingeL.add(panelL)
-    hingeR.add(panelR)
-
-    // what is beyond: a warm plane on the far wall of the chamber, plus a glow
-    const beyond = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.3, 2.2),
-      new THREE.MeshBasicMaterial({ color: 0xffd9a0 }),
-    )
-    beyond.position.set(0, 1.35, CELL_SIZE / 2 - 0.4)
-    beyond.rotation.y = Math.PI
-    beyond.visible = false
-
-    // the crack: a thin warm sliver + a weak light that leak into the corridor
-    const leak = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.045, 2.2),
-      new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0.85 }),
-    )
-    leak.position.set(0, 1.2, frameZ + 0.06)
-    leak.visible = false
-    const leakLight = new THREE.PointLight(0xffb066, 0, 5.5, 2)
-    leakLight.position.set(0, 1.3, frameZ - 0.35)
-    leakLight.visible = false
-
-    const doorLight = new THREE.PointLight(0xffb066, 0, 18, 2)
-    doorLight.position.set(0, 1.5, 0)
-    const hintLight = new THREE.PointLight(0x2a3a55, 1.1, 6.5, 2)
-    hintLight.position.set(0, 1.4, -CELL_SIZE / 2 - 0.6)
-
-    group.add(jambLeft, jambRight, ...voussoirs, hingeL, hingeR, beyond, leak, leakLight, doorLight, hintLight)
-    this.scene.add(group)
-
-    this.door = {
-      group,
-      hingeL,
-      hingeR,
-      beyond,
-      leak,
-      leakLight,
-      doorLight,
-      hintLight,
-      swing: 0,
-      target: 0,
-      wide: false, // true during the win sequence: swing fully open
-    }
-    this.doorOpen = false
-  }
-
-  _positionDoor(maze) {
-    const center = cellToWorld(maze.center.r, maze.center.c)
-    this.door.group.position.set(center.x, 0, center.z)
-    this.door.group.rotation.y = APPROACH_YAW[maze.centerApproach] ?? 0
-    this.doorCenter = center
-  }
-
-  // -------------------------------------------------------------------------
-  // micro-story set dressing (loop 15): engravings, a handprint, a toy boat
-  // -------------------------------------------------------------------------
-
-  /**
-   * loop 15: pure set dressing, no text anywhere — six scratched glyphs on
-   * walls the loop pattern makes you retrace (three on the canonical
-   * entrance-to-centre route, one beside each shrine), a barely-visible
-   * handprint on the stone beside the door, and a discarded toy boat in a
-   * dead-end corner. Built once; positioned per layout like the shrines and
-   * re-dressed during the reset's full-black hold.
-   */
-  _buildMicroStory() {
-    this.microGroup = new THREE.Group()
-    this.scene.add(this.microGroup)
-
-    // three shared glyph variants; placement seeds vary height, tilt and wall
-    this.glyphTextures = [
-      makeGlyphTexture(0x61c4),
-      makeGlyphTexture(0x2b9e),
-      makeGlyphTexture(0x9d51),
-    ]
-    this.engravings = []
-    for (let i = 0; i < 6; i++) {
-      const material = new THREE.MeshStandardMaterial({
-        map: this.glyphTextures[i % 3],
-        color: 0xb9b09a,
-        transparent: true,
-        opacity: 0.5,
-        roughness: 1,
-        metalness: 0,
-        depthWrite: false, // a scratch decal, not geometry
-      })
-      const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.58, 0.58), material)
-      plane.renderOrder = 2
-      plane.visible = false
-      this.microGroup.add(plane)
-      this.engravings.push(plane)
-    }
-
-    this._buildHandprint()
-    this._buildBoat()
-  }
-
-  /** The handprint rides the door group so it tracks the approach yaw. */
-  _buildHandprint() {
-    this.handprintTexture = makeHandprintTexture(0x41f2)
-    const material = new THREE.MeshStandardMaterial({
-      map: this.handprintTexture,
-      color: 0x4d2a22, // old blood gone brown in the stone
-      transparent: true,
-      opacity: 0.24,
-      roughness: 1,
-      metalness: 0,
-      depthWrite: false,
-    })
-    const openingHalf = CELL_SIZE / 2 - WALL_THICKNESS / 2
-    const frameZ = -CELL_SIZE / 2
-    const handprint = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.42), material)
-    // on the approach-side jamb face, proud of the stone, facing the corridor
-    handprint.position.set(-(openingHalf + 0.02), 1.34, frameZ - 0.278)
-    handprint.rotation.y = Math.PI
-    handprint.rotation.z = 0.14 // someone pressed it and slipped
-    handprint.renderOrder = 2
-    this.door.group.add(handprint)
-    this.handprint = handprint
-  }
-
-  /** A small weathered toy boat, snapped mast and all, lying where it fell. */
-  _buildBoat() {
-    const weathered = new THREE.MeshStandardMaterial({
-      color: 0x6f6350,
-      roughness: 0.94,
-      metalness: 0.02,
-      bumpMap: this.noiseTexture,
-      bumpScale: 0.02,
-    })
-    const boat = new THREE.Group()
-    const keel = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.2), weathered)
-    keel.position.y = 0.05
-    const sideL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.2), weathered)
-    sideL.position.set(0, 0.1, -0.082)
-    sideL.rotation.x = 0.62
-    const sideR = sideL.clone()
-    sideR.position.z = 0.082
-    sideR.rotation.x = -0.62
-    const stern = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.12, 0.2), weathered)
-    stern.position.set(-0.25, 0.08, 0)
-    const bowL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.2), weathered)
-    bowL.position.set(0.29, 0.065, -0.048)
-    bowL.rotation.y = -0.5
-    const bowR = bowL.clone()
-    bowR.position.z = 0.048
-    bowR.rotation.y = 0.5
-    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.015, 0.3, 6), weathered)
-    mast.position.set(-0.05, 0.24, 0)
-    mast.rotation.z = 0.24 // it broke
-    const sailGeometry = new THREE.BufferGeometry()
-    sailGeometry.setAttribute(
-      'position',
-      new THREE.Float32BufferAttribute([-0.03, 0.1, 0, -0.03, 0.37, 0, 0.21, 0.13, 0], 3),
-    )
-    sailGeometry.computeVertexNormals()
-    const sail = new THREE.Mesh(
-      sailGeometry,
-      new THREE.MeshStandardMaterial({ color: 0x8b7f66, roughness: 0.9, side: THREE.DoubleSide }),
-    )
-    sail.position.set(-0.05, 0, 0)
-    for (const part of [keel, sideL, sideR, stern, bowL, bowR, mast, sail]) {
-      part.castShadow = true
-      boat.add(part)
-    }
-    boat.visible = false
-    this.microGroup.add(boat)
-    this.boat = boat
-  }
-
-  /**
-   * loop 15: re-dress the set for this layout. Runs inside the reset's
-   * full-black hold, so the decals never visibly pop while the walls glide.
-   */
-  _positionMicroStory(maze) {
-    const rng = mulberry32(0x6e77 + maze.loop * 131)
-    const dist = distanceMap(maze, maze.entrance)
-
-    // the canonical route: walk the BFS distance down from centre to entrance
-    const route = [maze.center]
-    while (route.length < maze.size * maze.size) {
-      const head = route[route.length - 1]
-      const d = dist.get(cellKey(head.r, head.c))
-      if (!d) break // distance 0: reached the entrance
-      let next = null
-      for (const dir of DIRS) {
-        if ((maze.open[head.r][head.c] & dir.bit) === 0) continue
-        if (dist.get(cellKey(head.r + dir.dr, head.c + dir.dc)) === d - 1) {
-          next = { r: head.r + dir.dr, c: head.c + dir.dc }
-          break
-        }
-      }
-      if (!next) break
-      route.push(next)
-    }
-
-    // three engravings along the route (the path you retrace every loop)...
-    const placements = []
-    for (const fraction of [0.3, 0.55, 0.8]) {
-      const index = Math.max(1, Math.min(route.length - 1, Math.round((route.length - 1) * fraction)))
-      placements.push(route[index])
-    }
-    // ...and one beside each shrine cell
-    for (const id of SHRINE_IDS) placements.push(maze.shrineCells[id])
-
-    for (let i = 0; i < this.engravings.length; i++) {
-      const plane = this.engravings[i]
-      let cell = placements[i]
-      let dir = this._pickWalledDir(maze, cell.r, cell.c, rng)
-      if (!dir) {
-        // fully-open junction (extra carves): borrow a walled edge from an
-        // adjacent open cell so the engraving still sits beside the landmark
-        for (const open of DIRS) {
-          if ((maze.open[cell.r][cell.c] & open.bit) === 0) continue
-          const neighbour = { r: cell.r + open.dr, c: cell.c + open.dc }
-          dir = this._pickWalledDir(maze, neighbour.r, neighbour.c, rng)
-          if (dir) {
-            cell = neighbour
-            break
-          }
-        }
-      }
-      if (!dir) {
-        plane.visible = false
+  _updateLampPool() {
+    const lamps = this.streetView.lampsNear(this.player.pos.x, this.player.pos.z, LAMP_RADIUS)
+    const key = lamps.map((lamp) => `${lamp.x},${lamp.z}`).join('|')
+    if (key === this._lampKey) return
+    this._lampKey = key
+    for (let i = 0; i < this.lampLights.length; i += 1) {
+      const light = this.lampLights[i]
+      const lamp = lamps[i]
+      if (!lamp) {
+        light.visible = false
+        light.intensity = 0
         continue
       }
-      this._placeWallDecal(plane, cell.r, cell.c, dir, 1.08 + rng() * 0.5, (rng() - 0.5) * 0.16)
+      light.visible = true
+      light.position.set(lamp.x, lamp.y - 0.2, lamp.z)
+      light.intensity = 16
     }
-
-    this._positionBoat(maze, dist, rng)
-  }
-
-  /** Seeded pick of a direction whose edge is walled, for decal placement. */
-  _pickWalledDir(maze, r, c, rng) {
-    const candidates = DIRS.filter((dir) => hasWall(maze, r, c, dir))
-    if (candidates.length === 0) return null
-    return candidates[Math.floor(rng() * candidates.length)]
-  }
-
-  /** Set a decal plane proud of the wall face in `dir`, facing into the cell. */
-  _placeWallDecal(plane, r, c, dir, y, tilt) {
-    const { x, z } = cellToWorld(r, c)
-    const offset = CELL_SIZE / 2 - WALL_THICKNESS / 2 + 0.02
-    plane.position.set(x + dir.dc * offset, y, z + dir.dr * offset)
-    // the decal normal must point back into the cell the wall belongs to
-    plane.rotation.y = Math.atan2(-dir.dc, -dir.dr) + tilt
-    plane.visible = true
-  }
-
-  /** The boat rests in the deepest dead-end corner clear of every landmark. */
-  _positionBoat(maze, dist, rng) {
-    const landmarks = [maze.center, ...SHRINE_IDS.map((id) => maze.shrineCells[id])]
-    const popcount = (mask) =>
-      (mask & 1) + ((mask >> 1) & 1) + ((mask >> 2) & 1) + ((mask >> 3) & 1)
-    const deadEnds = []
-    for (let r = 0; r < maze.size; r++) {
-      for (let c = 0; c < maze.size; c++) {
-        if (popcount(maze.open[r][c]) !== 1) continue // dead ends only
-        const d = dist.get(cellKey(r, c))
-        if (d === undefined) continue // unreachable corner
-        if (landmarks.some((lm) => chebyshev(lm, { r, c }) < 2)) continue
-        deadEnds.push({ r, c, d })
-      }
-    }
-    if (deadEnds.length === 0) {
-      this.boat.visible = false
-      return
-    }
-    deadEnds.sort((a, b) => b.d - a.d) // deepest corners first
-    const pick = deadEnds[Math.floor(rng() * Math.min(4, deadEnds.length))]
-    const dir = this._pickWalledDir(maze, pick.r, pick.c, rng)
-    const { x, z } = cellToWorld(pick.r, pick.c)
-    const offset = dir ? CELL_SIZE / 2 - WALL_THICKNESS / 2 - 0.45 : 0
-    this.boat.position.set(x + (dir ? dir.dc * offset : 0), 0.012, z + (dir ? dir.dr * offset : 0))
-    this.boat.rotation.set(-0.07, rng() * Math.PI * 2, 0.05)
-    this.boat.visible = true
-  }
-
-  /** The closed panel is solid: it blocks the only way into the chamber. */
-  _doorWallSegment() {
-    const { x, z } = this.doorCenter
-    const half = CELL_SIZE / 2
-    const halfWidth = CELL_SIZE / 2 - WALL_THICKNESS / 2 - 0.16
-    const thickness = 0.1
-    switch (this.maze.centerApproach) {
-      case 'S':
-        return { cx: x, cz: z + half, hx: halfWidth, hz: thickness }
-      case 'E':
-        return { cx: x + half, cz: z, hx: thickness, hz: halfWidth }
-      case 'W':
-        return { cx: x - half, cz: z, hx: thickness, hz: halfWidth }
-      default:
-        return { cx: x, cz: z - half, hx: halfWidth, hz: thickness }
-    }
-  }
-
-  _refreshColliders() {
-    if (!this.maze) return
-    const segments = this.doorOpen ? this.maze.walls : [...this.maze.walls, this._doorWallSegment()]
-    this.player.setColliders(segments)
-  }
-
-  /** @param {boolean} open @param {boolean} [instant] skip the creak + swing */
-  _setDoorOpen(open, instant = false) {
-    const wasOpen = this.doorOpen
-    this.doorOpen = open
-    this.door.target = open ? (this.door.wide ? 1 : DOOR_AJAR_SWING) : 0
-    if (instant) {
-      this.door.swing = this.door.target
-      this._applyDoorSwing()
-    }
-    this.door.beyond.visible = open
-    this.door.leak.visible = open && !this.door.wide
-    this.door.leakLight.visible = open
-    this.door.hintLight.visible = !open
-    this._refreshColliders()
-    if (open && !wasOpen && !instant) {
-      this.audio?.doorCreak(1.4)
-      this.doorOpened = true
-    }
-  }
-
-  /** Both leaves swing outward symmetrically: 0 = shut, 1 = wide open. */
-  _applyDoorSwing() {
-    this.door.hingeL.rotation.y = -1.5 * this.door.swing
-    this.door.hingeR.rotation.y = 1.5 * this.door.swing
   }
 
   // -------------------------------------------------------------------------
@@ -1510,8 +292,8 @@ export class BellLoopGame {
     if (this.disposed) return
     this.rafId = requestAnimationFrame(this._animate)
     const dt = Math.min(this.clock.getDelta(), 0.05)
-    // loop 14: sample the frame rate over 0.5 s windows
-    this._fpsFrames++
+    // the hidden frame counter, sampled over 0.5 s windows
+    this._fpsFrames += 1
     this._fpsAccum += dt
     if (this._fpsAccum >= 0.5) {
       const fps = Math.round(this._fpsFrames / this._fpsAccum)
@@ -1523,414 +305,516 @@ export class BellLoopGame {
     this.renderer.render(this.scene, this.camera)
   }
 
+  /**
+   * update — one frame of the world.
+   *
+   * The shape of this function is the shape of the design: the phase machine
+   * picks what the world is *doing* (§10.5 — playing, resetting, won), and
+   * whatever it is doing, the street breathes and the HUD mirrors. `update` is
+   * the only door the render loop and the smoke test have, and both drive it
+   * with a plain `dt`, which is why there is no clock read outside `_animate`.
+   */
   update(dt) {
     this.animTime += dt
-    const state = this.store.get()
-    this.phase = state.phase
+    this.phase = this.store.get().phase ?? this.phase
+    this.streetView.update(dt)
+    this._recentre()
+    this._updateLampPool()
+    this.fill.position.set(this.player.pos.x, 1.5, this.player.pos.z)
+
     switch (this.phase) {
       case PHASE.PLAYING:
-        this._updatePlaying(dt, state)
+        this._updatePlaying(dt)
         break
       case PHASE.RESET:
         this._updateReset(dt)
         break
-      case PHASE.START:
-        // loop 10: the title screen breathes — the camera drifts very slowly
-        // in place so the fog visibly swirls behind the overlay
-        this._updateStartDrift(dt)
-        break
       case PHASE.WON:
-        // loop 13: final toll, light holds, black creeps in, ambience released
-        this._updateWin(dt)
+        this._updateWon(dt)
+        break
+      default:
+        // START: the world is built and lit, and the player does not exist yet
+        this._updateStart(dt)
         break
     }
-    this._updateFlashlight(dt)
-    this._updateShrines(dt)
-    this._updateDoor(dt)
-    this._updateSpawnLight(dt)
-    // loop 11: the shake writes last so it rides on top of the player's pose
-    this._applyShake(dt)
+    this._syncHud()
   }
 
-  /** loop 10: slow breathing camera drift while the title screen is up. */
-  _updateStartDrift(dt) {
-    if (!this._startDriftBase) {
-      this._startDriftBase = {
-        x: this.camera.position.x,
-        y: this.camera.position.y,
-        z: this.camera.position.z,
-        yaw: this.player.yaw,
-      }
-    }
-    const t = this.animTime
-    const base = this._startDriftBase
-    this.camera.position.set(
-      base.x + Math.sin(t * 0.11) * 0.22,
-      base.y + Math.sin(t * 0.07 + 1.3) * 0.045,
-      base.z + Math.cos(t * 0.09) * 0.22,
+  /** The title screen still looks at the street, because it is behind the title. */
+  _updateStart(dt) {
+    this.fade = Math.max(0, this.fade - dt * 0.7)
+    this.camera.position.set(SPAWN.position.x, 1.75, SPAWN.position.z)
+    this.camera.rotation.set(
+      Math.sin(this.animTime * 0.31) * 0.03,
+      SPAWN_YAW + Math.sin(this.animTime * 0.19) * 0.09,
+      0,
+      'YXZ',
     )
-    this.player.yaw = base.yaw + Math.sin(t * 0.05) * 0.06
-    this.player.pitch = Math.sin(t * 0.06 + 0.7) * 0.02
-    this.player._applyCamera()
   }
 
-  _updatePlaying(dt, state) {
-    // one-off reveal: the walls rise out of the floor while the black lifts
-    if (this.introActive) {
-      this.introElapsed += dt
-      const elapsed = this.introElapsed
-      this._updateWallMatrices((entry) => easeOutCubic01((elapsed - 0.2 - entry.delay * 0.6) / 1.1))
-      this.store.set({ fade: 1 - easeInOut01(elapsed / INTRO_FADE_SECONDS) })
-      if (elapsed > INTRO_FADE_SECONDS + 1.2) {
-        this.introActive = false
-        this._updateWallMatrices(() => 1)
-        this.store.set({ fade: 0 })
+  _updatePlaying(dt) {
+    const moved = this.player.update(dt)
+    this._applyShake(dt)
+    // again after the move, so this frame's interaction ranges and this frame's
+    // colliders are both measured against the copy the player is actually in
+    this._recentre()
+    this._refreshColliders()
+    this._updateVerbs(dt)
+    this._updateCreature(dt, moved)
+    if (this.state.finale && this._insideExit()) this._win()
+  }
+
+  /**
+   * _recentre — hand the world the copy the player is standing in.
+   *
+   * Once per frame, and a no-op unless the player has crossed a half-period
+   * boundary, which is every 448 m of walking. This is the only place the wrap
+   * moves, and the reason the player never has to: their coordinates run
+   * monotonically and the world slides behind them instead.
+   */
+  _recentre() {
+    this.streetView.recentre(this.player.pos.x, this.player.pos.z)
+  }
+
+  // -------------------------------------------------------------------------
+  // the two verbs (§5.2) and the hammer (§7.1)
+  // -------------------------------------------------------------------------
+
+  /**
+   * _updateVerbs — hold to interact.
+   *
+   * `rules.applyPortalHold` is the whole of §5.2 and is called once per portal per
+   * frame: the one being held gets `true`, and every other portal gets `false` so
+   * that walking away from a half-finished shutdown bleeds it off rather than
+   * freezing it at 60%. Decay is what makes aborting free, and a frozen ring
+   * would be the cheapest way in the game to cheese the noise threshold.
+   */
+  _updateVerbs(dt) {
+    const holding = this.player.interactHeld()
+    const swing = this.player.consumeSwing()
+    const portal = this.streetView.nearestPortal(this.player.pos)
+    const hammer = this.streetView.nearestHammer(this.player.pos)
+    this._prompt = portal ? 'portal' : hammer ? 'hammer' : null
+
+    for (const entry of this.streetView.portals) {
+      const active = Boolean(portal && portal.id === entry.id && holding)
+      const shutBefore = this.state.portals[entry.id] === true
+      this.state = rules.applyPortalHold(this.state, entry.id, dt, active)
+      if (!active) this.portalNoiseElapsed = 0
+      if (!active || shutBefore) continue
+      // §5.2: silent for the first half, then a 25 m sound event once per window
+      // rather than once per frame
+      this.portalNoiseElapsed += dt
+      if (
+        this.state.progress[entry.id] >= rules.PORTAL_NOISE_THRESHOLD &&
+        this.portalNoiseElapsed >= beast.SOUND_EVENT_SECONDS
+      ) {
+        this.portalNoiseElapsed = 0
+        this.soundEvents.push({
+          kind: 'portal',
+          radius: rules.PORTAL_SOUND_RADIUS,
+          position: this.streetView.worldOf(entry.position),
+        })
       }
+      if (this.state.portals[entry.id]) this._onPortalShut(entry.id)
     }
 
-    this.player.update(dt)
+    if (hammer && holding) {
+      this.hammerHold += dt
+      if (this.hammerHold >= rules.PORTAL_SHUT_SECONDS) this._takeHammer()
+    } else {
+      this.hammerHold = Math.max(0, this.hammerHold - dt * rules.PORTAL_RELEASE_DECAY)
+    }
 
-    // The world owns the countdown; the store only mirrors it at ~20Hz so the
-    // HUD does not re-render 60 times a second.
-    this.timeLeft = advanceTimer(this.timeLeft, dt)
-    this.meterAccum += dt
-    if (this.meterAccum >= 0.05 || this.timeLeft <= 0) {
-      this.meterAccum = 0
-      this.store.set({ timeLeft: this.timeLeft })
+    // §7.4: a swing is a press, and the hammer answers to the creature, not the
+    // world. With nothing in reach it is simply noise, which is the point —
+    // swinging at the dark is how you get found.
+    if (swing) {
+      this.soundEvents.push({
+        kind: 'toll',
+        radius: beast.SOUND_RADII.toll,
+        position: { x: this.player.pos.x, z: this.player.pos.z },
+      })
     }
-    if (this.timeLeft <= 0) {
-      this._beginReset()
-      return
-    }
-    this._updatePrompt(state)
-    this._checkWin()
   }
 
-  /** The HUD prompt lights up when an unlit shrine is within reach. */
-  _updatePrompt(state) {
-    let nearest = null
-    let nearestDistance = Infinity
-    for (const id of SHRINE_IDS) {
-      const shrine = this.shrines.get(id)
-      if (shrine.lit) continue
-      const distance = Math.hypot(
-        this.player.pos.x - shrine.group.position.x,
-        this.player.pos.z - shrine.group.position.z,
-      )
-      if (distance < nearestDistance) {
-        nearestDistance = distance
-        nearest = shrine
-      }
+  /** §7.2: the pickup tolls the bell, and the toll is what wakes the creature. */
+  _takeHammer() {
+    if (this.state.hammerHeld) return false
+    this.state = { ...this.state, hammerHeld: true }
+    this.streetView.setHammerTaken(true)
+    this.hammerHold = 0
+    // the flag, not the transition: §6.1's telegraph -> stalk edge is fired by the
+    // next `creatureStep`, so the pickup frame cannot skip a frame of the machine
+    this._hammerToll = true
+    this.audio?.bellToll(0.1, 196, 0.5)
+    return true
+  }
+
+  /**
+   * A portal went down: darken the world one step and take its light out for good.
+   *
+   * §5.4's permanent record of progress. The dusk step and the headlights are the
+   * finale's *visible* consequences; the enraged creature that follows them is
+   * slice 13's business, and it is entirely inside `creatureStep`.
+   */
+  _onPortalShut(id) {
+    this.streetView.setPortalShut(id, true)
+    this._applyDusk(this.state.dusk)
+    this.streetView.setHeadlights(this.state.finale)
+    this.audio?.bellToll(0.25, 330, 0.3)
+  }
+
+  _refreshColliders() {
+    if (this.streetView.revision === this._colliderRevision) return
+    this._colliderRevision = this.streetView.revision
+    this.player.setColliders(this.streetView.colliders())
+  }
+
+  /**
+   * _updateCreature — §6.1, one frame, driven entirely by the pure module.
+   *
+   * The world's whole job here is to answer three questions the module asks and
+   * then get out of the way: what did the player just do that was loud, can the
+   * creature see them, and how far away are they. Everything else — the meter, the
+   * transitions, the capture test, the banish ladder — is `creature.js`.
+   *
+   * Positions are CANONICAL. `reemergeNode` and `streetNodeToWorld` both speak in
+   * the folded frame, and so do the occluders the sight tests need, so the
+   * creature's position is canonical too and every distance to the player goes
+   * through `wrapDelta`. That is the seam §3.3's fold was built to leave.
+   *
+   * Slice 10 adds the mesh. Until then this loop is invisible on purpose: §8.1's
+   * promise is that Act I cannot kill you, and nothing in this method can end a
+   * run while the hammer is untaken.
+   */
+  _updateCreature(dt) {
+    const player = { x: this.player.pos.x, z: this.player.pos.z, yaw: this.player.yaw }
+    const from = this.creaturePosition
+    const dx = beast.wrapDelta(from.x, player.x)
+    const dz = beast.wrapDelta(from.z, player.z)
+    const distance = Math.hypot(dx, dz)
+    const occluders = this.streetView.canonicalOccluders()
+    const range = beast.detectionRange(this.creature.tier, this.creature.reemergenceCount)
+
+    // §6.2: whatever the player queued, plus whatever the world queued
+    for (const event of this.player.drainSounds()) this.soundEvents.push(event)
+    const sounds = this.soundEvents
+    this.soundEvents = []
+
+    const removed = this.creature.state === 'dormant' || this.creature.state === 'stagger'
+    if (removed) this.banishElapsed += dt
+    else this.banishElapsed = 0
+
+    const step = beast.creatureStep(this.creature, dt, {
+      sounds,
+      seen: beast.canSee(from, player, { range, occluders }),
+      sightDistance: distance,
+      sightRange: range,
+      playerPosition: player,
+      distance,
+      hammerPickup: this._hammerToll === true,
+      swing: false,
+      finale: this.state.finale,
+      // §6.1 in one call: the telegraph "is gone when you look back", so the
+      // sighting is the view cone and nothing else — not the creature's detection
+      // range, which belongs to the hunter it becomes in Act II
+      sighting: beast.inSightCone(player, from),
+      reemerge: removed && beast.reemergeReady(this.creature, this.banishElapsed),
+      searchExhausted: false,
+      searchPosition: null,
+    })
+    this._hammerToll = false
+    this.creature = step.creature
+    this.creature = { ...this.creature, banishCount: this.state.banishCount, tier: rules.portalsShut(this.state.portals) }
+    this.creatureAwareness = step.awareness
+
+    if (step.to === 'stalk' && this.creature.state === 'stalk') this._walkCreature(dt, player)
+    if (step.to === 'dormant' && step.from !== 'dormant') this.banishElapsed = 0
+    if (step.to === 'stalk' && step.from === 'dormant') this._reemerge(player, occluders)
+    if (step.captured) this._capture()
+  }
+
+  /**
+   * _walkCreature — one hop along the street graph, at the tier's speed.
+   *
+   * §6.1's STALK "ranges around" the last-heard point and CHASE closes; both are
+   * the same walk here, because the difference between them is *which* point the
+   * module hands over, and that choice is already made by the time we get here.
+   * The creature is on the roads and never off them, which is what makes the
+   * street graph the right thing to path on at all.
+   */
+  _walkCreature(dt, player) {
+    const target = this.creature.lastHeard ?? player
+    const hop = beast.nextHop(this.creaturePosition, target)
+    if (hop == null) return
+    const next = streetNodeToWorld(hop)
+    const dx = beast.wrapDelta(this.creaturePosition.x, next.x)
+    const dz = beast.wrapDelta(this.creaturePosition.z, next.z)
+    const step = Math.hypot(dx, dz)
+    if (step < 1e-6) return
+    const speed = beast.creatureSpeed(this.creature.tier, this.creature.reemergenceCount)
+    const travel = Math.min(step, speed * dt)
+    this.creaturePosition = {
+      x: this.creaturePosition.x + (dx / step) * travel,
+      z: this.creaturePosition.z + (dz / step) * travel,
     }
-    this.nearestShrine = nearestDistance <= PROMPT_RANGE ? nearest : null
-    const prompt = this.nearestShrine ? 'light' : null
-    if (prompt !== state.prompt) this.store.set({ prompt })
   }
 
-  _checkWin() {
-    if (!this.doorOpen || !this.doorCenter) return
-    if (isInsideChamber(this.player.pos, this.doorCenter, DOOR_WIN_RADIUS)) this._win()
+  /** §8.3: come back at a distance, out of sight, knowing nothing. */
+  _reemerge(player, occluders) {
+    const spot = beast.reemergeNode({
+      player: player,
+      occluders,
+      seed: this.seed,
+      reemergenceCount: this.creature.reemergenceCount,
+    })
+    if (!spot) return
+    this.creaturePosition = { x: spot.position.x, z: spot.position.z }
+    this.banishElapsed = 0
   }
 
-  _win() {
+  /**
+   * Act I opens with a sighting, and it is placed by the *opposite* rule to a
+   * re-emergence.
+   *
+   * §8.3 exists so that something coming back is never a jump scare: minimum graph
+   * distance, never in line of sight. A telegraph is the deliberate exception —
+   * §6.1 says it "appears at long range and is gone when you look back", which is
+   * only a sentence if you can see it. So the distance floor is kept (§8.3's, so
+   * the two never disagree about how far is far enough) and the sight rule is
+   * inverted: the node must be inside the player's view cone.
+   *
+   * The pick is hashed, not random, because a run's first apparition should be the
+   * same apparition every time it is replayed with the same seed.
+   */
+  _firstSightingPoint() {
+    const from = beast.nodeId(SPAWN.position)
+    const hops = hood.streetDistanceMap(from)
+    const facing = { x: SPAWN.position.x, z: SPAWN.position.z, yaw: SPAWN_YAW }
+    const candidates = []
+    for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+      if (hops[id] < beast.REEMERGE_MIN_GRAPH_DISTANCE) continue
+      const position = streetNodeToWorld(id)
+      if (beast.inSightCone(facing, position)) candidates.push(position)
+    }
+    if (candidates.length === 0) return { ...SPAWN.position }
+    const pick = Math.floor(streamAt(this.seed ^ 0x7e1e6a01, from, 0)() * candidates.length)
+    return { x: candidates[pick].x, z: candidates[pick].z }
+  }
+
+  // -------------------------------------------------------------------------
+  // capture (§9.1) and the win (§10.4)
+  // -------------------------------------------------------------------------
+
+  /**
+   * _insideExit — §10.4's test, with the wrap translated.
+   *
+   * `checkExitWin` compares the player's position against `state.exitAnchor`, and
+   * that anchor is canonical: the folded frame `neighborhood.js` places it in. The
+   * player's position is not, because the player never wraps. So the frame is
+   * translated here, in the one file that owns the wrap, and the rule itself stays
+   * exactly the pure one slice 05 asserted and §10.4 promises is the same shape as
+   * v1's `isInsideChamber`.
+   */
+  _insideExit() {
+    const anchor = this.streetView.worldOf(this.state.exitAnchor.position)
+    return rules.checkExitWin({ ...this.state, exitAnchor: { ...this.state.exitAnchor, position: anchor } }, this.player.pos)
+  }
+
+  /**
+   * _capture — you were caught.
+   *
+   * `rules.applyCapture` is §9.1's table and it is applied wholesale: the run-long
+   * ladder, the shut portals, the hammer and the finale all survive, the loop
+   * counter goes up, and you go back to spawn. The two things this method adds
+   * around it are the *churn* and the *time*: the fixture pass is permuted for
+   * the new loop (§3.6 — the streets stay exactly where they were and every
+   * car, hedge and bin moves), and the cross-fade covers the swap.
+   *
+   * Breath is deliberately untouched, and that is not an oversight: `teleport`
+   * does not touch it either, because §9.1's right-hand column is short on
+   * purpose and breath is in neither column. Being caught costs you where you
+   * were, not how tired you are.
+   */
+  _capture() {
+    this.state = rules.applyCapture(this.state)
+    this.creature = beast.createCreature({
+      state: this.state.hammerHeld ? 'stalk' : 'telegraph',
+      tier: rules.portalsShut(this.state.portals),
+      banishCount: this.state.banishCount,
+      finale: this.state.finale,
+    })
+    this.creaturePosition = this._firstSightingPoint()
+    this.soundEvents = []
+    this.hammerHold = 0
+    this.banishElapsed = 0
+    this._hammerToll = false
+    this.addShake(0.9)
     this.player.enabled = false
-    this.nearestShrine = null
-    this.store.set({ phase: PHASE.WON, prompt: null, fade: 0 })
-    // the double door swings fully wide as the win light floods in
-    this.door.wide = true
-    this.door.target = 1
-    this.door.leak.visible = false
-    this.audio?.winChord()
-    // loop 13: choreography state — final toll at 0.9s, black by 4.2s,
-    // ambience released once the picture is gone
-    this.winElapsed = 0
-    this.winTolled = false
-    this.winAmbientStopped = false
-    if (typeof document.exitPointerLock === 'function') document.exitPointerLock()
-  }
-
-  /** loop 13: the win plays out — toll, light swells, then black takes it. */
-  _updateWin(dt) {
-    this.winElapsed += dt
-    const elapsed = this.winElapsed
-
-    // one last, very low toll — the loop closing behind you
-    if (!this.winTolled && elapsed >= 0.9) {
-      this.winTolled = true
-      this.audio?.bellToll(0, 110, 0.5)
-      this.addShake(0.05)
-      this._vibrate([24, 90, 40]) // loop 15: the loop closes against your hand
-    }
-
-    // the black creeps in only after the chord has had its moment
-    const FADE_DELAY = 1.6
-    const FADE_TIME = 2.6
-    const fade =
-      elapsed <= FADE_DELAY ? 0 : Math.min(1, (elapsed - FADE_DELAY) / FADE_TIME)
-    this.store.set({ fade })
-
-    // release the ambience once the screen is fully dark
-    if (!this.winAmbientStopped && elapsed >= FADE_DELAY + FADE_TIME + 0.4) {
-      this.winAmbientStopped = true
-      this.audio?.stopAmbient()
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // the bell: fade out -> walls sink -> layout swaps behind black -> walls rise
-  // -------------------------------------------------------------------------
-
-  _beginReset() {
-    this.nextLoopNumber = this.store.get().loop + 1
+    this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
+    // the streets do not move and the objectives do not move; the dressing does
+    this.streetView.applyLoop(this.state.loop)
+    this.streetView.recentre(SPAWN.position.x, SPAWN.position.z)
     this.resetElapsed = 0
-    this.swapped = false
-    this.player.enabled = true // still free to walk while the walls sink
-    this.store.set({ phase: PHASE.RESET, prompt: null })
-    this.audio?.bellSequence(RESET_TIMELINE.tolls, RESET_TIMELINE.tollSpacing)
-    // loop 11: snapshot the old layout so the walls can glide to the new one
-    this._captureWallPositions()
-    this.wallAnimT = 0
-    this.resetTollIndex = 0 // shake lands with each toll in _updateReset
-    this.timeLeft = LOOP_SECONDS
+    this.fade = 1
+    this.store.set({ phase: PHASE.RESET, fade: 1 })
+    this._applyDusk(this.state.dusk)
+    // §13 calls the capture sting a toll and not a fade cue, and a toll is the
+    // only thing v1's audio manager can already play
+    this.audio?.bellSequence(3, 0.7)
   }
 
   _updateReset(dt) {
     this.resetElapsed += dt
-    const elapsed = this.resetElapsed
-
-    // loop 11: the shake lands with every toll, decaying between them
-    while (
-      this.resetTollIndex < RESET_TIMELINE.tolls &&
-      elapsed >= this.resetTollIndex * RESET_TIMELINE.tollSpacing
-    ) {
-      this.addShake(0.055)
-      this._vibrate(16) // loop 15: each toll lands in the controller too
-      this.resetTollIndex++
-    }
-
-    if (!this.swapped && elapsed >= RESET_SWAP_AT) {
-      this.swapped = true
-      this._swapLoop()
-    }
-
-    // loop 11: the walls glide to their new cells through the whole reset
-    if (this.wallAnimFrom) {
-      this.wallAnimT = Math.min(1, this.wallAnimT + dt / RESET_TIMELINE.total)
-      if (this.wallAnimT >= 1) this.wallAnimFrom = null
-    }
-
-    if (this.swapped) {
-      this._updateWallMatrices((entry) => wallRiseProgress(elapsed, entry.delay))
-      // frozen while the floor is still swallowing the layout
-      this.player.enabled = elapsed > RESET_SWAP_AT + RESET_TIMELINE.rise * 0.45
-    } else {
-      this._updateWallMatrices(() => 1 - easeInOut01(elapsed / RESET_SWAP_AT))
-      this.player.update(dt)
-    }
-
-    this.store.set({ fade: resetFade(elapsed), timeLeft: LOOP_SECONDS })
-    if (elapsed >= RESET_TIMELINE.total) {
-      this.player.enabled = true
-      this.store.set({ phase: PHASE.PLAYING })
-    }
+    const half = CAPTURE_FADE_SECONDS / 2
+    this.fade = this.resetElapsed < half ? this.resetElapsed / half : Math.max(0, 1 - (this.resetElapsed - half) / half)
+    if (this.resetElapsed < CAPTURE_FADE_SECONDS) return
+    this.player.enabled = true
+    this.fade = 0
+    this.store.set({ phase: PHASE.PLAYING, fade: 0 })
   }
 
   /**
-   * loop 11: kick the screenshake. Amplitude is clamped so stacked tolls
-   * cannot fling the camera through a wall.
+   * _win — §10.4. Inside the exit, with the finale running, the run is over.
+   *
+   * The whole geometry is one call into `rules.checkExitWin`, deliberately the
+   * same shape as v1's `isInsideChamber` so the benchmark's "keep the win
+   * condition comparable between runs" is literally true. The freeze matters as
+   * much as the chord: PHASE.WON is a simulation state, so `update` stops moving
+   * the player and the world holds still behind the card.
+   */
+  _win() {
+    this.player.enabled = false
+    this.store.set({ phase: PHASE.WON, prompt: null })
+    this.audio?.winChord()
+  }
+
+  /** The world holds still behind the win card; only the fade keeps moving. */
+  _updateWon(dt) {
+    this.fade = Math.min(0.6, this.fade + dt * 0.8)
+  }
+
+  // -------------------------------------------------------------------------
+  // the HUD mirror
+  // -------------------------------------------------------------------------
+
+  /**
+   * _syncHud — the slice of state the untouched v1 HUD happens to read.
+   *
+   * Slice 12 replaces all of this, and until it does there are two places where
+   * v2 and the v1 HUD disagree and the world has to be the one that bends:
+   *
+   *  - `candles` is the three shrine sigils, and v2 has no shrines. The three
+   *    portal sigils are the same three letters in the same order, so the HUD
+   *    lights them as portals are shut. It is written only when the set changes,
+   *    because a fresh object every frame would re-render React 60 times a
+   *    second to redraw three identical flames.
+   *  - `timeLeft` is the heartbeat line, and v2 has no countdown: the run ends
+   *    when you are caught, not when a bell rings. It is pinned full, so the line
+   *    sits still instead of reddening towards a deadline that does not exist.
+   */
+  _syncHud() {
+    // the phase comes from the store, not from the field `update` read at the top
+    // of the frame: a phase that changes *during* the frame — the cross-fade
+    // finishing, a win — would otherwise be written straight back over
+    const phase = this.store.get().phase ?? this.phase
+    const patch = { phase, loop: this.state.loop, fade: this.fade, prompt: this._prompt }
+    if (this.store.get().timeLeft !== LOOP_SECONDS) patch.timeLeft = LOOP_SECONDS
+    const key = Object.keys(this.state.portals)
+      .filter((id) => this.state.portals[id])
+      .join('')
+    if (key !== this._candleKey) {
+      this._candleKey = key
+      patch.candles = Object.fromEntries(Object.keys(this.state.portals).map((id) => [id, this.state.portals[id]]))
+    }
+    this.store.set(patch)
+  }
+
+  /**
+   * addShake / _applyShake — a temporary camera offset on top of the pose the
+   * player just wrote.
+   *
+   * v1's screenshake, kept because a capture has to land: the alternative is the
+   * screen going black while the world quietly permutes itself, which reads as a
+   * bug rather than as a death. The amplitude decays every frame and is applied
+   * *after* `player.update`, so it never fights the controller for the camera.
+   * Slice 12's reduced-motion toggle suppresses this along with the head bob.
    */
   addShake(amount) {
-    this.shake = Math.min(0.14, this.shake + amount)
+    this.shake = Math.min(1, this.shake + amount)
   }
 
-  /**
-   * loop 15: controller vibration on the bell and the candles. The Vibration
-   * API is a silent no-op wherever it is unsupported (most desktops, iOS), so
-   * this is guarded and best-effort — pure extra texture where it exists.
-   */
-  _vibrate(pattern) {
-    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return
-    try {
-      navigator.vibrate(pattern)
-    } catch {
-      /* haptics are strictly optional */
-    }
-  }
-
-  /** loop 11: apply the decaying shake offset after the player's camera write. */
   _applyShake(dt) {
     if (this.shake <= 0.0005) {
       this.shake = 0
       return
     }
-    this.shake *= Math.exp(-2.6 * dt)
-    const t = this.animTime * 31 + this._shakeSeed
-    this.camera.position.x += Math.sin(t * 1.1) * this.shake
-    this.camera.position.y += Math.sin(t * 1.7 + 1.2) * this.shake * 0.6
-    this.camera.rotation.z += Math.sin(t * 0.9 + 0.5) * this.shake * 0.35
-  }
-
-  /** Everything the bell changes: layout, shrines, door, spawn, loop counter. */
-  _swapLoop() {
-    const candles = this.store.get().candles
-    const doorOpen = shouldDoorOpenAtLoopStart(candles)
-    this._loadMaze(this.nextLoopNumber, { doorOpen })
-    this._updateWallMatrices(() => 0) // the new walls wait under the floor
-    this.store.update((state) => beginLoop(state, this.nextLoopNumber, PHASE.RESET))
-    this.timeLeft = LOOP_SECONDS
-    if (doorOpen && !this.doorOpened) {
-      // a second, lower toll tells the player the door at the centre is open
-      this.audio?.bellToll(1.6, 165, 0.35)
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // per-frame visuals
-  // -------------------------------------------------------------------------
-
-  _updateFlashlight(dt) {
-    if (!this._flashDesired) {
-      this._flashDesired = new THREE.Vector3()
-      this._forward = new THREE.Vector3()
-      this._flashDesired.set(0, 0, 0)
-    }
-    // slightly above the eye, so the cone sits a touch low and reads as a lamp
-    this.flashlight.position.set(
-      this.camera.position.x,
-      this.camera.position.y + 0.14,
-      this.camera.position.z,
-    )
-    this._forward.set(0, 0, -1).applyQuaternion(this.camera.quaternion)
-    this._flashDesired.copy(this.camera.position).addScaledVector(this._forward, 9)
-    // the lag: the cone catches up with where you are looking
-    this.flashlightTarget.position.lerp(this._flashDesired, 1 - Math.exp(-5.5 * dt))
-
-    // loop 6: battery dying as the bell approaches — in the last 8 seconds the
-    // lamp browns out in irregular dips, then recovers after the reset
-    const BASE = 55
-    let desired = BASE
-    if (this.phase === PHASE.PLAYING && this.timeLeft < 8) {
-      const danger = 1 - this.timeLeft / 8
-      const dip = Math.max(0, flickerNoise(this.animTime * 2.3 + 1.4)) * danger
-      desired = BASE * (1 - 0.5 * dip)
-    } else if (this.phase === PHASE.RESET && this.resetElapsed < 1.2) {
-      desired = BASE * 0.72 // the toll knocks the battery for a moment
-    }
-    this.flashlight.intensity += (desired - this.flashlight.intensity) * (1 - Math.exp(-11 * dt))
-    // colour cools as it browns out
-    const warmth = this.flashlight.intensity / BASE
-    this.flashlight.color.setRGB(1, 0.8 + 0.06 * warmth, 0.55 + 0.13 * warmth)
-  }
-
-  _updateShrines(dt) {
-    for (const id of SHRINE_IDS) {
-      const shrine = this.shrines.get(id)
-      if (!shrine.lit) continue
-      shrine.level += (1 - shrine.level) * (1 - Math.exp(-4 * dt))
-      const noise = flickerNoise(this.animTime + shrine.flicker)
-      const n01 = 0.5 + 0.5 * noise
-      // layered flame: each layer bobs and sways at its own frequency
-      shrine.flames.forEach((flame, layer) => {
-        const wobble = flickerNoise(this.animTime * (1.6 + layer * 0.7) + shrine.flicker + layer * 2.1)
-        flame.position.x = wobble * (0.014 + layer * 0.008)
-        flame.position.y = 1.3 + layer * 0.02 + n01 * 0.015
-        const s = (1.1 - layer * 0.28) * shrine.level
-        flame.scale.set(s * (0.9 + 0.1 * n01), s * (1.7 + 0.25 * n01), 1)
-        flame.material.opacity = (0.8 - layer * 0.22) * shrine.level * (0.85 + 0.15 * n01)
-      })
-      // pulsing point light: intensity flicker + breathing radius
-      shrine.flameLight.intensity = shrine.baseIntensity * shrine.level * (0.82 + 0.18 * n01)
-      shrine.flameLight.distance = 7.4 + 1.4 * n01
-      shrine.halo.scale.setScalar(0.9 + 0.25 * n01)
-      shrine.halo.material.opacity = 0.1 + 0.06 * n01
-
-      // embers: rise, drift, recycle back into the candle top
-      const positions = shrine.embers.geometry.attributes.position
-      const array = positions.array
-      for (let i = 0; i < shrine.emberSpeeds.length; i++) {
-        const idx = i * 3
-        array[idx + 1] += shrine.emberSpeeds[i] * dt
-        array[idx] += Math.sin(this.animTime * 2.1 + i * 1.7) * 0.02 * dt
-        array[idx + 2] += Math.cos(this.animTime * 1.7 + i * 2.3) * 0.02 * dt
-        if (array[idx + 1] > 1.95) {
-          array[idx] = (Math.random() - 0.5) * 0.06
-          array[idx + 1] = 1.2
-          array[idx + 2] = (Math.random() - 0.5) * 0.06
-        }
-      }
-      positions.needsUpdate = true
-    }
-  }
-
-  _updateDoor(dt) {
-    const door = this.door
-    if (Math.abs(door.swing - door.target) > 0.0005) {
-      door.swing += (door.target - door.swing) * (1 - Math.exp(-3.2 * dt))
-      this._applyDoorSwing()
-    }
-    if (door.doorLight.visible) {
-      door.doorLight.intensity = 15 + Math.sin(this.animTime * 1.7) * 2.5
-    }
-    if (door.leakLight.visible) {
-      // warm light breathing through the crack; gone once the door is wide
-      door.leakLight.intensity = (1.6 + Math.sin(this.animTime * 1.7) * 0.5) * (1 - door.swing)
-      door.leak.material.opacity = 0.85 * (1 - door.swing)
-    }
-  }
-
-  /** A warm lamp at the entrance, brightest right after a spawn, then fading. */
-  _updateSpawnLight(dt) {
-    if (!this.startedOnce) {
-      this.spawnLight.intensity = 0
-      return
-    }
-    this.spawnElapsed += dt
-    const t = this.spawnElapsed
-    const intensity = t < 0.4 ? (t / 0.4) * 9 : Math.max(0, 9 * (1 - (t - 0.4) / 5.5))
-    this.spawnLight.intensity = intensity
+    this.shake = Math.max(0, this.shake - dt * 1.6)
+    const t = this.animTime
+    this.camera.position.x += Math.sin(t * 47) * this.shake * 0.06
+    this.camera.position.y += Math.sin(t * 61 + 1.3) * this.shake * 0.05
+    this.camera.position.z += Math.cos(t * 53) * this.shake * 0.06
   }
 
   // -------------------------------------------------------------------------
   // public API used by React
   // -------------------------------------------------------------------------
 
-  /** BEGIN: freeze-off, walls rise, black lifts, pointer lock, first toll. */
+  /** BEGIN: unfreeze, hand the camera to the player, first toll, pointer lock. */
   start() {
     if (this.startedOnce) return
     this.startedOnce = true
-    this.introActive = true
-    this.introElapsed = 0
-    this.spawnElapsed = 0
-    this.timeLeft = LOOP_SECONDS
     this.player.enabled = true
-    this.store.set({ phase: PHASE.PLAYING, timeLeft: LOOP_SECONDS, fade: 1, prompt: null })
+    this.fade = 1
+    this.store.set({ phase: PHASE.PLAYING, fade: 1, prompt: null })
     this.player.requestLock()
     this.audio?.bellToll(0, 220, 0.5)
   }
 
-  /** BEGIN AGAIN: wipe the run and replay loop 1 through the same transition. */
+  /**
+   * BEGIN AGAIN — the one place a full wipe is correct (§10.4).
+   *
+   * Portals, the hammer, the banish ladder and the loop counter all go back to
+   * their opening values, the fixtures permute back to loop 1, and the creature
+   * goes back to the Act I sighting. The player goes back to spawn.
+   */
   restart() {
-    this.nextLoopNumber = 1
-    this.resetElapsed = 0
-    this.swapped = false
-    this.introActive = false
-    this.doorOpened = false
-    this.door.wide = false
     this.startedOnce = true
-    this.player.enabled = true
-    this.timeLeft = LOOP_SECONDS
-    this.store.set({ ...restartState(1), phase: PHASE.RESET, fade: 0 })
-    this._applyShrineStates() // three candles go dark again
-    this._setDoorOpen(false, true)
-    this.spawnElapsed = 0
-    this.player.requestLock()
-    this.audio?.bellSequence(RESET_TIMELINE.tolls, RESET_TIMELINE.tollSpacing)
+    this.state = rules.createInitialState(this.objectives, { loop: 1 })
+    this.creature = beast.createCreature({ state: 'telegraph' })
+    this.creaturePosition = this._firstSightingPoint()
+    this.soundEvents = []
+    this.hammerHold = 0
+    this.banishElapsed = 0
+    this._hammerToll = false
+    this._prompt = null
+    for (const portal of this.streetView.portals) this.streetView.setPortalShut(portal.id, false)
+    this.streetView.setHammerTaken(false)
+    this.streetView.setHeadlights(false)
+    this.streetView.applyLoop(1)
+    this.streetView.recentre(SPAWN.position.x, SPAWN.position.z)
+    this._refreshColliders()
+    this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
+    this.player.enabled = false
+    this._applyDusk(0)
+    this.resetElapsed = 0
+    this.fade = 1
+    this.store.set({ phase: PHASE.RESET, fade: 1 })
+    this.audio?.bellSequence(3, 0.7)
   }
 
-  /** E / click: light the shrine the player is standing next to. */
-  tryLight() {
-    if (this.phase !== PHASE.PLAYING || !this.nearestShrine) return false
-    return this._lightShrine(this.nearestShrine)
+  /**
+   * tryInteract — one frame of the interact verb, for callers that cannot hold a
+   * key. The browser never needs it: holding `E` is the whole verb (§5.2), and a
+   * one-shot interact would quietly turn a two-beat commitment into a tap.
+   */
+  tryInteract(dt = 1 / 60) {
+    if (this.phase !== PHASE.PLAYING) return false
+    this.player.pressKey('KeyE')
+    this._updateVerbs(dt)
+    this.player.releaseKey('KeyE')
+    return true
   }
 
   dispose() {
@@ -1942,14 +826,11 @@ export class BellLoopGame {
     this.canvas.removeEventListener('mousedown', this._onMouseDown)
     this._resizeObserver?.disconnect()
     this.player.dispose()
+    this.streetView.dispose()
     const seenTextures = new Set()
     this.scene.traverse((object) => {
       if (object.geometry) object.geometry.dispose()
-      const materials = Array.isArray(object.material)
-        ? object.material
-        : object.material
-          ? [object.material]
-          : []
+      const materials = Array.isArray(object.material) ? object.material : object.material ? [object.material] : []
       for (const material of materials) {
         for (const key of ['map', 'bumpMap', 'roughnessMap']) {
           const texture = material[key]
@@ -1965,3 +846,16 @@ export class BellLoopGame {
     this.canvas.parentNode?.removeChild(this.canvas)
   }
 }
+
+/**
+ * v1's name, still exported.
+ *
+ * `App.jsx` imports the v2 class under this name so that the swap is a single
+ * changed line (GAMEDESIGN §15.1), and `verify-world.mjs` still reaches for it —
+ * that harness is broken at the base commit and slice 14 owns the repair, so
+ * leaving the name resolvable keeps its failure the *same* failure rather than a
+ * new one. Slice 16 deletes it with the rest of v1.
+ */
+export const BellLoopGame = LongQuietGame
+
+export default LongQuietGame

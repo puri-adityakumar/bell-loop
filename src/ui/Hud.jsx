@@ -55,7 +55,10 @@ export default function Hud({ hud }) {
             </svg>
           </span>
         </div>
-        <div className={`hud__prompt${hud.prompt === 'light' ? ' hud__prompt--on' : ''}`} aria-hidden="true">
+        {/* v2 slice 09: the prompt is now 'portal' or 'hammer' rather than v1's
+            'light', so the key hint shows whenever there is anything in reach.
+            Slice 12 replaces this line along with the rest of the HUD. */}
+        <div className={`hud__prompt${hud.prompt ? ' hud__prompt--on' : ''}`} aria-hidden="true">
           <span className="hud__prompt-key">E</span>
         </div>
         {hud.showFps && hud.phase !== PHASE.START ? (
