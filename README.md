@@ -17,20 +17,3 @@ Read [`AGENTS.md`](AGENTS.md) for the benchmark workflow and [`benchmark/README.
 | --- | --- |
 | _Comparison capture pending_ | [![Space Bunny title](benchmark/screenshots/space-bunny/title.png)](benchmark/screenshots/space-bunny/title.png) |
 | _Comparison capture pending_ | [![Space Bunny shrine](benchmark/screenshots/space-bunny/shrine.png)](benchmark/screenshots/space-bunny/shrine.png) |
-
-## Run the checkpoint
-
-```bash
-npm ci
-npm run dev
-npm run check
-```
-
-## Add a model result
-
-1. Create `provider/model` from `main`.
-2. Run bounded improvement passes with a council and `npm run check`.
-3. Capture the required states.
-4. Copy `benchmark/templates/result-readme.md` to the result branch README.
-5. Deploy only the result branch.
-6. Add an approved screenshot, branch/model link, deployment link, and comparison capture to this page.
