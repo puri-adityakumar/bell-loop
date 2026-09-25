@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "generated_at": "2026-09-25T12:31:57.029Z",
-  "base_branch": "base",
+  "generated_at": "2026-09-25T15:17:30.714Z",
+  "base_branch": "main",
   "entries": [
     {
       "benchmark": "bell-loop",
@@ -10,8 +10,8 @@
       "model": "space-bunny-free",
       "variant": "max",
       "branch": "stealth/space-bunny",
-      "base_branch": "base",
-      "base_commit": "148c75c",
+      "base_branch": "main",
+      "base_commit": "2820b72cab594000e426ed5084aa095dea57626c",
       "status": "candidate",
       "run_count": 1,
       "pass_count": 30,
@@ -47,9 +47,9 @@
         "screenshots/cycle18-reset.png",
         "screenshots/cycle22-pause.png"
       ],
-      "repository": "https://github.com/zeke-cmd/bell-loop",
-      "readme_url": "https://github.com/zeke-cmd/bell-loop/blob/stealth/space-bunny/README.md",
-      "branch_url": "https://github.com/zeke-cmd/bell-loop/tree/stealth/space-bunny"
+      "repository": "https://github.com/puri-adityakumar/bell-loop",
+      "readme_url": "https://github.com/puri-adityakumar/bell-loop/blob/stealth/space-bunny/README.md",
+      "branch_url": "https://github.com/puri-adityakumar/bell-loop/tree/stealth/space-bunny"
     }
   ]
 }

@@ -23,7 +23,7 @@
     "model": { "type": "string", "minLength": 1 },
     "variant": { "type": "string" },
     "branch": { "type": "string", "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$" },
-    "base_branch": { "const": "base" },
+    "base_branch": { "const": "main" },
     "base_commit": { "type": "string", "minLength": 7 },
     "status": { "enum": ["draft", "candidate", "verified", "archived"] },
     "run_count": { "type": "integer", "minimum": 0 },

@@ -5,8 +5,8 @@ provider: opencode
 model: space-bunny-free
 variant: max
 branch: stealth/space-bunny
-base_branch: base
-base_commit: 148c75c
+base_branch: main
+base_commit: 2820b72cab594000e426ed5084aa095dea57626c
 status: candidate
 run_count: 1
 pass_count: 30
@@ -35,7 +35,7 @@ screenshots: ["cycle30-title.png", "cycle30-entry.png", "cycle30-shrine.png", "c
 
 A first-person temporal horror maze built with Vite, React, and Three.js. The bell tolls every 60 seconds, the maze rearranges deterministically, three candle shrines persist across loops, and the center door opens after the third candle.
 
-This branch is a benchmark result built from `base` commit `148c75c`. The complete workflow, statistics, captures, and implementation delta are recorded here.
+This branch is a benchmark result built from `main` checkpoint `2820b72`. The complete workflow, statistics, captures, and implementation delta are recorded here.
 
 ## Run card
 
@@ -45,8 +45,8 @@ This branch is a benchmark result built from `base` commit `148c75c`. The comple
 | Model | `space-bunny-free` |
 | Variant | `max` |
 | Result branch | `stealth/space-bunny` |
-| Base branch | `base` |
-| Base commit | `148c75c` |
+| Checkpoint branch | `main` |
+| Checkpoint commit | `2820b72` |
 | Status | Candidate |
 | Deployment | Pending |
 
@@ -80,13 +80,13 @@ Token totals are the cumulative OpenCode session snapshot for the main agent and
 
 ```mermaid
 flowchart LR
-  B[base commit] --> C[Council debate]
+  B[main checkpoint] --> C[Council debate]
   C --> P[30 bounded passes]
   P --> I[Implementation]
   I --> G[npm run check]
   G --> S[Project-local capture]
   S --> C
-  G --> D[Static catalog entry]
+  G --> D[Result card]
 ```
 
 Each pass used a read-only council, a bounded implementation, a quality gate, and a project-local screenshot. The run used 127 task calls across 123 persisted agent sessions: 109 `general` reviews and 14 `explore` reviews.
@@ -155,7 +155,7 @@ Each pass used a read-only council, a bounded implementation, a quality gate, an
   </tr>
 </table>
 
-## Delta from `base`
+## Delta from `main`
 
 ### Logic
 
