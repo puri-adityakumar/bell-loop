@@ -3969,6 +3969,80 @@ check('the wires are ONE mesh carrying every span, and nothing else draws them',
   assert.equal(attributes.aSide.count, attributes.position.count, 'the ribbon sides do not line up with its corners')
 })
 
+check('every wire quad is a fan of its OWN four corners, paired to the other end of its segment', () => {
+  // THE REVIEW'S FINDING, and the reason this check exists. The check above
+  // proves the wire HAS an `aEnd` attribute. It does not prove anything is IN
+  // it, and the pass shipped both of these defects live:
+  //
+  //   1. `aEnd` was paired by reading the quad's corner order as an
+  //      ALTERNATION (`k < 2 ? q : p`). The order is a RING — p, q, q, p — so
+  //      k=1 (a `q` corner) was handed `q` and k=3 (a `p` corner) was handed
+  //      `p`: a zero-length segment on 36,288 of the 72,576 corners. A
+  //      zero-length segment has no direction, so the shader's `dir` falls back
+  //      to a hardcoded `(1, 0)` and the ribbon is extruded along the screen's y
+  //      axis rather than perpendicular to the wire.
+  //   2. the index base was read off `face`, which counts INDICES at six per
+  //      quad, instead of off `corner`, which counts VERTICES at four. The two
+  //      drift apart by two per quad, so the first quad is coincidentally
+  //      right and every later triangle spans three unrelated world positions.
+  //
+  // Both are read here off the BUILT buffer rather than off the source, because
+  // the source carried a long, confident, CORRECT comment about each one while
+  // the code was wrong — which is the only evidence available that a comment is
+  // not a test. Neither defect is legible in a screenshot: each rasterises as
+  // "a handful of screen-filling wedges", which is also what a healthy wire
+  // looks like from the wrong angle.
+  game.restart()
+  run(game, 0.5)
+  const wire = game.streetView.wireMesh
+  assert.ok(wire, 'the world has no wire mesh at all')
+  const { position, aEnd, aSide } = wire.geometry.attributes
+  const index = wire.geometry.index.array
+  const quads = index.length / 6
+
+  let badIndex = 0
+  let degenerateEnds = 0
+  let stitchedSides = 0
+  for (let q = 0; q < quads; q += 1) {
+    const base = q * 4
+    // 1. THE INDEX. Six indices per quad, all inside this quad's own four
+    // corners, in the order the fan needs: base, base+1, base+2 | base, base+2,
+    // base+3. Requiring the exact order and not merely membership is what
+    // catches a base that has drifted by one; requiring membership at all is
+    // what catches one that has drifted by two.
+    const own = [base, base + 1, base + 2, base, base + 2, base + 3]
+    for (let k = 0; k < 6; k += 1) {
+      if (index[q * 6 + k] !== own[k]) badIndex += 1
+    }
+    // 2. THE PAIRING. `aEnd` is the OTHER sample of the same segment, so it is
+    // never the corner's own position, and never a zero-length hop.
+    for (let k = 0; k < 4; k += 1) {
+      const at = (base + k) * 3
+      if (
+        aEnd.array[at] === position.array[at] &&
+        aEnd.array[at + 1] === position.array[at + 1] &&
+        aEnd.array[at + 2] === position.array[at + 2]
+      ) {
+        degenerateEnds += 1
+      }
+    }
+    // 3. THE SIDES. `aSide` alone opens the ribbon, which is only true if the
+    // two `p` corners share one side and the two `q` corners share the other.
+    // A quad that ALTERNATES is a quad stitched to its neighbour's, and the
+    // seam is invisible in the buffer — only the table gives it away.
+    if (
+      aSide.array[base] !== aSide.array[base + 1] ||
+      aSide.array[base + 2] !== aSide.array[base + 3] ||
+      aSide.array[base] === aSide.array[base + 2]
+    ) {
+      stitchedSides += 1
+    }
+  }
+  assert.equal(badIndex, 0, `${badIndex} of ${quads * 6} wire indices are not this quad's own fan, so the buffer stitches triangles across quads`)
+  assert.equal(degenerateEnds, 0, `${degenerateEnds} of ${quads * 4} wire corners carry their OWN position as aEnd, so the shader has no segment to expand along`)
+  assert.equal(stitchedSides, 0, `${stitchedSides} wire quads alternate aSide, so the ribbon is stitched along the span instead of opened across it`)
+})
+
 check('the poles carry six conductors each, and stand on the pavement in all three copies', () => {
   // "Poles go at block corners, 8-10 m, with a crossarm and two insulators"
   // (AESTHETIC-NOTES §5) — read off the instance buffer rather than the source,

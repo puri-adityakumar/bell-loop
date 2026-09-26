@@ -8027,6 +8027,33 @@ function furnitureClaims(source, creature = CREATURE_VIEW_SOURCE) {
     /wire\.frustumCulled = false/.test(code),
     'the wire is frustum-culled, and its bounds are the bounds of the whole world',
   )
+  // 2b. THE RIBBON'S TWO TABLES — the pair this pass got wrong first and the
+  // reason the gate could not see it. The gate above proves the wire has an
+  // `aEnd` ATTRIBUTE, which is not the same claim as every corner carrying the
+  // OTHER end of its own segment, and the difference is the whole failure: a
+  // corner whose `aEnd` is its own position gives the shader a zero-length
+  // segment, `dir` falls back to a hardcoded `(1, 0)`, and the ribbon is extruded
+  // down the screen instead of perpendicular to the wire. Same class for the
+  // index base: an INDEX cursor and a VERTEX cursor drift apart by two per quad,
+  // so the first quad still looks right and every one after it spans two quads'
+  // world positions.
+  //
+  // Neither defect is visible in a screenshot. Both rasterise as "a handful of
+  // screen-filling wedges", which is also what a healthy wire can look like from
+  // the wrong angle — so a comment describing the correct table is a claim about
+  // the source, never evidence about the buffer. `verify-world.mjs` re-derives
+  // both from the built geometry; these two are the pure-side fingerprint, and
+  // the mutation table below is what keeps them honest.
+  claim(
+    'every ribbon corner is paired with the other end of its own segment',
+    /const quadOther = \[q, p, p, q\]/.test(code) && !/k < 2 \? q : p/.test(code),
+    'aEnd is not the OTHER sample of the segment, so half the corners are handed their OWN position and the shader has no direction to expand along',
+  )
+  claim(
+    'each wire quad is indexed from its own four corners',
+    /const base = corner - 4/.test(code) && !/const base = face/.test(code),
+    'the index base is read off the INDEX cursor rather than the VERTEX one, and the two drift apart by two per quad, so every triangle spans three unrelated world positions',
+  )
   // 3. T7. A parabola, and a sag that is a FRACTION of the span rather than a
   // metre count — a fixed count droops to the pavement on a short span and barely
   // bends on a long one.
@@ -8120,7 +8147,7 @@ function furnitureClaims(source, creature = CREATURE_VIEW_SOURCE) {
 
 test('the wire shader clips against the near plane, and its width is clip-space w', () => {
   const claims = furnitureClaims(STREET_VIEW_SOURCE)
-  assert.ok(claims.length >= 16, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  assert.ok(claims.length >= 19, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
   for (const entry of claims) {
     assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
   }
@@ -8145,6 +8172,12 @@ test('every wire claim can actually fail, and a mutation names the one it breaks
     ['the gully is on the pavement', 'the grate is not set against the kerb face', 'const gutter = STREET_HALF_WIDTH + KERB_WIDTH - DRAIN_SETBACK', 'const gutter = STREET_HALF_WIDTH - DRAIN_SETBACK', 'the gully is in the gutter'],
     ['a sign on every corner', 'uniformity is what makes a generated street read as generated', 'for (let sign = 0; sign < SIGNS_PER_INTERSECTION; sign += 1) {', 'for (let sign = 0; sign < 4; sign += 1) {', 'the signs are capped per intersection'],
     ['one mesh per span', 'a LineSegments per span is 252 calls at one pixel of width', 'const wire = new THREE.Mesh(makeWireGeometry(this.wireSpans), this._materials.wire)', 'const wire = new THREE.Group(makeWireGeometry(this.wireSpans), this._materials.wire)', 'every span lands in one wire mesh'],
+    // The two rows the review added. Both were live defects, both were described
+    // at length in the source as fixed, and NEITHER broke a single claim — 218
+    // pure and 61 world checks stayed green with each of them reverted, which is
+    // the shape of a fix that only exists in a comment.
+    ['aEnd is paired as an alternation', 'half the corners get their own position, so the ribbon is extruded down the screen', 'const quadOther = [q, p, p, q]', 'const quadOther = [q, q, p, p]', 'every ribbon corner is paired with the other end of its own segment'],
+    ['the index base reads the wrong cursor', 'the base drifts two per quad, so every triangle spans three unrelated world positions', 'const base = corner - 4', 'const base = face', 'each wire quad is indexed from its own four corners'],
   ]
   for (const [label, why, from, to, expected] of rows) {
     assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches the file, so it is not testing anything`)
