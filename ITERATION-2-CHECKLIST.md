@@ -21,7 +21,7 @@ Hard rules for every pass:
 - Every tuned constant gets a comment with its before/after.
 
 ## P1 — LIGHT: yellow-tinted cinematic dusk (the "can't see things" fix)
-- [x] `PASS 1: Sky + fog retune toward amber-yellow haze.` skyStops/fogStops are
+- [DONE] `PASS 1: Sky + fog retune toward amber-yellow haze.` skyStops/fogStops are
   violet-dark (0x2a2233/0x4a3550/0x12101a). Retune to warm sodium-amber dusk
   (Backrooms 67ktSmxCniA vibe: yellow haze, LIGHTER, still night-horror), raise
   hemisphere from 0.5, rework the exposure curve (0.95 − 0.17t is too punishing).
