@@ -260,6 +260,143 @@ Branch: `cline/space-bunny-alpha`
   `presentationFor` has a row for it and the gate asserts it, so nothing breaks —
   wiring the search layer is not slice 10's work.
 
+## Slice 11 — audio (§13, GAMEDESIGN section 13 is the authority)
+
+**Goal as executed.** `AudioManager` extended, not replaced: the three bell
+tunings, the gated footstep set, breathing, the creature's breath, the portal hum,
+the shutdown event and the capture reset sting. All procedural, no assets.
+
+### The structural decision — the audio became half data
+
+`audio.js` now has a **pure** half above the `AudioManager` boundary, because §15.1
+lists it as a pure module and because a WebAudio graph cannot be asserted in node:
+
+- `AUDIO_ROUTES` — §13's seven sounds as **12 rows** (one per *source*, not per
+  sound: three tolls, three gaits, four sustained voices), each naming its
+  `AudioManager` voice and its `kind`/`exhausted` arguments.
+- `cueRadius(row)` asks `creature.soundRadius`, so **every creature-facing radius
+  is the AI's own table**. §7.3's whole synthesis is now structurally incapable of
+  drifting: the player cannot price a footstep differently from the creature.
+- `routeAudio(frame)` is a pure function of **15 documented frame fields**
+  (`AUDIO_FRAME_FIELDS`) and is the only thing in the codebase that decides what
+  the player hears.
+- `breathVoice`, `creatureBreathVoice`, `portalHumVoice`, `portalHumPitch`,
+  `droneLevelFor`, `footstepGaitFor`, `proximityAt` — pure parameter functions.
+- The class gained one entry point, `update(dt, frame)`, and `_pulse` — a shared
+  dt-driven clock for the two continuous voices. **No `setTimeout`**: a voice that
+  keeps its own time keeps breathing through the pause and the capture's black.
+
+**`world.js` has exactly three `this.audio?.` call sites** — `update` (the router,
+once per frame), `winChord` (slice 13's) and `stopPortalHums` (teardown) — and the
+gate asserts that set by name, so a new ad-hoc sound in the world fails the build.
+
+### Design calls worth recording
+
+- **THE THREE TUNINGS ARE D3–G3–C4, A STACK OF TWO FOURTHS**, and the gate
+  asserts the intervals in cents rather than trusting the numbers. Three tolls on
+  one recipe have to be told apart in half a second of panic, and pitch is the only
+  channel that survives fog, a compressor and a laptop speaker. `reset` (146.83) is
+  the lowest and the only one with **no echo and a 6% downward sag** — §13's "a toll
+  and not a fade cue" is one strike, and a sting with a tail reads as a transition.
+  `awakening` (196) rings longest because it is the act break; `banish` (261.63) is
+  the shortest decay and the brightest, because a banish has to punch.
+- **THE HAMMER IS A BELL, LITERALLY ONE LIST.** `BELL_PARTIALS` is exported and
+  shared by all four tolls (including the whiff), and the gate asserts the
+  harmonic ratios are *absent* — the identity is a property of the recipe, not of a
+  comment.
+- **A MISS IS THE WHIFF, NOT A FOURTH TUNING.** Same recipe, damped to 700 Hz, no
+  echo, and still a 30 m event: the creature hears a swing whether or not it lands
+  (§7.4), and the feedback has to say which happened. The three `resolveSwing`
+  outcomes are asserted to be exactly the three cases the table handles, so slice
+  13's fourth outcome lands on a row rather than on silence.
+- **THE OPENING TOLL IS GONE, AND THAT IS §13 READ THE OTHER WAY.** v1 rang a bell
+  on BEGIN. §13 keeps the bell and changes what it is for — it "crosses as the
+  *player's* instrument rather than the world's timer" — and §9 says there is no
+  timer and no bell on a clock. BEGIN is now answered by the drone coming up. The
+  title screen routes **nothing** (`started !== true` returns no cues at all).
+- **THE AMBIENT DISTANT BELLS ARE GONE** (`_distantClang`, `_distantSecondBell`,
+  v1 loop 12). A bell that rings every fourteen seconds from nowhere is a fourth
+  tuning the player has to learn to ignore, and §9 says the only bell in the game is
+  the hammer. `candleWhoosh` and `doorCreak` went with the shrines and the door —
+  the gate asserts all four names are gone from the prototype.
+- **THE DRONE IS RETUNED A FOURTH DOWN** into `DRONE_TUNING` (55→44 Hz, cutoff
+  180→140, rumble 32/33.3→27.5/28.6), because §13 says "v1's, retuned lower" and a
+  claim with no number in it cannot be checked or undone. The win duck is
+  `DUCK_LEVEL`, restated as a *ratio* of the bus gain so the manual `duckAmbient`
+  and the routed `DRONE_LEVEL_WON` cannot drift.
+- **BREATHING IS SILENT OUTSIDE PLAYING.** Not caution: §9.3 gives a capture
+  exactly one sound and it is the toll, so the breath, the rasp and the hums all
+  arrive on the black with a level of zero. That is why the router emits sustained
+  rows on *every* started frame — a voice that has to be explicitly silenced is a
+  voice that can be left running.
+- **`BREATH_PROXIMITY_RANGE` (30 m) IS DELIBERATELY WIDER THAN
+  `CREATURE_BREATH_RANGE` (20 m).** §13 wants the player's own lungs to be the
+  *earlier* of the two tells: you hear yourself panic before you hear it.
+
+### Two real bugs this slice found
+
+1. **THE 25 m PORTAL EVENT COULD NEVER FIRE.** `portalNoiseElapsed` was one number
+   shared by all three portals, and the hold loop zeroes it for every portal that
+   is *not* the one being held — so the two idle portals reset the accumulator at
+   the end of every frame. §5.2's entire promise (silent first half, loud second
+   half) was silently never kept, and slices 09/10 could not see it because nothing
+   asserted the event was *emitted*. Now keyed per portal id. **Found by the parked
+   world check, not by the pure gate** — which is the argument for slice 14.
+2. **THE AWAKENING TOLL COULD NEVER RING.** The frame reported `hammerHeld` in the
+   present tense, and `_takeHammer` flips that flag on the very frame it raises the
+   pickup edge — so the gate `hammerPickup && !hammerHeld` was false on the only
+   frame it could ever be true. The field is now `hammerHeldBefore` and says what
+   it means. Found by the scratch world harness on the first run of the parked
+   checks, and fixed before either landed.
+
+A third finding was the gate's own doing: **`proximityAt` ran the wrong way**, so a
+creature in the next district read as *maximum* proximity and the player's breath
+sat permanently at the "something is on top of you" end of its own ladder. It is
+now `1 - distance / range`, and the comment above it says so.
+
+### Slice 11 — gate
+
+- **Gate:** lint clean, **158/158** pure checks (up from 144 — a new "Audio: the
+  routing table and the three tolls" section, **14 checks**), `vite build` clean.
+- **Mutation testing: 14/17 caught by the pure gate.** Caught: banish tolling on a
+  miss, the already-held lock removed, a walk priced as a sprint, the reset sting
+  sharing the banish pitch, the awakening decaying like a banish, a row naming a
+  voice that does not exist, the hum rising instead of falling, the commitment tell
+  deleted, action cues ignoring the phase, the title screen made non-silent, the
+  sprint key reporting the winded gait, the breath not routed at all, the world
+  ringing a v1 bell directly, the reset flag never cleared, the player never
+  reporting exhaustion. One of the three misses is an **equivalent mutant** (the
+  `cueRadius` guard is redundant, because `soundRadius` already floors unknown
+  kinds at 0). The other two are world-*runtime* state the pure gate structurally
+  cannot see — and **both are caught by the parked world checks** (verified:
+  re-introducing the shared accumulator fails the shutdown check, and reporting a
+  miss as a connect fails the swing check). **17/17 covered by the suite as a whole.**
+- **Seven world checks, validated in a scratch harness, 7/7 passing** — one router
+  call per frame and a quiet frame is quiet; a connect tolls and a miss whiffs; the
+  awakening toll fires once and never again across a capture; the capture sting is
+  exactly one toll and nothing else speaks through the black; footstep sound only
+  while really moving; the shutdown is silent in the first half, loud and windowed
+  in the second, and silent forever after; `dispose()` stops the hums. Parked at the
+  bottom of `verify-world.mjs` in a block comment, transcribed from that run. The
+  scratch harness is not committed.
+- **The world harness is still out of the gate and its failure is UNCHANGED** —
+  `1/12 world checks passed`, exit 1, `SHRINE_IDS is not iterable`, identical to
+  the slice 09 and 10 baselines. `makeFakeAudio` was rewritten to record `update`
+  and replay the frame through the real `routeAudio`, and the v1-era live checks
+  that asserted `bellToll`/`bellSequence`/`candleWhoosh`/`doorCreak` were retitled
+  or dropped rather than left asserting an API that no longer exists. Two lines
+  (`beast`, `hood`) were added for the parked blocks, and the file header now states
+  plainly which block slice 14 is replacing.
+- **Left for slice 12/13, deliberately:** `winChord` is still called directly by
+  `_win` — the one non-routed sound left, and slice 13 should give it a row, after
+  which the whitelist is just `update` and `stopPortalHums`. The
+  `searchExhausted`/`searchPosition` channels from slice 10 are still hardcoded.
+- **Known limit, stated rather than hidden:** the WebAudio graphs themselves
+  (`_breathVoice`, `_raspVoice`, the whiff's drag scuff) cannot be asserted in node,
+  and two mutations inside them survive the pure gate. What *is* verified is that the
+  parameters reaching them are right. A listening pass is a Phase C capture concern
+  (slice 16).
+
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
 - New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.

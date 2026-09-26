@@ -72,6 +72,13 @@ import * as beast from './src/game/creature.js'
 // unimportable here (§15.1 lists it as a pure module). Imported flat: it exports
 // exactly one class and no rule names that collide.
 import { PlayerController } from './src/game/player.js'
+// v2 slice 11. The audio is a *pure* module per §15.1, and the half of it that
+// matters to this gate is above the `AudioManager`: the routing table, the three
+// bell tunings and the four parameter functions. They are what the checks below
+// can read, and they are the reason the webaudio half needed splitting out of the
+// decisions in the first place. Imported as a namespace for the same reason as
+// `rules` and `beast`: `bellToll`, `reset` and `drone` are all rule names here.
+import * as audio from './src/game/audio.js'
 import { readFileSync } from 'node:fs'
 import {
   LOOP_SECONDS,
@@ -4175,6 +4182,622 @@ test('the §7.4 ladder survives the mirror the world writes it back through', ()
   })
   assert.equal(miss.swing.result, 'miss')
   assert.equal(miss.creature.banishCount, 3, 'a swing at the dark buys nothing')
+})
+
+// ---------------------------------------------------------------------------
+// v2 slice 11 — §13: the audio as data
+// ---------------------------------------------------------------------------
+
+section('Audio: the routing table and the three tolls (v2 slice 11)')
+
+const AUDIO_SOURCE = readFileSync(new URL('./src/game/audio.js', import.meta.url), 'utf8')
+
+/** A frame that is in a run, playing, and otherwise completely uneventful. */
+const PLAYING_FRAME = Object.freeze({ started: true, playing: true })
+
+/** The ids `routeAudio` produced, which is what every check below is about. */
+function routed(frame) {
+  return audio.routeAudio(frame).map((cue) => cue.id)
+}
+
+/** The one-shot ids only — the sustained rows are always present. */
+function events(frame) {
+  return routed(frame).filter((id) => audio.routeFor(id).mode === 'once')
+}
+
+/**
+ * stripProse — a source file with its comments and string literals removed.
+ *
+ * A check that greps a module for a browser global has to read the module's *code*:
+ * this project's comments are dense with words like "window" and "documented", and
+ * a gate that fails on prose is a gate that gets deleted rather than fixed.
+ */
+function stripProse(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    .replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, '""')
+}
+
+test('the §13 sound list is here, as a table, and nothing is missing from it', () => {
+  // §13's seven rows, restated rather than read back out of the table, so this
+  // check is a specification and not an echo. If a sound is added to the design
+  // without a row, this is where it is caught; if a row is added without a design
+  // entry, the deepEqual is.
+  const section13 = ['bell toll', 'ambient drone', 'footstep tick', 'breathing', 'portal hum', 'creature breath', 'portal shutdown']
+  const sounds = distinct(audio.AUDIO_ROUTES.map((row) => row.sound))
+  assert.deepEqual([...sounds].sort(), [...section13].sort(), '§13\'s seven sounds and the table disagree')
+
+  // every row is a complete row: nothing the router or the gate depends on may
+  // be missing, and a row with no voice is a sound nobody can hear
+  for (const row of audio.AUDIO_ROUTES) {
+    assert.equal(typeof row.id, 'string')
+    assert.equal(typeof row.voice, 'string', `${row.id} names no voice`)
+    assert.ok(row.mode === 'once' || row.mode === 'sustained', `${row.id} has no mode`)
+    assert.ok(row.gate.length > 10, `${row.id} has no documented gate`)
+    if (row.tuning !== null) {
+      assert.ok(audio.BELL_TUNING_IDS.includes(row.tuning), `${row.id} names an unknown tuning`)
+    }
+  }
+  // ids are unique, or one row could shadow another
+  assert.equal(audio.AUDIO_ROUTE_IDS.length, new Set(audio.AUDIO_ROUTE_IDS).size, 'two rows share an id')
+  // and every row's voice is a method the file actually has
+  for (const row of audio.AUDIO_ROUTES) {
+    assert.equal(
+      typeof audio.AudioManager.prototype[row.voice],
+      'function',
+      `AUDIO_ROUTES names ${row.voice}() and AudioManager has no such method`,
+    )
+  }
+  // frozen, so art cannot drift at runtime — the same rule the creature's
+  // presentation table is held to
+  assert.ok(Object.isFrozen(audio.AUDIO_ROUTES))
+  assert.ok(Object.isFrozen(audio.BELL_TUNINGS))
+  assert.equal(audio.routeFor('widdershins'), null, 'an unknown row is answered, not thrown')
+})
+
+test('every creature-facing radius is the creature\'s own table, not a typed number', () => {
+  // This is the assertion §7.3 actually needs: the player's idea of how loud a
+  // footstep is and the AI's idea of how far it carries are one number, taken from
+  // `creature.soundRadius`. The row is built from a §6.2 kind and the kind is one of
+  // §6.2's own rows, so neither half can drift without the gate noticing.
+  const kinds = new Set([...Object.keys(beast.SOUND_RADII), 'still'])
+  for (const row of audio.AUDIO_ROUTES) {
+    const expected = row.kind == null ? 0 : beast.soundRadius(row.kind, { exhausted: row.exhausted === true })
+    assert.equal(audio.cueRadius(row), expected, `${row.id} is priced at ${audio.cueRadius(row)}, not ${expected}`)
+    if (row.kind != null) assert.ok(kinds.has(row.kind), `${row.id} names a §6.2 row that does not exist`)
+  }
+  // the numbers themselves, restated from §6.2, so a drift in either module shows
+  // up as a disagreement rather than as a table that agrees with itself
+  assert.equal(audio.cueRadius(audio.routeFor('walk')), 9)
+  assert.equal(audio.cueRadius(audio.routeFor('sprint')), 22)
+  assert.equal(audio.cueRadius(audio.routeFor('exhausted')), 9 + rules.EXHAUSTED_BREATH_SOUND_BONUS)
+  assert.equal(audio.cueRadius(audio.routeFor('portalShutdown')), rules.PORTAL_SOUND_RADIUS)
+  assert.equal(audio.cueRadius(audio.routeFor('awakening')), beast.SOUND_RADII.toll)
+  assert.equal(audio.cueRadius(audio.routeFor('banish')), beast.SOUND_RADII.toll)
+  assert.equal(audio.cueRadius(audio.routeFor('breath')), rules.EXHAUSTED_BREATH_SOUND_BONUS)
+  // §7.3: exhaustion is the *state*, priced on top of the gait. The exhausted row
+  // is a walk plus the bonus because the lockout means a winded player is never
+  // sprinting, so an "exhausted sprint" is a gait the game cannot produce.
+  assert.equal(audio.routeFor('exhausted').kind, 'walk')
+  assert.ok(
+    audio.cueRadius(audio.routeFor('exhausted')) > audio.cueRadius(audio.routeFor('walk')),
+    '§7.3: exhaustion makes you louder',
+  )
+  // a swing is loud whether or not it lands: §7.4 demoted the toll to feedback
+  // but kept its 30 m, so a miss cannot be quieter to the creature than a hit
+  assert.equal(audio.cueRadius(audio.routeFor('whiff')), audio.cueRadius(audio.routeFor('banish')))
+  // and the readouts are not stimuli at all
+  for (const id of ['creatureBreath', 'portalHum', 'drone', 'reset']) {
+    assert.equal(audio.cueRadius(audio.routeFor(id)), 0, `${id} is a stimulus to the creature`)
+  }
+})
+
+test('the three tunings are one bell, and they can be told apart', () => {
+  // §13's "three distinct tunings" is a claim about *audibility*, so it is checked
+  // as one: three names, three pitches, three (pitch, decay) pairs, because a set
+  // of tunings that collapsed into one another would be three tolls that all sound
+  // like the same toll.
+  assert.equal(audio.BELL_TUNING_IDS.length, 3)
+  assert.deepEqual([...audio.BELL_TUNING_IDS], ['awakening', 'banish', 'reset'])
+  const voices = new Set()
+  for (const id of audio.BELL_TUNING_IDS) {
+    const tuning = audio.BELL_TUNINGS[id]
+    assert.equal(tuning.id, id, 'a tuning is filed under the wrong name')
+    assert.ok(tuning.f0 > 0 && tuning.level > 0 && tuning.decay > 0 && tuning.damp > 0, `${id} has a dead parameter`)
+    assert.ok(tuning.f0 < 1000, `${id} is not a bell`)
+    voices.add(`${tuning.f0}|${tuning.decay}`)
+  }
+  assert.equal(voices.size, 3, 'two of the three tunings sound the same')
+
+  // a stack of two fourths — D3, G3, C4 — spanning a compound fifth. Three tolls
+  // have to be distinguishable in half a second of panic, and pitch is the only
+  // channel that survives fog, a compressor and a laptop speaker.
+  const cents = (a, b) => 1200 * Math.log2(a / b)
+  const { reset, awakening, banish } = audio.BELL_TUNINGS
+  assert.ok(Math.abs(cents(awakening.f0, reset.f0) - 500) < 10, 'the lowest two tunings are not a fourth apart')
+  assert.ok(Math.abs(cents(banish.f0, awakening.f0) - 500) < 10, 'the highest two tunings are not a fourth apart')
+  assert.ok(cents(banish.f0, reset.f0) > 950, 'the three tunings do not span a compound fifth')
+
+  // and the shapes are chosen for their jobs, in the order §13 gives them
+  assert.ok(awakening.decay > reset.decay, 'the act break should ring longest')
+  assert.ok(reset.decay > banish.decay, 'a banish has to punch, not toll')
+  assert.ok(banish.f0 > awakening.f0 && awakening.f0 > reset.f0, 'the pickup is the middle of the three')
+  assert.ok(banish.damp > awakening.damp && awakening.damp > reset.damp, 'and the brightest-to-darkest order follows')
+  // the reset sting sags and nothing else does, and it is the only one with no echo
+  assert.equal(audio.BELL_TUNINGS.reset.drop < 0, true, 'the reset sting should sag')
+  assert.equal(audio.BELL_TUNINGS.awakening.drop, 0)
+  assert.equal(audio.BELL_TUNINGS.banish.drop, 0)
+  assert.equal(audio.BELL_TUNINGS.reset.echo, false, '§13: the sting is one strike, not a transition')
+  assert.equal(audio.BELL_TUNINGS.awakening.echo, true)
+  assert.equal(audio.BELL_TUNINGS.banish.echo, true)
+  // and the whiff is the banish's recipe with the top taken off: the difference
+  // between a hit and a miss is one number
+  assert.equal(audio.routeFor('whiff').tuning, 'banish')
+  assert.ok(audio.BELL_WHIFF_DAMP < audio.BELL_TUNINGS.banish.damp / 4, 'a whiff is not muffled enough to read as a miss')
+})
+
+test('the awakening toll fires once, on the pickup, and never again', () => {
+  // §7.2: "Picking up the hammer tolls once, at maximum radius". Once is the whole
+  // word, so it is checked three ways — the edge, the edge with the hammer already
+  // in hand, and the frame after, where nothing at all is allowed to happen.
+  const pickup = { ...PLAYING_FRAME, hammerPickup: true, hammerHeldBefore: false }
+  assert.ok(events(pickup).includes('awakening'))
+  // §6.2's "swing or pickup" is two rows and not one: the pickup is the awakening
+  // and a swing is the banish or the whiff
+  assert.equal(audio.routeFor('awakening').kind, 'toll', 'the pickup is the loudest event in the game')
+  // a pickup edge while the hammer was *already* held is a caller bug, and the bug
+  // has to be silent rather than a second toll. This is the field the world got
+  // wrong first: it reported the present tense, and since `_takeHammer` flips
+  // `hammerHeld` on the very frame it raises the edge, the toll could never ring.
+  assert.equal(events({ ...pickup, hammerHeldBefore: true }).includes('awakening'), false, 'the toll fired twice')
+  // and the flag cannot outlive the frame: the world's `_updateAudio` clears it
+  // every frame, and this is the shape of what it clears
+  let frame = { ...pickup }
+  const firstPass = events(frame)
+  frame = { ...frame, hammerPickup: false, hammerHeldBefore: true }
+  const secondPass = events(frame)
+  assert.equal(firstPass.filter((id) => id === 'awakening').length, 1)
+  assert.equal(secondPass.length, 0, 'a frame with no action is not allowed to make a sound')
+  // it survives a capture, so "once" is once per *run* and not once per life
+  const state = rules.createInitialState(hood.placeObjectives(1337))
+  assert.equal(rules.applyCapture({ ...state, hammerHeld: true }).hammerHeld, true, '§9.1: the hammer is never dropped')
+})
+
+test('the banish toll fires only on a connected swing, and a miss is the same bell damped', () => {
+  // §7.4: the outcomes are exhaustive — a banish, a miss, or Act I immunity — so
+  // the three of them are the three cases here, and the banish is only one of them.
+  for (const result of ['banish', 'miss', 'immune']) {
+    const ids = events({ ...PLAYING_FRAME, swing: result })
+    assert.equal(ids.length, 1, `a swing (${result}) made ${ids.length} sounds`)
+    if (result === 'banish') {
+      assert.equal(ids[0], 'banish', 'a connected swing did not toll')
+      assert.equal(audio.cueRadius(audio.routeFor('banish')), beast.SOUND_RADII.toll)
+    } else {
+      // a miss is a swing the hammer swung at nothing: the whiff, not the toll
+      assert.equal(ids[0], 'whiff', `${result} was answered with the wrong sound`)
+      assert.equal(
+        audio.cueRadius(audio.routeFor('whiff')),
+        beast.SOUND_RADII.toll,
+        'but the creature still hears it',
+      )
+    }
+  }
+  // no swing, no sound
+  assert.equal(events({ ...PLAYING_FRAME, swing: null }).length, 0)
+  assert.equal(events(PLAYING_FRAME).length, 0, 'an empty frame made a sound')
+  // and the three outcomes are exactly the three `resolveSwing` can return, so a
+  // fourth outcome added in slice 13 lands on a row rather than on silence
+  const outcomes = new Set()
+  for (const state of beast.CREATURE_STATES) {
+    for (const distance of [0, beast.BANISH_RANGE, beast.BANISH_RANGE + 1]) {
+      outcomes.add(beast.resolveSwing(state, distance).result)
+    }
+  }
+  assert.deepEqual([...outcomes].sort(), ['banish', 'immune', 'miss'], 'a swing outcome has no row')
+})
+
+test('the footstep set is gated on moving, and the three gaits are the three voices', () => {
+  // §6.2: "Standing perfectly still emits nothing, so 'kill your footsteps and let it
+  // lose you' is a real, learnable strategy". The world only reports a stride when
+  // the player really took one; the table prices it.
+  assert.equal(audio.footstepGaitFor(null), null, 'no stride, no gait, no sound')
+  assert.equal(audio.footstepGaitFor({ sprinting: false, exhausted: false }), 'walk')
+  assert.equal(audio.footstepGaitFor({ sprinting: true, exhausted: false }), 'sprint')
+  assert.equal(audio.footstepGaitFor({ sprinting: false, exhausted: true }), 'exhausted')
+  // §7.3's lockout means the winded gait outranks the sprint key
+  assert.equal(audio.footstepGaitFor({ sprinting: true, exhausted: true }), 'exhausted')
+  assert.deepEqual([...audio.FOOTSTEP_GAITS], ['walk', 'sprint', 'exhausted'])
+  // the gated set really is the §13 row: "gait-dependent: walk, sprint, and an
+  // exhausted variant"
+  assert.deepEqual(
+    audio.AUDIO_ROUTE_IDS.filter((id) => audio.routeFor(id).sound === 'footstep tick').sort(),
+    ['exhausted', 'sprint', 'walk'],
+  )
+  for (const gait of audio.FOOTSTEP_GAITS) {
+    assert.equal(audio.routeFor(gait).voice, 'footstep', `${gait} is not a footstep voice`)
+    assert.ok(audio.FOOTSTEP_VOICES[gait], `${gait} has no voice of its own`)
+  }
+  // and the winded footfall is the low, heavy one, so exhaustion is audible in the
+  // step itself and not only in the creature's awareness meter
+  const { walk, sprint, exhausted } = audio.FOOTSTEP_VOICES
+  assert.ok(exhausted.band < walk.band && walk.band < sprint.band, 'the winded step is not the lowest of the three')
+  assert.ok(exhausted.thud < walk.thud, 'and it is not the heaviest thud')
+  // and the router is the only thing that turns a stride into a cue
+  assert.deepEqual(events({ ...PLAYING_FRAME, footstep: { sprinting: true } }), ['sprint'])
+  assert.deepEqual(events({ ...PLAYING_FRAME, footstep: { exhausted: true } }), ['exhausted'])
+  assert.deepEqual(events({ ...PLAYING_FRAME }), [])
+})
+
+test('breathing does double duty: the meter and the proximity readout, on one voice', () => {
+  // §13: breathing is "simultaneously the stamina meter and the creature-proximity
+  // meter, which is what allows both to exist on screen without any bar". Both
+  // inputs have to move the voice, and they have to move it in *opposite*
+  // directions on depth — louder, shallower — or the readout says the wrong thing.
+  const calm = audio.breathVoice({ ...PLAYING_FRAME, breath: 1, creatureDistance: 200 })
+  const winded = audio.breathVoice({ ...PLAYING_FRAME, breath: 0, exhausted: true, creatureDistance: 200 })
+  const close = audio.breathVoice({ ...PLAYING_FRAME, breath: 1, creatureDistance: 2 })
+
+  // §7.3: "Being out of breath raises your sound radius" — and the voice is where
+  // the player learns it, so exhaustion is louder, shallower and faster
+  assert.ok(winded.level > calm.level, '§7.3: exhaustion is not louder')
+  assert.ok(winded.depth < calm.depth, '§7.3: exhaustion is not shallower')
+  assert.ok(winded.rate > calm.rate, '§7.3: exhaustion is not faster')
+  assert.ok(winded.sharp > calm.sharp, 'and it does not change character')
+  assert.equal(winded.exhausted, true)
+  assert.equal(calm.exhausted, false)
+
+  // §6.4: "breathing that grows louder and shallower with proximity" — the other
+  // half of the same voice, and the half the player reads as the creature
+  assert.ok(close.level > calm.level, '§6.4: proximity does not make the breath louder')
+  assert.ok(close.depth < calm.depth, '§6.4: proximity does not make the breath shallower')
+  assert.ok(close.rate > calm.rate, 'and it does not quicken')
+
+  // monotonic in both, over a range rather than at two hand-picked points
+  for (const step of [0.05, 0.1, 0.25, 0.5]) {
+    assert.ok(
+      audio.breathVoice({ ...PLAYING_FRAME, breath: 1 - step, creatureDistance: 0 }).level > calm.level,
+      `level fell at breath ${1 - step}`,
+    )
+    // and the distance sweep runs *inward* from the edge of the range, because
+    // past it there is nothing to be closer than
+    assert.ok(
+      audio.breathVoice({
+        ...PLAYING_FRAME, breath: 1, creatureDistance: audio.BREATH_PROXIMITY_RANGE * (1 - step),
+      }).level > calm.level,
+      `level fell at ${(audio.BREATH_PROXIMITY_RANGE * (1 - step)).toFixed(1)}m`,
+    )
+  }
+  // the bottom of the ladder is a whisper, not a sound: §13 makes breathing a
+  // readout, and a readout that is always audible is a meter in disguise
+  assert.ok(calm.level < audio.BREATH_WINDED_LEVEL / 4, 'a fresh player is not nearly silent')
+  // the player's own lungs are the *earlier* of the two tells, so proximity has to
+  // start tightening the breath outside the range the creature's breath carries on
+  assert.ok(
+    audio.BREATH_PROXIMITY_RANGE > audio.CREATURE_BREATH_RANGE,
+    '§13: the player should hear themselves panic before they hear it',
+  )
+  // §9.3: a capture has one sound and it is the toll, so the breath is silent
+  // through the black
+  assert.equal(audio.breathVoice({ breath: 0, exhausted: true, playing: false }).level, 0)
+  // a missing distance is "not close", not "panicking": the far end and the unknown
+  // end are both zero, because the creature is somewhere else nine times a second
+  assert.equal(audio.proximityAt(undefined, 30), 0)
+  assert.equal(audio.proximityAt(NaN, 30), 0)
+  assert.equal(audio.proximityAt(0, 30), 1, 'on top of the player is not maximum proximity')
+  assert.equal(audio.proximityAt(15, 30), 0.5)
+  assert.equal(audio.proximityAt(30, 30), 0)
+  assert.equal(audio.proximityAt(1000, 30), 0, 'a creature in the next district is close')
+  assert.equal(audio.proximityAt(-5, 30), 1, 'a negative distance is not close')
+  // and depth has a floor: a breath has to be a breath at 0.1, or the voice stops
+  // being a breath and starts being a click
+  assert.ok(winded.depth >= audio.BREATH_FLOOR_DEPTH)
+})
+
+test('the creature is audible before it is visible, and only while it is there', () => {
+  // §6.4: "distance-attenuated; sharper as awareness rises", and §13: it is "the
+  // awareness readout". Two separable facts, and both have to be separable — the
+  // volume says where it is, the character says how much it knows.
+  const near = audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: 0, creatureAwareness: 0 })
+  const edge = audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: audio.CREATURE_BREATH_RANGE })
+  assert.ok(near.level > 0, 'it is not audible at arm\'s length')
+  assert.equal(edge.level, 0, 'and it is audible at the edge of its range')
+  assert.equal(audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: 400 }).level, 0)
+  // distance only, monotonically
+  let previous = Infinity
+  for (let d = 0; d <= audio.CREATURE_BREATH_RANGE; d += 0.5) {
+    const level = audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: d }).level
+    assert.ok(level <= previous + 1e-12, `it got louder at ${d}m`)
+    previous = level
+  }
+  // awareness moves the *character* and the rate, and not the volume: a creature
+  // that knows exactly where you are breathes differently at the same distance
+  for (const distance of [0, 5, 15]) {
+    let last = -1
+    for (const awareness of [0, 0.25, 0.5, 0.75, 1]) {
+      const voice = audio.creatureBreathVoice({
+        ...PLAYING_FRAME, creatureDistance: distance, creatureAwareness: awareness,
+      })
+      assert.ok(voice.sharp > last, `sharpness did not rise at ${awareness} (${distance}m)`)
+      assert.ok(voice.rate > last, `it did not quicken at ${awareness} (${distance}m)`)
+      last = voice.sharp
+    }
+  }
+  assert.equal(
+    audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: 5, creatureAwareness: 0.5 }).level,
+    audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: 5, creatureAwareness: 1 }).level,
+    'awareness changed the volume',
+  )
+  // §7.4: a banished creature is off the field, and a breath that followed the
+  // player home would undo the one moment the design promises relief in
+  assert.equal(audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: 0, creaturePresent: false }).level, 0)
+  // §6.4's fallback: if we do not know where it is, it is not breathing on us
+  assert.equal(audio.creatureBreathVoice({ ...PLAYING_FRAME }).level, 0)
+  assert.equal(audio.creatureBreathVoice({ ...PLAYING_FRAME, creatureDistance: NaN }).level, 0)
+  // and silent through the black, like the player's own breath
+  assert.equal(audio.creatureBreathVoice({ creatureDistance: 0, playing: false }).level, 0)
+})
+
+test('the portal hum falls as the shutdown runs, and swells past the threshold', () => {
+  // §13: "per-portal, pitch falls as it is shut down", and §5.2's promise that the
+  // second half of a hold is a promise rather than a maybe. Both are these numbers.
+  assert.equal(audio.portalHumPitch(0), audio.PORTAL_HUM_PITCH)
+  assert.equal(audio.portalHumPitch(1), audio.PORTAL_HUM_PITCH / 2, 'the hum does not fall an octave across a shutdown')
+  let previous = Infinity
+  for (let p = 0; p <= 1; p += 0.01) {
+    const pitch = audio.portalHumPitch(p)
+    assert.ok(pitch < previous, `the hum rose at ${p}`)
+    previous = pitch
+  }
+  assert.equal(audio.portalHumPitch(-1), audio.portalHumPitch(0), 'a negative hold did something')
+  assert.equal(audio.portalHumPitch(9), audio.portalHumPitch(1))
+  assert.equal(audio.portalHumPitch(NaN), audio.portalHumPitch(0), 'an unknown hold did something')
+
+  // a shut portal is silent, but its pitch is still the pitch it died on, so the
+  // progress is recoverable from the data after the sound has gone
+  const dead = audio.portalHumVoice({ id: 'A', progress: 1, shut: true, distance: 2 })
+  assert.equal(dead.level, 0)
+  assert.equal(dead.pitch, audio.portalHumPitch(1))
+
+  // the level falls off with distance over the hum's own range and is exactly zero
+  // outside it — §13's "progress feedback in-world", not a readout on a ring
+  assert.equal(audio.portalHumVoice({ id: 'A', distance: audio.PORTAL_HUM_RANGE }).level, 0)
+  assert.equal(audio.portalHumVoice({ id: 'A', distance: 1e6 }).level, 0)
+  assert.equal(audio.portalHumVoice({ id: 'A', distance: NaN }).level, 0, 'an unknown distance is a hum')
+  previous = Infinity
+  for (let d = 0; d <= audio.PORTAL_HUM_RANGE; d += 0.5) {
+    const level = audio.portalHumVoice({ id: 'A', distance: d }).level
+    assert.ok(level <= previous + 1e-12, `the hum got louder at ${d}m`)
+    previous = level
+  }
+  // and the commitment tell: past the noise threshold the same hum swells, on the
+  // very threshold `rules.js` emits the 25 m event from
+  const threshold = rules.PORTAL_NOISE_THRESHOLD
+  const below = audio.portalHumVoice({ id: 'A', progress: threshold - 0.01, distance: 5 })
+  const above = audio.portalHumVoice({ id: 'A', progress: threshold + 0.01, distance: 5 })
+  assert.equal(below.level, audio.PORTAL_HUM_LEVEL * beast.soundStrength(5, audio.PORTAL_HUM_RANGE))
+  assert.ok(above.level > below.level, '§5.2: the second half of a hold is not louder')
+  assert.equal(
+    audio.portalHumVoice({ id: 'A', progress: 1, distance: 5 }).level,
+    audio.PORTAL_HUM_LEVEL * audio.PORTAL_HUM_SWELL * beast.soundStrength(5, audio.PORTAL_HUM_RANGE),
+  )
+  // a shut portal is the one case where the swell does not apply
+  assert.equal(audio.portalHumVoice({ id: 'A', progress: 1, shut: true, distance: 5 }).level, 0)
+})
+
+test('the reset sting is one toll, and it is the only sound of a capture', () => {
+  // §13: "v1's reset was a screen fade under three bell tolls; v2's is one toll and a
+  // shorter fade". One toll, so the check counts cues rather than trusting a name.
+  const capture = { started: true, playing: false, loopReset: true }
+  assert.deepEqual(events(capture), ['reset'], 'a capture made more or fewer than one sound')
+  // it is a toll: a bell tuning, the one that is a strike and not a sequence
+  const [sting] = audio.routeAudio(capture)
+  assert.equal(sting.sound, 'bell toll')
+  assert.equal(sting.tuning, 'reset')
+  assert.equal(audio.routeFor('reset').voice, 'resetSting')
+  // a toll and not a fade cue: no echo, a sag, and the lowest prime in the game
+  assert.equal(audio.BELL_TUNINGS[sting.tuning].echo, false)
+  assert.ok(audio.BELL_TUNINGS[sting.tuning].drop < 0)
+  // and nothing else speaks through the black. The breath, the rasp and the hums
+  // all arrive on this frame with a level of zero, which is the whole reason the
+  // router emits sustained rows even when they are silent.
+  const black = audio.routeAudio(capture)
+  assert.deepEqual(black.filter((cue) => cue.mode === 'once').map((cue) => cue.id), ['reset'])
+  assert.equal(black.find((cue) => cue.id === 'breath').params.level, 0)
+  assert.equal(black.find((cue) => cue.id === 'creatureBreath').params.level, 0)
+  assert.deepEqual(black.find((cue) => cue.id === 'portalHum').params.hums, [])
+  // the drone pulls back for the same reason, and the win takes it further down
+  assert.equal(audio.droneLevelFor({ started: true, playing: false }), audio.DRONE_LEVEL_BLACK)
+  assert.equal(audio.droneLevelFor({ started: true, playing: true }), audio.DRONE_LEVEL)
+  assert.equal(audio.droneLevelFor({ started: true, won: true }), audio.DRONE_LEVEL_WON)
+  assert.ok(audio.DRONE_LEVEL_WON < audio.DRONE_LEVEL_BLACK, 'the win is not the quietest the drone gets')
+  // and the win's quiet is v1's own number, restated rather than retyped
+  assert.ok(Math.abs(audio.DRONE_TUNING.gain * audio.DRONE_LEVEL_WON - audio.DUCK_LEVEL) < 1e-12)
+  // §9.3's timeline: the black is short because there is no wall rise to cover, and
+  // the sting still rings — it is the only thing that does
+  assert.ok(audio.BELL_TUNINGS.reset.decay > 0, 'the sting does not ring at all')
+})
+
+test('the router is pure, total, and deterministic', () => {
+  // §15.2's seam, in the direction that matters: a router that read a clock or a
+  // random number would make the game's audio non-reproducible, and a router that
+  // threw on a missing field would take the render loop down sixty times a second.
+  const frame = {
+    ...PLAYING_FRAME,
+    breath: 0.3, exhausted: true, creatureDistance: 6, creatureAwareness: 0.7,
+    swing: 'banish', footstep: { sprinting: true, exhausted: true }, portalNoise: true,
+    portals: [{ id: 'A', progress: 0.8, distance: 4 }, { id: 'B', progress: 0, shut: true, distance: 4 }],
+  }
+  const first = audio.routeAudio(frame)
+  for (let i = 0; i < 20; i += 1) {
+    assert.deepEqual(audio.routeAudio(frame), first, `replay ${i} routed differently`)
+  }
+  // byte-identical, not merely equal: the ordering is part of the contract
+  assert.equal(JSON.stringify(audio.routeAudio(frame)), JSON.stringify(first))
+  // total: every documented field, no field, and a bag of nonsense
+  for (const candidate of [
+    {},
+    { started: true },
+    { started: true, playing: true },
+    { started: true, playing: true, hammerPickup: true, swing: 'banish', footstep: {}, portalNoise: true, loopReset: true },
+    { started: true, playing: 'yes', won: 1, breath: 'full', creatureDistance: {}, portals: 'A' },
+    { started: true, playing: true, portals: [null, 7, { id: 'A' }] },
+  ]) {
+    const cues = audio.routeAudio(candidate)
+    assert.ok(Array.isArray(cues), 'the router did not return a list')
+    for (const cue of cues) {
+      const row = audio.routeFor(cue.id)
+      assert.equal(typeof audio.AudioManager.prototype[row.voice], 'function', `${cue.id} has no voice`)
+      assert.ok(Number.isFinite(cue.radius), `${cue.id} has a radius that is not a number`)
+    }
+  }
+  // the title screen is silent, and so is a run that has not begun: §13's opening
+  // toll was the *world's* clock and v2 has no clock
+  assert.deepEqual(audio.routeAudio({}), [])
+  assert.deepEqual(audio.routeAudio({ started: false, playing: true, loopReset: true, swing: 'banish' }), [])
+  // and no action cue fires outside a run in progress, whatever the flags say
+  for (const phase of [{}, { playing: false }, { won: true }]) {
+    const ids = events({
+      started: true, ...phase, hammerPickup: true, swing: 'banish',
+      footstep: { sprinting: true }, portalNoise: true,
+    })
+    assert.deepEqual(ids, [], `an action fired outside PLAYING (${JSON.stringify(phase)})`)
+  }
+  // every sustained row is on every started frame, which is what stops a voice
+  // from being left running by a frame that forgot to mention it
+  for (const other of [{}, { playing: false }, { won: true }, PLAYING_FRAME]) {
+    const ids = routed({ started: true, ...other })
+    for (const id of audio.SUSTAINED_ROUTE_IDS) {
+      assert.ok(ids.includes(id), `${id} was skipped on a started frame`)
+    }
+  }
+})
+
+test('the world hands the table facts and never a sound', () => {
+  // The one discipline that makes the rest of this section worth anything:
+  // `world.js` holds no audio decisions. It is whitelisted to the router, the win
+  // chord (slice 13's, still v1's) and a teardown, and every other sound it could
+  // have wanted has to exist in `AUDIO_ROUTES` before it can be asked for.
+  const calls = [...WORLD_SOURCE.matchAll(/this\.audio\?\.\s*(\w+)/g)].map((m) => m[1])
+  assert.deepEqual(
+    [...new Set(calls)].sort(),
+    ['stopPortalHums', 'update', 'winChord'],
+    'the world calls the audio directly somewhere new',
+  )
+  assert.equal(calls.filter((name) => name === 'update').length, 1, 'the router is called more than once per frame')
+  // the frame is built in exactly one place, and it fills in every documented field
+  assert.equal((WORLD_SOURCE.match(/_audioFrame\(\)/g) ?? []).length, 2, 'the audio frame is not built in one place')
+  for (const field of audio.AUDIO_FRAME_FIELDS) {
+    assert.ok(new RegExp(`\\b${field}:`).test(WORLD_SOURCE), `the world never fills in ${field}`)
+  }
+  // §7.2's "tolls once" and §9.3's one-toll sting are both *flags cleared in
+  // `_updateAudio`*, and that is the only thing standing between them and a toll a
+  // second. The method body is read rather than the whole file, because the
+  // constructor initialises the same fields and would satisfy a file-wide grep.
+  const clear = WORLD_SOURCE.slice(
+    WORLD_SOURCE.indexOf('_updateAudio(dt) {'),
+    WORLD_SOURCE.indexOf('\n  }', WORLD_SOURCE.indexOf('_updateAudio(dt) {')),
+  )
+  for (const flag of ['_loopReset', '_hammerPickup', '_portalNoise', '_footstep', '_swingResult']) {
+    assert.ok(
+      new RegExp(`this\\.${flag} = (false|null)`).test(clear),
+      `${flag} is never cleared, so its cue could repeat every frame`,
+    )
+  }
+  // v1's three-toll reset and its opening toll are gone from the file entirely
+  assert.equal(/bellSequence|bellToll/.test(WORLD_SOURCE), false, 'world.js still reaches for a v1 bell')
+})
+
+test('§7.3: a winded stride says so, and the world is told', () => {
+  // The third footstep voice exists only if the player's stride carries the
+  // exhaustion flag with it, and that is a one-line contract between two files that
+  // nothing else checks. The pure harness can check it because `player.js` is in it
+  // (slice 08 removed its `three` import, which is the only reason it can be).
+  const heard = []
+  const player = new PlayerController(stubCamera(), null, {
+    onFootstep: (sprinting, exhausted) => heard.push({ sprinting, exhausted }),
+  })
+  player.pressKey('KeyW')
+  for (let frame = 0; frame < 120; frame += 1) player.update(DT)
+  player.releaseKey('KeyW')
+  assert.ok(heard.length > 0, 'the player reported no strides at all')
+  assert.deepEqual(distinct(heard.map((step) => step.sprinting)), [false], 'a walk reported itself as a sprint')
+  assert.deepEqual(distinct(heard.map((step) => step.exhausted)), [false], 'a fresh walk reported itself as winded')
+
+  // and now winded: the same player, the meter empty. §7.3's lockout means it is
+  // not sprinting, which is exactly why the audio's gait choice has to prefer
+  // `exhausted` over `sprinting`.
+  heard.length = 0
+  const tired = new PlayerController(stubCamera(), null, {
+    breath: 0,
+    exhausted: true,
+    onFootstep: (sprinting, exhausted) => heard.push({ sprinting, exhausted }),
+  })
+  tired.pressKey('KeyW')
+  tired.pressKey('ShiftLeft')
+  for (let frame = 0; frame < 180; frame += 1) tired.update(DT)
+  assert.ok(heard.length > 0, 'a winded player reported no strides at all')
+  // §7.3's lockout, in one assertion: no stride is ever both winded and sprinting.
+  // The whole reason the audio's gait choice prefers `exhausted` is that this
+  // combination cannot happen, and a combination that cannot happen is exactly the
+  // kind of thing a future edit will quietly reintroduce.
+  for (const step of heard) {
+    assert.equal(step.sprinting === true && step.exhausted === true, false, 'a stride was both winded and sprinting')
+  }
+  // The lockout lifts as the meter refills (§7.3's hysteresis), and the *audio*
+  // follows the meter rather than a latch: the early strides are the winded voice
+  // and the late ones are not. A version that reported the first frame's flag
+  // forever would sound winded for the rest of the run.
+  assert.equal(heard[0].exhausted, true, 'the first stride was not winded')
+  assert.equal(heard[0].sprinting, false, 'and it was sprinting')
+  assert.equal(audio.footstepGaitFor(heard[0]), 'exhausted', 'and the audio did not choose the winded gait')
+  const last = heard[heard.length - 1]
+  assert.equal(last.exhausted, false, 'the lockout never lifted')
+  assert.equal(audio.footstepGaitFor(last), last.sprinting ? 'sprint' : 'walk', 'and the gait did not follow the meter')
+  // (the meter's own hysteresis is slice 05's check; here it is only the audio's
+  // fidelity to it, and the player is still holding Shift so it is oscillating
+  // around the threshold by the end rather than sitting above it)
+})
+
+test('the audio module is in the pure harness, and every sound is synthesized', () => {
+  // §15.1 lists `audio.js` as a pure module, which it can only be if nothing above
+  // the `AudioManager` boundary reaches for a browser — and the module-scope half is
+  // what a node import actually executes. Comments and string literals are stripped
+  // first, so this reads the module's *code*: a routing table that says "once per
+  // sound window" in a gate string has not reached for `window`.
+  const head = stripProse(AUDIO_SOURCE.slice(0, AUDIO_SOURCE.indexOf('export class AudioManager')))
+  for (const global of ['window', 'document', 'navigator', 'AudioContext', 'requestAnimationFrame']) {
+    assert.equal(new RegExp(`\\b${global}\\b`).test(head), false, `${global} is reachable at module scope`)
+  }
+  assert.equal(/from ['"]three['"]/.test(AUDIO_SOURCE), false, 'audio.js imports three')
+  // the rules it needs are the shared ones, not private copies
+  assert.match(AUDIO_SOURCE, /import \{ soundRadius, soundStrength \} from '\.\/creature\.js'/)
+  assert.match(AUDIO_SOURCE, /import \{ PORTAL_NOISE_THRESHOLD, BREATH_RECOVERY_THRESHOLD \} from '\.\/rules\.js'/)
+  // zero downloaded assets: nothing fetches and nothing loads a file
+  const code = stripProse(AUDIO_SOURCE)
+  for (const loader of ['fetch(', 'XMLHttpRequest', 'new Audio(', 'new Image(', 'createMediaElement', '.mp3', '.wav', '.ogg', 'decodeAudioData']) {
+    assert.equal(code.includes(loader), false, `audio.js reaches for ${loader}`)
+  }
+  // the whole synthesis surface is WebAudio node factories
+  for (const factory of ['createOscillator', 'createGain', 'createBiquadFilter', 'createBufferSource', 'createDynamicsCompressor']) {
+    assert.ok(AUDIO_SOURCE.includes(factory), `audio.js stopped using ${factory}`)
+  }
+  // and a manager that was never unlocked is a no-op rather than a throw: the
+  // browser hands this object to a render loop long before the first click
+  const manager = new audio.AudioManager()
+  assert.equal(manager.ready, false)
+  for (const frame of [{}, PLAYING_FRAME, { started: true, playing: true, swing: 'banish', footstep: { sprinting: true } }]) {
+    manager.update(1 / 60, frame)
+  }
+  const cues = audio.routeAudio({ ...PLAYING_FRAME, loopReset: true, hammerPickup: true, swing: 'banish' })
+  for (const row of audio.AUDIO_ROUTES) {
+    const voice = manager[row.voice]
+    assert.equal(typeof voice, 'function')
+    voice.call(manager, cues.find((cue) => cue.id === row.id), 1 / 60)
+  }
+  manager.duckAmbient()
+  manager.stopPortalHums()
+  assert.equal(manager.ready, false, 'a headless manager built an AudioContext')
 })
 
 // ---------------------------------------------------------------------------

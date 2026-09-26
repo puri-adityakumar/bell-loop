@@ -3,13 +3,36 @@
  * verify-world.mjs — headless INTEGRATION smoke test for the Three.js world.
  *
  * verify.mjs proves the pure modules; this file drives the real `BellLoopGame`
- * state machine (maze load, walls rising, bell reset, candle interaction, door
- * blocker, win, restart) with a stubbed DOM + a stubbed renderer, because a
- * script cannot click or look at the canvas.
+ * state machine with a stubbed DOM + a stubbed renderer, because a script cannot
+ * click or look at the canvas.
+ *
+ * STATE OF THIS FILE (unchanged by slice 11, and it is the reason §15.3 exists)
+ * ---------------------------------------------------------------------------
+ * The live checks below the DOM stubs are **v1-era and currently unreachable**: the
+ * 2D canvas stub implements only `createImageData`/`putImageData`/`fillRect`, so
+ * every procedural texture throws during construction and the run dies before the
+ * first assertion. They still reference `game.maze`, `game.shrines` and `game.door`,
+ * which the swap deleted at slice 09. **Slice 14 replaces this block**; do not
+ * repair it piecemeal.
+ *
+ * What slice 11 did change, and what slice 14 needs to know:
+ * - `makeFakeAudio` no longer records v1's `bellToll`/`bellSequence`/`footstep`/
+ *   `candleWhoosh`/`doorCreak`, which no longer exist. It records `update` and
+ *   replays the world's frame through the *real* `routeAudio`, so a world check can
+ *   assert what the player would have heard.
+ * - the world's one audio call is `audio.update(dt, frame)`. `winChord` (slice 13)
+ *   and `stopPortalHums` (teardown) are the only other two.
+ * - seven slice-11 audio checks are **parked in a block comment at the bottom**,
+ *   transcribed from a working run. They are the deliverable slice 14 should start
+ *   from alongside the ten slice-10 ones above them.
  *
  * Run: node verify-world.mjs   (exit code 0 = the whole loop works)
  */
 import assert from 'node:assert/strict'
+// slice 11: the fake audio replays the world's frame through the *real* router, so
+// this harness needs the pure half of the audio module. It is a pure module per
+// §15.1, which is the property that makes this import possible at all.
+import { routeAudio } from './src/game/audio.js'
 
 // ---------------------------------------------------------------------------
 // minimal DOM stubs (only what world.js + player.js touch)
@@ -68,6 +91,12 @@ const { createInitialState, createStore, PHASE, LOOP_SECONDS, SHRINE_IDS, RESET_
   await import('./src/game/loop.js')
 const { BellLoopGame } = await import('./src/game/world.js')
 const { cellToWorld } = await import('./src/game/maze.js')
+// The two v2 pure modules the *parked* blocks at the bottom need. They are imported
+// here, after the DOM globals, for the same reason the three above are: `three`
+// needs `document` to exist first. Both are pure, so importing them here changes
+// nothing for the live block — and it is two lines less for slice 14 to rediscover.
+const beast = await import('./src/game/creature.js')
+const hood = await import('./src/game/neighborhood.js')
 
 function makeFakeRenderer() {
   return {
@@ -82,6 +111,15 @@ function makeFakeRenderer() {
   }
 }
 
+/**
+ * The recording stand-in for `AudioManager`.
+ *
+ * Slice 11 changed the *shape* of the world/audio boundary: the world no longer
+ * calls voices, it hands the router a frame. So the fake records `update` calls and
+ * replays them through the real `routeAudio`, which keeps the world's contract
+ * (one call, one frame) and still lets a world check say which sound came out.
+ * `bellToll` and `bellSequence` are gone with v1's API; `winChord` is slice 13's.
+ */
 function makeFakeAudio() {
   const calls = []
   const record = (name) => () => {
@@ -94,11 +132,12 @@ function makeFakeAudio() {
     startAmbient: record('startAmbient'),
     stopAmbient: record('stopAmbient'),
     duckAmbient: record('duckAmbient'),
-    bellToll: record('bellToll'),
-    bellSequence: record('bellSequence'),
-    footstep: record('footstep'),
-    candleWhoosh: record('candleWhoosh'),
-    doorCreak: record('doorCreak'),
+    update(dt, frame) {
+      calls.push('update')
+      // the routing itself is pure, so the harness can assert on the real decision
+      for (const cue of routeAudio(frame ?? {})) calls.push(cue.id)
+    },
+    stopPortalHums: record('stopPortalHums'),
     winChord: record('winChord'),
     setMuted: record('setMuted'),
   }
@@ -147,11 +186,15 @@ check('the world builds its maze, walls, shrines and door', () => {
   assert.equal(game.player.enabled, false, 'the player must be frozen behind the start overlay')
 })
 
-check('BEGIN starts the loop, rings the bell and raises the walls', () => {
+check('BEGIN starts the loop and raises the walls (no bell: §13 removed the opening toll)', () => {
   game.start()
   assert.equal(store.get().phase, PHASE.PLAYING)
   assert.equal(store.get().timeLeft, LOOP_SECONDS)
-  assert.ok(audio.calls.includes('bellToll'), 'the first toll should ring on BEGIN')
+  assert.equal(
+    audio.calls.some((name) => ['awakening', 'banish', 'whiff', 'reset'].includes(name)),
+    false,
+    'BEGIN rang a toll: v1 opened the loop with the world\'s clock, and v2 has no clock',
+  )
   run(game, 4)
   assert.equal(game.introActive, false, 'the intro reveal should be over')
   assert.equal(store.get().fade, 0, 'the black should be fully lifted')
@@ -165,7 +208,10 @@ check('the player can walk: input moves the camera and triggers footsteps', () =
   game.player.keys.delete('KeyW')
   const moved = Math.hypot(game.player.pos.x - before.x, game.player.pos.z - before.z)
   assert.ok(moved > 1, `moved only ${moved.toFixed(2)}m`)
-  assert.ok(audio.calls.filter((name) => name === 'footstep').length > 0, 'no footsteps emitted')
+  assert.ok(
+    audio.calls.some((name) => ['walk', 'sprint', 'exhausted'].includes(name)),
+    'no footsteps emitted',
+  )
   assert.equal(game.camera.position.x, game.player.pos.x, 'the camera should follow the player')
   assert.ok(game.camera.position.y > 1.4 && game.camera.position.y < 1.8)
 })
@@ -201,7 +247,7 @@ check('candles: proximity shows the prompt, E lights one and it stays lit', () =
   assert.equal(store.get().prompt, 'light', 'the prompt should be on next to a shrine')
   assert.ok(game.tryLight(), 'tryLight() should succeed in reach')
   assert.equal(store.get().candles[SHRINE_IDS[0]], true)
-  assert.ok(audio.calls.includes('candleWhoosh'))
+  // §13: v1's candle ignition is gone with the candles themselves
   assert.equal(game.shrines.get(SHRINE_IDS[0]).lit, true)
   assert.equal(game.tryLight(), false, 'a lit shrine cannot be lit twice')
 
@@ -218,7 +264,10 @@ check('the bell rings at 60s: walls sink, the layout swaps, the loop count rises
   store.set({ timeLeft: 0.2 })
   run(game, 0.4)
   assert.equal(store.get().phase, PHASE.RESET, 'the bell should put the world into RESET')
-  assert.ok(audio.calls.includes('bellSequence'))
+  assert.equal(
+    audio.calls.filter((name) => name === 'reset').length, 1,
+    'the bell reset should be one routed toll (§13), not v1\'s three',
+  )
   run(game, RESET_TIMELINE.total + 0.2)
   assert.equal(store.get().phase, PHASE.PLAYING, 'the reset should hand control back')
   assert.equal(store.get().loop, 2)
@@ -249,7 +298,7 @@ check('lighting the last two candles opens the door on the next loop', () => {
     assert.ok(game.tryLight(), `could not light shrine ${id}`)
   }
   assert.equal(store.get().doorOpen, false, 'the door must wait for the next loop')
-  assert.ok(!audio.calls.includes('doorCreak'), 'no creak before the door opens')
+  // §13: v1's door creak is gone with the door itself
 
   store.set({ timeLeft: 0.2 })
   run(game, RESET_TIMELINE.total + 0.8)
@@ -257,7 +306,7 @@ check('lighting the last two candles opens the door on the next loop', () => {
   assert.equal(store.get().loop, 3)
   assert.equal(store.get().doorOpen, true, 'the door stands open from loop 3')
   assert.equal(game.doorOpen, true)
-  assert.ok(audio.calls.includes('doorCreak'), 'the door should creak open')
+  // ...and so is the sound it made, which is why the swap left no dead voice behind
   assert.equal(
     game.player.colliders.length,
     game.maze.walls.length,
@@ -526,6 +575,183 @@ check('dispose() tears the creature view down without throwing', () => {
   assert.equal(game.creatureView.root.parent, null, 'and removed itself from the scene')
   game.update(0.1)
   game.dispose()
+})
+
+// ---------------------------------------------------------------------------
+// slice 11 — the audio, driven through the real world (PARKED for slice 14)
+// ---------------------------------------------------------------------------
+//
+// Transcribed from a working run rather than sketched, like the block above, and
+// parked for the same reason: the canvas stub rotted and the harness does not
+// currently pass on its own (§15.3). `makeFakeAudio` records `update` and replays
+// the frame through the real `routeAudio`, so each of these is an assertion about
+// what the *player* would have heard on a real frame of the real world — which is
+// the only thing a world check can say about audio.
+
+check('the world makes one audio call per frame, and it is the router', () => {
+  // `restart()` legitimately rings the reset sting (§13: a wipe is a capture in
+  // everything but name), so the clean playing frame is what is under test here
+  game.restart()
+  run(game, 1.6)
+  audio.calls.length = 0
+  run(game, 0.5)
+  assert.ok(audio.calls.includes('update'), 'the router was never called')
+  assert.equal(
+    audio.calls.filter((name) => name === 'update').length,
+    Math.round(0.5 / DT),
+    'the router is not called exactly once per frame',
+  )
+  // a quiet frame in a quiet street: no stride, no swing, no shutdown, no capture.
+  // §13's opening toll is gone too — it was the world's clock, and v2 has none.
+  for (const id of ['awakening', 'banish', 'whiff', 'reset', 'portalShutdown']) {
+    assert.equal(audio.calls.includes(id), false, `a quiet frame rang ${id}`)
+  }
+  // the drone and the readouts are routed on every one of those frames, which is
+  // what stops a voice being left running by a frame that forgot to mention it
+  assert.ok(audio.calls.includes('drone'))
+  assert.ok(audio.calls.includes('breath'))
+  assert.ok(audio.calls.includes('portalHum'))
+})
+
+check('a swing that connects tolls, and a swing at nothing does not', () => {
+  game.restart()
+  run(game, 1.6)
+  game.state = { ...game.state, hammerHeld: true }
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0 })
+  game.creaturePosition = { x: game.player.pos.x + 1, z: game.player.pos.z }
+  audio.calls.length = 0
+  game.player.pressButton(0)
+  game.update(DT)
+  game.player.releaseButton(0)
+  assert.ok(audio.calls.includes('banish'), 'a connected swing did not toll')
+  assert.equal(audio.calls.includes('whiff'), false, 'and it also whiffed')
+  assert.equal(game.state.banishCount, 1, '§7.4: the ladder advanced')
+  // and the same swing, out of reach, is a whiff and no toll
+  run(game, beast.STAGGER_SECONDS + 0.2)
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0 })
+  game.creaturePosition = { x: game.player.pos.x + beast.BANISH_RANGE + 2, z: game.player.pos.z }
+  audio.calls.length = 0
+  game.player.pressButton(0)
+  game.update(DT)
+  game.player.releaseButton(0)
+  assert.ok(audio.calls.includes('whiff'), 'a miss was silent')
+  assert.equal(audio.calls.includes('banish'), false, 'a miss rang the banish toll')
+  assert.equal(game.state.banishCount, 1, '§7.4: a miss buys nothing')
+})
+
+check('the awakening toll fires once on the pickup and never again', () => {
+  game.restart()
+  run(game, 1.6)
+  audio.calls.length = 0
+  game._takeHammer()
+  game.update(DT)
+  assert.ok(audio.calls.includes('awakening'), 'the pickup did not toll')
+  assert.equal(audio.calls.filter((name) => name === 'awakening').length, 1, 'it tolled twice in one frame')
+  // a capture keeps the hammer (§9.1), and the second pickup cannot ring again
+  game._capture()
+  run(game, 1.4)
+  assert.equal(game.state.hammerHeld, true, '§9.1: the hammer survived the capture')
+  audio.calls.length = 0
+  assert.equal(game._takeHammer(), false, 'the hammer was picked up twice')
+  game.update(DT)
+  assert.equal(audio.calls.includes('awakening'), false, 'the toll fired a second time')
+})
+
+check('the capture sting is one toll, and nothing else speaks through the black', () => {
+  game.restart()
+  run(game, 1.6)
+  game.state = { ...game.state, hammerHeld: true }
+  game.creature = beast.createCreature({ state: 'chase', awareness: 1 })
+  game.creaturePosition = { x: game.player.pos.x, z: game.player.pos.z }
+  audio.calls.length = 0
+  game.update(DT)
+  assert.equal(store.get().phase, PHASE.RESET, 'the capture did not reset')
+  assert.equal(audio.calls.filter((name) => name === 'reset').length, 1, 'the sting was not exactly one toll')
+  // and the whole black: no footsteps (the player is disabled), no breath (not
+  // playing), no hums (not playing). §13 gives the capture one sound.
+  audio.calls.length = 0
+  run(game, 1.0)
+  for (const id of ['walk', 'sprint', 'exhausted', 'awakening', 'banish', 'whiff', 'portalShutdown']) {
+    assert.equal(audio.calls.includes(id), false, `${id} played during the black`)
+  }
+  // the hums are still *routed*, just silent, which is what stops a voice being left
+  // running by a frame that forgot to mention it
+  assert.ok(audio.calls.includes('portalHum'), 'the hums stopped being routed')
+})
+
+check('the player only emits footstep sound while really moving', () => {
+  game.restart()
+  run(game, 1.6)
+  audio.calls.length = 0
+  run(game, 1.0) // standing still
+  assert.equal(audio.calls.includes('walk'), false, 'standing still produced a footstep')
+  game.player.pressKey('KeyW')
+  run(game, 1.0)
+  game.player.releaseKey('KeyW')
+  assert.ok(audio.calls.includes('walk'), 'walking produced no footstep at all')
+  // and sprinting is the other row, priced by the creature's own table
+  audio.calls.length = 0
+  game.player.pressKey('KeyW')
+  game.player.pressKey('ShiftLeft')
+  run(game, 0.6)
+  assert.ok(audio.calls.includes('sprint'), 'sprinting produced no sprint tick')
+  // the winded gait arrives on its own, without the player asking for it
+  game.player.releaseKey('ShiftLeft')
+  game.player.releaseKey('KeyW')
+  game.player.breath = 0
+  game.player.exhausted = true
+  audio.calls.length = 0
+  game.player.pressKey('KeyW')
+  run(game, 1.0)
+  game.player.releaseKey('KeyW')
+  assert.ok(audio.calls.includes('exhausted'), 'a winded walk sounded like a fresh one')
+})
+
+check('a shutdown is a 25 m event and a commitment tell, and the hum follows it down', () => {
+  game.restart()
+  run(game, 1.6)
+  const entry = game.streetView.portals[0]
+  const spot = game.streetView.worldOf(entry.position)
+  game.player.teleport(spot.x, spot.z, 0)
+  // the first half of the hold is free and silent (§5.2), and this is the assertion
+  // that the surge has not started either. The hold is a real held key here, not
+  // `tryInteract`: the surge is raised inside `_updateVerbs` and only reaches the
+  // audio on the frame `update` routes it, so a one-shot helper would prove nothing.
+  game.player.pressKey('KeyE')
+  audio.calls.length = 0
+  run(game, 0.4)
+  assert.ok(game.state.progress[entry.id] > 0, 'the hold did not progress')
+  assert.equal(audio.calls.includes('portalShutdown'), false, 'the first half of a hold was loud')
+  // past the threshold it is loud, once per `SOUND_EVENT_SECONDS` window rather
+  // than once per frame — so there are far fewer surges than frames
+  audio.calls.length = 0
+  const frames = Math.round(1.2 / DT)
+  run(game, 1.2)
+  game.player.releaseKey('KeyE')
+  const surges = audio.calls.filter((name) => name === 'portalShutdown').length
+  assert.equal(game.state.portals[entry.id], true, 'the portal did not shut')
+  assert.ok(surges > 0, 'the second half of a hold was silent')
+  assert.ok(surges < frames / 2, `${surges} surges in ${frames} frames: the event is not windowed`)
+  // and shutting it is permanent and silent: §5.3, and no fourth toll
+  audio.calls.length = 0
+  run(game, 0.5)
+  assert.equal(audio.calls.includes('portalShutdown'), false, 'a shut portal is still shouting')
+  assert.equal(audio.calls.includes('awakening'), false)
+  assert.equal(audio.calls.includes('banish'), false)
+})
+
+check('dispose() stops the hums it started', () => {
+  // The hums are oscillators the world created and nothing else would ever stop
+  // them: the drone belongs to the AudioManager, the hums belong to the world. A
+  // second world, because an earlier check in this file has already disposed the
+  // first one and `dispose()` is idempotent.
+  const second = new BellLoopGame(container, { store, audio, createRenderer: makeFakeRenderer })
+  second.start()
+  second.update(DT)
+  second.update(DT)
+  audio.calls.length = 0
+  second.dispose()
+  assert.ok(audio.calls.includes('stopPortalHums'), 'the hums outlived the world')
 })
 */
 

@@ -458,7 +458,11 @@ export class PlayerController {
         this.travelled += moved
         if (this.travelled >= this.stepDistance) {
           this.travelled -= this.stepDistance
-          this.onFootstep?.(sprinting)
+          // slice 11: the exhaustion flag rides along with the stride, so the
+          // audio's *pricing* of the step (the third footstep voice, §7.3) comes
+          // from the same `exhausted` the sound table asks the creature's table
+          // about. One fact, two consumers, no second source of truth.
+          this.onFootstep?.(sprinting, this.exhausted)
           // §6.2: a footstep is a sound event, and while exhausted the table makes
           // it a louder one. Nothing is emitted when `speedRatio` is low or the
           // player is not actually moving — standing still, or leaning on a wall,

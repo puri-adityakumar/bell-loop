@@ -121,8 +121,15 @@ export class LongQuietGame {
     this._applyDusk(0)
 
     // --- player -------------------------------------------------------------
+    // slice 11: the player's stride is a *fact* for the audio frame, not a sound.
+    // §6.2's gating stays here — a stride only happens when the player is really
+    // moving — and §6.2's pricing moves into `audio.js`'s routing table, which
+    // asks the creature's own `soundRadius` for the number. The one audio call in
+    // this file is `_updateAudio`, and the gate holds it to that.
     this.player = new PlayerController(this.camera, this.canvas, {
-      onFootstep: (sprinting) => this.audio?.footstep(sprinting),
+      onFootstep: (sprinting, exhausted) => {
+        this._footstep = { sprinting, exhausted }
+      },
     })
     this.player.attach()
     this.player.enabled = false
@@ -139,7 +146,13 @@ export class LongQuietGame {
     /** §6.2 sound events the creature has not heard yet. */
     this.soundEvents = []
     this.hammerHold = 0
-    this.portalNoiseElapsed = 0
+    /**
+     * The §5.2 sound window, per portal. Slice 11: it was one number shared by all
+     * three portals, and the loop zeroed it for every portal that was not the one
+     * being held — so the 25 m event could never fire, and §5.2's second half was
+     * never loud. The world check that found it is parked in `verify-world.mjs`.
+     */
+    this.portalNoiseElapsed = Object.fromEntries(hood.PORTAL_IDS.map((id) => [id, 0]))
     /** One-frame flag: the hammer was picked up on this frame (§7.2's toll). */
     this._hammerToll = false
     /**
@@ -148,6 +161,31 @@ export class LongQuietGame {
      * then never handed it on, so the hammer rang and nothing ever answered.
      */
     this._swingPending = false
+    /**
+     * §7.4's swing *outcome*, which is what decides between the banish toll and the
+     * whiff (§13). Recorded by `_updateCreature` and read by `_updateAudio` on the
+     * same frame, which is the only frame the answer is on: `creatureStep` runs its
+     * swing test before its capture test, so a hammer that connects on the frame
+     * it would otherwise have caught you is answered by the banish toll, and one
+     * that misses is answered by the whiff.
+     */
+    this._swingResult = null
+
+    // --- audio (slice 11) -----------------------------------------------------
+    //
+    // Every fact §13 needs for this frame, and nothing else. The world decides
+    // *what happened* — a stride, a swing, a capture, a portal's progress — and
+    // `audio.routeAudio` decides what that sounds like. The flags below are all
+    // one-frame and all consumed by `_updateAudio`, which is called once per
+    // frame from `update` so that a flag cannot survive into a later frame and
+    // ring a bell twice.
+    this._footstep = null
+    /** §7.2's pickup edge, for the awakening toll. Once per run. */
+    this._hammerPickup = false
+    /** §9.3's reset beat: a capture, or the full wipe on BEGIN AGAIN. */
+    this._loopReset = false
+    /** §5.2's 25 m event, set where the world pushes the sound event. */
+    this._portalNoise = false
 
     // --- the creature's presentation (slice 10) -------------------------------
     //
@@ -360,7 +398,84 @@ export class LongQuietGame {
         break
     }
     this._updateCreatureView(dt)
+    this._updateAudio(dt)
     this._syncHud()
+  }
+
+  // -------------------------------------------------------------------------
+  // audio (§13, slice 11)
+  // -------------------------------------------------------------------------
+
+  /**
+   * _audioFrame — every fact §13 needs about this frame, and no decisions.
+   *
+   * The contract is `AUDIO_FRAME_FIELDS`, and this method is the only thing in
+   * the codebase that fills it in. Four of the fields are one-frame edges set
+   * elsewhere — the stride, the pickup, the swing outcome and the reset — and the
+   * rest are *state* the world already knows: the breath meter off the player,
+   * the creature's distance and awareness, each portal's progress and range.
+   *
+   * Nothing here asks what any of it should sound like. That is the whole design
+   * of slice 11: the world is the only thing that knows what happened, and the
+   * table is the only thing that knows what it costs.
+   */
+  _audioFrame() {
+    const player = { x: this.player.pos.x, z: this.player.pos.z }
+    const from = this.creaturePosition
+    const distance = Math.hypot(beast.wrapDelta(from.x, player.x), beast.wrapDelta(from.z, player.z))
+    return {
+      started: this.startedOnce,
+      playing: this.phase === PHASE.PLAYING,
+      won: this.phase === PHASE.WON,
+      loopReset: this._loopReset === true,
+      hammerPickup: this._hammerPickup === true,
+      // past tense, because `_takeHammer` has already flipped the flag by the time
+      // the frame is built: this is what the player had in hand *before* the pickup
+      hammerHeldBefore: this.state.hammerHeld === true && this._hammerPickup !== true,
+      swing: this._swingResult,
+      footstep: this._footstep,
+      portalNoise: this._portalNoise === true,
+      breath: this.player.breath,
+      exhausted: this.player.exhausted === true,
+      creatureDistance: distance,
+      // §7.4's removal is a *full* removal, so §6.4's readout stops with it: a
+      // banished creature is off the field even while the view is still fading the
+      // figure out, and a breath that followed the player home would undo the one
+      // moment the design promises relief in
+      creaturePresent: this.creature.state !== 'dormant' && this.creature.state !== 'stagger',
+      creatureAwareness: this.creatureAwareness,
+      portals: this.streetView.portals.map((entry) => {
+        const world = this.streetView.worldOf(entry.position)
+        return {
+          id: entry.id,
+          progress: this.state.progress[entry.id] ?? 0,
+          shut: this.state.portals[entry.id] === true,
+          distance: Math.hypot(beast.wrapDelta(world.x, player.x), beast.wrapDelta(world.z, player.z)),
+        }
+      }),
+    }
+  }
+
+  /**
+   * _updateAudio — the one call into `audio.js`, once per frame, in every phase.
+   *
+   * In every phase because that is how the voices get stopped: the capture's
+   * black is 1.1 seconds during which `playing` is false, and the routed breath,
+   * rasp and hum rows arrive with a level of zero on exactly those frames. A
+   * voice that is only updated while playing is a voice that plays on through the
+   * black.
+   *
+   * The one-frame flags are consumed here and cleared immediately after, so a
+   * flag cannot survive a frame and toll twice — which is the entire failure mode
+   * of §7.2's "tolls once" and §9.3's one-toll sting.
+   */
+  _updateAudio(dt) {
+    this.audio?.update(dt, this._audioFrame())
+    this._loopReset = false
+    this._hammerPickup = false
+    this._portalNoise = false
+    this._footstep = null
+    this._swingResult = null
   }
 
   /** The title screen still looks at the street, because it is behind the title. */
@@ -423,16 +538,27 @@ export class LongQuietGame {
       const active = Boolean(portal && portal.id === entry.id && holding)
       const shutBefore = this.state.portals[entry.id] === true
       this.state = rules.applyPortalHold(this.state, entry.id, dt, active)
-      if (!active) this.portalNoiseElapsed = 0
+      if (!active) this.portalNoiseElapsed[entry.id] = 0
       if (!active || shutBefore) continue
       // §5.2: silent for the first half, then a 25 m sound event once per window
       // rather than once per frame
-      this.portalNoiseElapsed += dt
+      //
+      // The window is kept PER PORTAL, and slice 11 found that it used to be one
+      // number shared by all three: the loop zeroes it for every portal that is not
+      // the one being held, so the two idle portals reset the accumulator at the end
+      // of every frame and the event could never fire at all. §5.2's whole promise —
+      // that the second half of a hold is loud — was silently never kept. The
+      // parked world check in `verify-world.mjs` is the one that found it.
+      this.portalNoiseElapsed[entry.id] += dt
       if (
         this.state.progress[entry.id] >= rules.PORTAL_NOISE_THRESHOLD &&
-        this.portalNoiseElapsed >= beast.SOUND_EVENT_SECONDS
+        this.portalNoiseElapsed[entry.id] >= beast.SOUND_EVENT_SECONDS
       ) {
-        this.portalNoiseElapsed = 0
+        this.portalNoiseElapsed[entry.id] = 0
+        // the same window that prices the 25 m event for the creature also hands
+        // the audio its commitment tell (§5.2, §13), so the two can never be one
+        // frame apart: the surge the player hears is the sound the creature hears
+        this._portalNoise = true
         this.soundEvents.push({
           kind: 'portal',
           radius: rules.PORTAL_SOUND_RADIUS,
@@ -474,7 +600,11 @@ export class LongQuietGame {
     // the flag, not the transition: §6.1's telegraph -> stalk edge is fired by the
     // next `creatureStep`, so the pickup frame cannot skip a frame of the machine
     this._hammerToll = true
-    this.audio?.bellToll(0.1, 196, 0.5)
+    // §13's awakening toll is routed, not called: `routeAudio` gates it on this
+    // edge *and* on the hammer not already being held, so "once per run" is
+    // enforced twice — here, where the pickup happens, and in the table, where
+    // the sound is decided
+    this._hammerPickup = true
     return true
   }
 
@@ -489,7 +619,11 @@ export class LongQuietGame {
     this.streetView.setPortalShut(id, true)
     this._applyDusk(this.state.dusk)
     this.streetView.setHeadlights(this.state.finale)
-    this.audio?.bellToll(0.25, 330, 0.3)
+    // §13 gives a portal shutdown no bell of its own: the sound of a shutdown is
+    // its hum falling an octave and stopping, which the routed `portalHum` row does
+    // from `state.progress` and `state.portals` on the very next frame. v1 rang a
+    // toll here, and v1's toll was a *timer* — a fourth source for the one sound
+    // §13 says has three.
   }
 
   _refreshColliders() {
@@ -558,6 +692,11 @@ export class LongQuietGame {
     })
     this._hammerToll = false
     this._swingPending = false
+    // §13's swing outcome, for the audio frame. `null` on a frame with no swing,
+    // and the three possible strings are the three rows of the table: a connect is
+    // the banish toll, a miss or an Act I immunity is the whiff. Recorded *after*
+    // the step so it is the answer rather than the request.
+    this._swingResult = step.swing ? step.swing.result : null
     this.creature = step.creature
     // §7.4's ladder is run-long, and `rules.js` owns the run-level copy that §9.1
     // keeps across a capture. A connected swing is the *only* thing that advances
@@ -797,6 +936,10 @@ export class LongQuietGame {
     this.banishElapsed = 0
     this._hammerToll = false
     this._swingPending = false
+    this._swingResult = null
+    this._footstep = null
+    this._hammerPickup = false
+    this._portalNoise = false
     // behind the black, per §9.3: no dismissal is drawn, the figure is simply not
     // there any more, and the arrival clock starts run-out so the next Act I
     // sighting is fully solid the moment the screen comes back
@@ -814,9 +957,12 @@ export class LongQuietGame {
     this.fade = 1
     this.store.set({ phase: PHASE.RESET, fade: 1 })
     this._applyDusk(this.state.dusk)
-    // §13 calls the capture sting a toll and not a fade cue, and a toll is the
-    // only thing v1's audio manager can already play
-    this.audio?.bellSequence(3, 0.7)
+    // §13: the capture's sting is a toll and not a fade cue, and it is *routed* —
+    // `_updateAudio` sees the flag on this same frame, after the phase has already
+    // moved to the black, which is exactly why `loopReset` is the one cue that
+    // does not require `playing`. v1 rang three tolls here under a 2.35 s fade;
+    // §9.3 keeps almost the same timeline and the sting is now one strike.
+    this._loopReset = true
   }
 
   _updateReset(dt) {
@@ -915,7 +1061,17 @@ export class LongQuietGame {
   // public API used by React
   // -------------------------------------------------------------------------
 
-  /** BEGIN: unfreeze, hand the camera to the player, first toll, pointer lock. */
+  /**
+   * BEGIN: unfreeze, hand the camera to the player, and point-lock. No bell.
+   *
+   * v1 rang a toll here to open the loop, and slice 11 removed it, which is §13's
+   * continuity claim read the other way round. v1's opening toll was the *world's*
+   * clock announcing a sixty seconds; §13 keeps the bell and changes what it is
+   * for — "it crosses as the *player's* instrument rather than the world's timer",
+   * and §9 says there is no timer and no bell on a clock. So BEGIN is answered by
+   * the drone coming up (`applyDrone`, on the first routed frame) instead, and
+   * the first toll in a run is the awakening, which is the hammer's.
+   */
   start() {
     if (this.startedOnce) return
     this.startedOnce = true
@@ -923,7 +1079,6 @@ export class LongQuietGame {
     this.fade = 1
     this.store.set({ phase: PHASE.PLAYING, fade: 1, prompt: null })
     this.player.requestLock()
-    this.audio?.bellToll(0, 220, 0.5)
   }
 
   /**
@@ -943,6 +1098,10 @@ export class LongQuietGame {
     this.banishElapsed = 0
     this._hammerToll = false
     this._swingPending = false
+    this._swingResult = null
+    this._footstep = null
+    this._hammerPickup = false
+    this._portalNoise = false
     this.dismissing = false
     this.dismissElapsed = beast.FADE_SECONDS.dismiss
     this.reemergeElapsed = beast.FADE_SECONDS.reemerge
@@ -960,7 +1119,10 @@ export class LongQuietGame {
     this.resetElapsed = 0
     this.fade = 1
     this.store.set({ phase: PHASE.RESET, fade: 1 })
-    this.audio?.bellSequence(3, 0.7)
+    // the same beat as the capture (§13): the loop starts over, so it says so with
+    // the loop's own voice. This is the *only* other caller of the reset cue, and
+    // it is a caller because §10.4's wipe is a capture in everything but name.
+    this._loopReset = true
   }
 
   /**
@@ -986,6 +1148,11 @@ export class LongQuietGame {
     this._resizeObserver?.disconnect()
     this.player.dispose()
     this.streetView.dispose()
+    // the hums are oscillators this file started, and nothing else will ever stop
+    // them: the game is gone and its per-portal voices go with it. The drone and
+    // the ambience belong to the AudioManager's lifetime, not to the world's, so
+    // they are deliberately left alone here
+    this.audio?.stopPortalHums?.()
     // before the scene traversal below, and it removes its own root first, so the
     // traversal never sees these geometries and disposes them a second time
     this.creatureView?.dispose()
