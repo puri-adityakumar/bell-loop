@@ -67,8 +67,22 @@ const CAPTURE_FADE_SECONDS = 1.1
 
 /** Point lights given to the sodium lamps; the rest of the grid is unlit. */
 const LAMP_LIGHTS = 4
+
 /** How far a lamp light reaches before the pool stops looking for another. */
 const LAMP_RADIUS = 40
+
+/**
+ * How far away §6.1's first sighting has to stand, in metres.
+ *
+ * §8.3's floor is `REEMERGE_MIN_GRAPH_DISTANCE` graph steps, and `creature.js`
+ * derives its own distance reading of that as `BLOCK * sqrt(2)` — the closest two
+ * hops can lie on a 64 m grid. This is the same number, written down here
+ * because `world.js` needs it for a test the pure module does not make: the
+ * graph floor is a property of the *graph*, and a cone test in a wrapped frame
+ * can put a node inside the cone at one hop's distance. "Appears at long range"
+ * is a sentence about metres, so it is checked in metres.
+ */
+const MIN_SIGHTING_METRES = hood.BLOCK * Math.SQRT2 * beast.REEMERGE_MIN_GRAPH_DISTANCE
 
 /**
  * How long after a resume a lost pointer lock is forgiven, seconds of world time.
@@ -785,8 +799,27 @@ export class LongQuietGame {
     const dx = beast.wrapDelta(from.x, player.x)
     const dz = beast.wrapDelta(from.z, player.z)
     const distance = Math.hypot(dx, dz)
+    // §8.3's re-emergence speaks the *canonical* frame, because that is the frame
+    // its answer is in: `reemergeNode` returns `streetNodeToWorld(id)` and this
+    // file stores that straight into `creaturePosition`, which is canonical by
+    // the same contract. So its occluders are the canonical ones.
+    //
+    // The two sight tests below are the opposite case and want the *drawn* frame,
+    // and the difference is the bug this slice fixed: a distance can cross the
+    // seam because `wrapDelta` folds it, but a bearing cannot. See the note.
     const occluders = this.streetView.canonicalOccluders()
     const range = beast.detectionRange(this.creature.tier, this.creature.reemergenceCount)
+    // The two *directional* tests need the drawn frame, and this is the same
+    // mistake the placement had (slice 14). A distance can cross the seam because
+    // `wrapDelta` folds it, but a bearing cannot: `inSightCone` and `canSee` take
+    // two points and a yaw and subtract them, so handing them a canonical
+    // creature and an unfolded player measures the angle between two different
+    // copies of the same intersection. §3.3's seam is real, and a cone test is
+    // exactly the kind of thing that walks straight off it. `worldOfNear` is the
+    // same fold `_updateCreatureView` already applies to draw the figure, which
+    // is the check that matters here: the AI must agree with the picture, or a
+    // creature the player can plainly see is "behind" them.
+    const drawn = this.streetView.worldOf(from, player)
 
     // §6.2: whatever the player queued, plus whatever the world queued
     for (const event of this.player.drainSounds()) this.soundEvents.push(event)
@@ -799,7 +832,12 @@ export class LongQuietGame {
 
     const step = beast.creatureStep(this.creature, dt, {
       sounds,
-      seen: beast.canSee(from, player, { range, occluders }),
+      // `drawn`, not `from`: see the fold note above. The occluders come from
+      // `occluders()` rather than `canonicalOccluders()` for the same reason —
+      // `lineOfSight` is a segment test, and a segment between a folded creature
+      // and an unfolded player tested against canonical rects is a segment
+      // through the wrong map.
+      seen: beast.canSee(drawn, player, { range, occluders: this.streetView.occluders() }),
       sightDistance: distance,
       sightRange: range,
       playerPosition: player,
@@ -814,7 +852,7 @@ export class LongQuietGame {
       // §6.1 in one call: the telegraph "is gone when you look back", so the
       // sighting is the view cone and nothing else — not the creature's detection
       // range, which belongs to the hunter it becomes in Act II
-      sighting: beast.inSightCone(player, from),
+      sighting: beast.inSightCone(player, drawn),
       reemerge: removed && beast.reemergeReady(this.creature, this.banishElapsed),
       searchExhausted: false,
       searchPosition: null,
@@ -1019,8 +1057,34 @@ export class LongQuietGame {
    * the two never disagree about how far is far enough) and the sight rule is
    * inverted: the node must be inside the player's view cone.
    *
+   * THE WRAP IS PART OF THE CONE TEST (slice 14)
+   * --------------------------------------------
+   * This method used to test `inSightCone` against the *canonical* node position
+   * and fall back to the spawn point when nothing passed. That fallback is what
+   * §6.1 cannot survive: a telegraph standing at distance zero is not a sighting
+   * at long range, it is a shape inside the player's own head, and because
+   * `inSightCone` returns `true` at zero distance ("it is standing on the
+   * creature, and the cone question is moot") the sighting could then never end.
+   * The Act I apparition stayed on screen for the whole of Act I, which is how a
+   * world check caught it: §6.1's "gone when you look back" is an assertion, and
+   * the creature it was written against never left.
+   *
+   * The cause is the fold. §3.3's canonical frame is 32 m out of step with the
+   * draw window (see `streetView.js`'s `WINDOW_MIN`), so the canonical position of
+   * a node two blocks *east* of the spawn is 380 m west of the player, and the
+   * whole eastern half of the map is behind the spawn cone. Folding each
+   * candidate into the copy the player is standing in before testing it is the
+   * same arithmetic `worldOf` does everywhere else, and with it the pool is 42
+   * nodes wide instead of 1.
+   *
+   * The position *stored* is still the canonical one, because that is the frame
+   * the creature's position is canonical in and every distance to the player goes
+   * through `wrapDelta` (§3.3's seam). Only the test needed the fold.
+   *
    * The pick is hashed, not random, because a run's first apparition should be the
-   * same apparition every time it is replayed with the same seed.
+   * same apparition every time it is replayed with the same seed. It is hashed
+   * over the *node id*, not over the position's index, so a seed replays the same
+   * apparition even if the pool is later reordered.
    */
   _firstSightingPoint() {
     const from = beast.nodeId(SPAWN.position)
@@ -1029,12 +1093,48 @@ export class LongQuietGame {
     const candidates = []
     for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
       if (hops[id] < beast.REEMERGE_MIN_GRAPH_DISTANCE) continue
-      const position = streetNodeToWorld(id)
-      if (beast.inSightCone(facing, position)) candidates.push(position)
+      const canonical = streetNodeToWorld(id)
+      // the same three copies `streetView` draws, folded around the *spawn* rather
+      // than around wherever the player happens to be standing: a placement is a
+      // question about the world as it will be, and §3.3's seam means the two are
+      // not the same question once the player has walked a period
+      const folded = this.streetView.worldOfNear(canonical, facing)
+      if (!beast.inSightCone(facing, folded)) continue
+      // ...and the cone alone is not §6.1 either. "Appears at *long range*" is a
+      // distance claim, and an intersection diagonally in front of the player is
+      // 5.7 m away: close enough to be an ambush wearing a sighting's clothes.
+      // The floor is the straight-line reading of §8.3's graph floor — the closest
+      // `REEMERGE_MIN_GRAPH_DISTANCE` hops can lie is `BLOCK * sqrt(2)`, which is
+      // the number `creature.js`'s own comment derives it from — so the two
+      // placements cannot disagree about how far is far enough.
+      if (Math.hypot(folded.x - facing.x, folded.z - facing.z) < MIN_SIGHTING_METRES) continue
+      candidates.push({ id, position: canonical })
     }
-    if (candidates.length === 0) return { ...SPAWN.position }
+    // §8.3's distance floor is the promise that is always satisfiable — it is a
+    // property of the graph, not of where the player happens to be facing — so it
+    // is what the fallback keeps, exactly as `reemergeNode` does. Returning the
+    // spawn point here is what put a telegraph at distance zero.
+    if (candidates.length === 0) return this._farthestSightingNode(hops)
     const pick = Math.floor(streamAt(this.seed ^ 0x7e1e6a01, from, 0)() * candidates.length)
-    return { x: candidates[pick].x, z: candidates[pick].z }
+    return { x: candidates[pick].position.x, z: candidates[pick].position.z }
+  }
+
+  /**
+   * _farthestSightingNode — the last-resort placement, and it is a *distance*
+   * one. §6.1 wants a sighting in view; §8.3's floor is the promise that cannot
+   * fail, so when the cone is unsatisfiable the sighting goes to the far side of
+   * the map and the player sees nothing until they walk. It is better to open Act
+   * I with a silence than with a shape at zero metres.
+   */
+  _farthestSightingNode(hops) {
+    let best = null
+    let bestHops = -1
+    for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+      if (hops[id] <= bestHops) continue
+      bestHops = hops[id]
+      best = streetNodeToWorld(id)
+    }
+    return best ? { x: best.x, z: best.z } : { ...SPAWN.position }
   }
 
   // -------------------------------------------------------------------------

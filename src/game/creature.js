@@ -883,6 +883,25 @@ export function reemergeNode(options = {}) {
   const player = options.playerPosition ?? options.player ?? null
   if (!player) return null
   const occluders = options.occluders ?? []
+  // KNOWN FRAME QUESTION — slice 14, left for slice 15
+  // ------------------------------------------------------
+  // The `position` this returns is CANONICAL (`streetNodeToWorld`), and so are
+  // the `occluders` `world.js` hands in. The `player`, though, is in world
+  // coordinates, because the player never wraps and the world does. So the two
+  // directional tests below — `inSightCone` and `lineOfSight` — compare a
+  // canonical point against an unfolded one across §3.3's seam, which is the
+  // identical mistake `world.js`'s own sight tests made until slice 14 fixed them
+  // there.
+  //
+  // It is left alone on purpose. Fixing it properly is a contract change — this
+  // function would want a folded player and folded occluders, and it would return
+  // a canonical answer either way — and that ripples through ~20 assertions in
+  // `verify.mjs` that were written against the current signature. It is a change
+  // to a pure module's API, not a repair, and it belongs in the slice that owns
+  // `creature.js`'s tuning. What it costs in the meantime is bounded and named:
+  // the placement is still §8.3's distance floor, which is what the design
+  // actually promises, and the sight rules are the *secondary* filter that the
+  // `level` field already reports when they could not be met.
   const floor = options.minDistance ?? REEMERGE_MIN_GRAPH_DISTANCE
   const minDistance = Math.max(0, Math.floor(Number.isFinite(floor) ? floor : 0))
   const origin = nodeId(player)

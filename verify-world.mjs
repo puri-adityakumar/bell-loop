@@ -6,38 +6,61 @@
  * state machine with a stubbed DOM + a stubbed renderer, because a script cannot
  * click or look at the canvas.
  *
- * STATE OF THIS FILE (unchanged by slice 11, and it is the reason §15.3 exists)
+ * STATE OF THIS FILE
  * ---------------------------------------------------------------------------
- * The live checks below the DOM stubs are **v1-era and currently unreachable**: the
- * 2D canvas stub implements only `createImageData`/`putImageData`/`fillRect`, so
- * every procedural texture throws during construction and the run dies before the
- * first assertion. They still reference `game.maze`, `game.shrines` and `game.door`,
- * which the swap deleted at slice 09. **Slice 14 replaces this block**; do not
- * repair it piecemeal.
+ * Slice 14 landed the repair, and the interesting part is that the plan's
+ * diagnosis had gone stale. The plan (written at the base commit) says this
+ * harness exits 1 with `TypeError: ctx.beginPath is not a function`, thrown from
+ * v1's `makeCobbleTexture`. Slice 09's swap rewrote all six procedural textures
+ * as one pixel-only `makeSurfaceTexture`, so that particular thrower is gone —
+ * and the stub happened to survive it. What the harness was actually failing on
+ * was the 12 checks in the v1 live block, 11 of which read `game.maze` /
+ * `game.shrines` / `game.door` / `SHRINE_IDS`, all deleted at the swap. `1/12`,
+ * exit 1 — the same six-slices-long rot, a different organ.
  *
- * What slice 11 did change, and what slice 14 needs to know:
- * - `makeFakeAudio` no longer records v1's `bellToll`/`bellSequence`/`footstep`/
- *   `candleWhoosh`/`doorCreak`, which no longer exist. It records `update` and
- *   replays the world's frame through the *real* `routeAudio`, so a world check can
- *   assert what the player would have heard.
- * - the world's one audio call is `audio.update(dt, frame)`. `winChord` (slice 13)
- *   and `stopPortalHums` (teardown) are the only other two.
- * - seven slice-11 audio checks are **parked in a block comment at the bottom**,
- *   transcribed from a working run. They are the deliverable slice 14 should start
- *   from alongside the ten slice-10 ones above them.
- * - slice 12 added **nine more parked checks in the same block**, covering the
- *   v2 HUD mirror, §14.3's pause and its reduced-motion toggle. Those nine are
- *   the only ones in this file that were written with the harness already working
- *   — validated in a scratch copy of this file whose 2D context had the drawing
- *   surface `streetView`'s procedural textures need, which is precisely the stub
- *   work §15.3 hands slice 14. The scratch copy is not committed. `hud` is
- *   imported for them alongside `beast`, `hood` and `rules`; all four are read
- *   only by the parked blocks, which is why the linter calls all four unused.
- * - slice 13 added **five more parked checks in their own block** (§10.1's
- *   trigger driven through the real hold, §10.2's enrage, §10.3's headlights, the
- *   §10.4 win and the full wipe), written in that same scratch harness and for
- *   the same reason. The first of the five is the only check anywhere in the
- *   project that shuts the three portals by walking to them and holding E.
+ * What this slice did, in order:
+ *   1. the 2D stub now carries the *whole* drawing surface, so the next person
+ *      who writes a path-drawn texture cannot rot the gate the way v1's six did.
+ *      It still renders nothing — it is a surface, not an implementation — and a
+ *      check at the bottom walks every member so it cannot be quietly halved;
+ *   2. the v1 live block is gone, replaced by v2 construction checks, and the 31
+ *      checks slices 10-13 parked are live;
+ *   3. teardown moved to the bottom. v1 ran `dispose()` one block up from the end
+ *      and slice 10 parked a second one; both freed the world out from under the
+ *      blocks below, and neither announced it, because `update` has no `disposed`
+ *      guard and the checks kept passing against a half-freed street.
+ *
+ * FOUR OF THE 31 PARKED CHECKS WERE WRONG, NOT THE WORLD
+ * ------------------------------------------------------
+ * The orchestrator log predicted four slice-10 presentation expectations failing
+ * "as written", and it was right about the number and the neighbourhood. Three
+ * were bugs in the *checks* and one was a bug in the *game*, and the game bug was
+ * sitting underneath all of them:
+ *
+ *   - **§6.1's sighting stood at zero metres.** `_firstSightingPoint` tested the
+ *     view cone against *canonical* node positions in a wrapped world, found
+ *     nothing, and fell back to the spawn point itself. A telegraph at distance 0
+ *     is not "a sighting at long range", and because `inSightCone` is trivially
+ *     true at zero the sighting could then never end — the Act I apparition was on
+ *     screen for the whole of Act I, permanently. Fixed in `world.js` by folding
+ *     the candidates into the copy the spawn is in before testing them, and by
+ *     giving §6.1 the same distance floor §8.3 has. `_updateCreature` had the
+ *     identical mistake at runtime for the two *directional* tests, which is why
+ *     "gone when you look back" never happened either.
+ *   - **the phase-out check's `§9.2` line** asserted `banishCount === 0` in a
+ *     suite where the check above it had already advanced the ladder to 1. It was
+ *     asserting that the file tidied up after itself. §9.2's claim is comparative,
+ *     and now is.
+ *   - **the creature view's folded position** compared a `THREE.Vector3` to a
+ *     plain object with `deepEqual`, so it could never pass and the diff it
+ *     printed said nothing about the fold — which was correct all along.
+ *   - **the telegraph's look-back** was driven by four seconds of standing still,
+ *     which is not looking back. The check now turns the player around, and §6.1's
+ *     second half is tested as the claim it is: a thing that is gone when you look
+ *     away, and not gone when you do not.
+ *
+ * Every parked check otherwise says what slice 10, 11, 12 and 13 wrote, and every
+ * one of those edits carries a `SLICE 14` comment saying which way it went.
  *
  * Run: node verify-world.mjs   (exit code 0 = the whole loop works)
  */
@@ -51,71 +74,250 @@ import { routeAudio } from './src/game/audio.js'
 // minimal DOM stubs (only what world.js + player.js touch)
 // ---------------------------------------------------------------------------
 
+/**
+ * The 2D context: a *surface*, not an implementation.
+ *
+ * v1's stub had five members and every procedural texture drew through
+ * `beginPath`/`ellipse`/`fill`, so all six rotted silently and the harness spent
+ * five slices reporting `1/12` for a reason nobody could see. Slice 09 rewrote
+ * the textures to be pixel-only, which made the stub *sufficient* by accident —
+ * and an accidental sufficiency is the exact thing that rots again, because the
+ * next person who reaches for a path is reaching for a member that is not here.
+ *
+ * So: the whole drawing surface, present, and inert. `fill()` records nothing and
+ * paints nothing; `createImageData` really allocates, because `streetView`
+ * writes every texel through it and a texture that throws on `data[i] = value`
+ * is not a stub problem, it is a real one. Nothing here rasterizes, and nothing
+ * here is asked to.
+ *
+ * The split is deliberate and worth keeping: `createImageData`/`getImageData`/
+ * `putImageData` are *data*, so they are implemented; everything else is a *call*
+ * whose only job is to not be undefined. `measureText` is the one grey area —
+ * it returns zeros rather than throwing, because a texture that measures a label
+ * is a texture whose layout cannot be checked here, and silently getting 0 is
+ * better than a crash that looks like a game bug.
+ */
 function makeContext2d(canvas) {
+  const noop = () => {}
+  const state = () => ({})
   return {
     canvas,
+    // --- draw state (all readable/writable no-ops: a plain data property) -----
     globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
     fillStyle: '#000',
+    strokeStyle: '#000',
+    lineWidth: 1,
+    lineCap: 'butt',
+    lineJoin: 'miter',
+    miterLimit: 10,
+    lineDashOffset: 0,
+    shadowBlur: 0,
+    shadowColor: 'rgba(0, 0, 0, 0)',
+    shadowOffsetX: 0,
+    shadowOffsetY: 0,
+    font: '10px sans-serif',
+    textAlign: 'start',
+    textBaseline: 'alphabetic',
+    direction: 'inherit',
+    filter: 'none',
+    imageSmoothingEnabled: true,
+    imageSmoothingQuality: 'low',
+
+    // --- raster: the one part that is real -----------------------------------
     createImageData(width, height) {
-      return { width, height, data: new Uint8ClampedArray(width * height * 4) }
+      const w = Math.max(1, Math.ceil(Number(width) || 1))
+      const h = Math.max(1, Math.ceil(Number(height) || 1))
+      return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }
+    },
+    getImageData(x, y, width, height) {
+      return this.createImageData(width, height)
     },
     putImageData() {},
-    fillRect() {},
+
+    // --- path construction ---------------------------------------------------
+    beginPath: noop,
+    closePath: noop,
+    moveTo: noop,
+    lineTo: noop,
+    bezierCurveTo: noop,
+    quadraticCurveTo: noop,
+    arc: noop,
+    arcTo: noop,
+    ellipse: noop,
+    rect: noop,
+    roundRect: noop,
+
+    // --- path painting -------------------------------------------------------
+    fill: noop,
+    stroke: noop,
+    clip: noop,
+    isPointInPath: () => false,
+    isPointInStroke: () => false,
+
+    // --- shapes --------------------------------------------------------------
+    fillRect: noop,
+    strokeRect: noop,
+    clearRect: noop,
+    drawImage: noop,
+
+    // --- transforms ----------------------------------------------------------
+    save: noop,
+    restore: noop,
+    scale: noop,
+    rotate: noop,
+    translate: noop,
+    transform: noop,
+    setTransform: noop,
+    resetTransform: noop,
+
+    // --- text ----------------------------------------------------------------
+    fillText: noop,
+    strokeText: noop,
+    measureText: () => ({
+      width: 0,
+      actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: 0,
+      actualBoundingBoxAscent: 0,
+      actualBoundingBoxDescent: 0,
+      fontBoundingBoxAscent: 0,
+      fontBoundingBoxDescent: 0,
+    }),
+
+    // --- gradients, patterns and dashes --------------------------------------
+    createLinearGradient: () => ({ addColorStop: noop }),
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createConicGradient: () => ({ addColorStop: noop }),
+    createPattern: () => state(),
+    setLineDash: noop,
+    getLineDash: () => [],
   }
 }
 
-function makeCanvas() {
+/**
+ * A canvas: the element, plus the handful of members `world.js` and `player.js`
+ * treat as guaranteed.
+ *
+ * Two things here are load-bearing rather than decorative.
+ *
+ * `getContext` **memoizes**. A real canvas hands back the same 2D context every
+ * time it is asked, and a stub that mints a fresh one is not a smaller lie, it is
+ * a different one: `streetView` builds a texture, `THREE.CanvasTexture` may ask
+ * for the context again, and with per-call contexts those two are different
+ * objects and the check "this texture was drawn on the context I am holding"
+ * silently stops meaning anything. It also makes the stub honest about the one
+ * method that *is* real: `createImageData` on the memoized context is the buffer
+ * the texel loop writes into.
+ *
+ * `requestPointerLock` **records**. Slice 13 found that `restart()` must re-ask
+ * for the lock, because the win card is the one screen the player was never
+ * holding it on, and a new run that starts un-walkable reads as broken. A stub
+ * that swallowed the call would let that regress silently — the world's own
+ * `player.js` already treats the call as best-effort, so nothing else would
+ * notice. `lockRequests` is the counter that does.
+ */
+function makeCanvas(label = 'canvas') {
   const canvas = {
+    nodeName: 'CANVAS',
     width: 300,
     height: 150,
+    clientWidth: 1280,
+    clientHeight: 720,
     style: {},
-    nodeName: 'CANVAS',
+    dataset: {},
+    /** How many times the world asked for pointer lock on this element. */
+    lockRequests: 0,
+    parentNode: null,
+    ownerDocument: null,
     addEventListener() {},
     removeEventListener() {},
+    setAttribute() {},
+    getAttribute() {
+      return null
+    },
+    focus() {},
+    /** Best effort, exactly as `player.js` asks for it. */
+    requestPointerLock() {
+      canvas.lockRequests += 1
+      return undefined
+    },
+    getBoundingClientRect() {
+      return { x: 0, y: 0, left: 0, top: 0, right: 1280, bottom: 720, width: 1280, height: 720 }
+    },
   }
+  let context = null
   canvas.getContext = (type) => {
     assert.equal(type, '2d', `headless stub only supports 2d (asked for ${type})`)
-    return makeContext2d(canvas)
+    if (!context) context = makeContext2d(canvas)
+    return context
   }
+  // `three` reads these off a texture's source and treats a missing one as a
+  // non-power-of-two texture, which is a different code path than the one the
+  // game ships on. Cheap to state, so it is stated.
+  canvas.toDataURL = () => `data:image/png;base64,headless-${label}`
   return canvas
 }
 
+/**
+ * The globals, in the order `three` and the game read them.
+ *
+ * `matchMedia` is present and returns `matches: false` on purpose. `world.js`
+ * guards its call with `typeof window.matchMedia === 'function'`, so with the
+ * function absent the constructor takes the "no browser" branch and
+ * `reducedMotionSystem` is never exercised at all. The default in a real browser
+ * is also `false`, so this stub says the same thing a fresh Chrome says and lets
+ * the reduced-motion checks in the slice-12 block test the *game's* toggle rather
+ * than accidentally testing the guard.
+ *
+ * `document.removeEventListener` is here rather than optional-called for the same
+ * reason: it is the real API, and `dispose()` reaching for it through `?.` is a
+ * statement about teardown order that this harness should be able to see.
+ */
 globalThis.window = {
   devicePixelRatio: 1,
   innerWidth: 1280,
   innerHeight: 720,
   addEventListener() {},
   removeEventListener() {},
+  matchMedia() {
+    return { matches: false, media: '', addEventListener() {}, removeEventListener() {} }
+  },
 }
 globalThis.document = {
   pointerLockElement: null,
+  hidden: false,
+  visibilityState: 'visible',
   exitPointerLock() {},
   addEventListener() {},
   removeEventListener() {},
   createElement(tag) {
-    assert.equal(tag, 'canvas')
-    return makeCanvas()
+    if (tag !== 'canvas') {
+      throw new Error(`headless stub only creates canvases (asked for ${tag})`)
+    }
+    const canvas = makeCanvas()
+    canvas.ownerDocument = globalThis.document
+    return canvas
   },
 }
 globalThis.requestAnimationFrame = () => 1
 globalThis.cancelAnimationFrame = () => {}
 
-const { createInitialState, createStore, PHASE, LOOP_SECONDS, SHRINE_IDS, RESET_TIMELINE } =
-  await import('./src/game/loop.js')
+// `PHASE` and `createStore` are the only two v1 members the v2 world still uses
+// (§10.5: the phase machine keeps its meaning). `LOOP_SECONDS`, `SHRINE_IDS` and
+// `RESET_TIMELINE` were imported here for the v1 live block, and v2 has no
+// countdown, no candles and no bell on a clock — the bells are `creature.js`'s.
+const { createInitialState, createStore, PHASE } = await import('./src/game/loop.js')
 const { BellLoopGame } = await import('./src/game/world.js')
-const { cellToWorld } = await import('./src/game/maze.js')
-// The two v2 pure modules the *parked* blocks at the bottom need. They are imported
-// here, after the DOM globals, for the same reason the three above are: `three`
-// needs `document` to exist first. Both are pure, so importing them here changes
-// nothing for the live block — and it is two lines less for slice 14 to rediscover.
+// The v2 pure modules the checks below read. All four are pure per §15.1 — they
+// import no DOM, no `three` and no clock — which is exactly the property that
+// lets a world check assert against the *same* rules object the world runs on
+// instead of re-deriving a copy of them locally.
 const beast = await import('./src/game/creature.js')
 const hood = await import('./src/game/neighborhood.js')
-// slice 12: the HUD projection, which the parked block below asserts against.
-// Pure, so importing it here costs the live block nothing.
+// slice 12: the HUD projection, the quantizer the repaint-budget check measures.
 const hud = await import('./src/ui/hud.js')
-// slice 13: the rules, for the parked finale block — the fog curve, the exit
-// radius and `checkExitWin` are all rules, and a world check that re-derived
-// them locally would be asserting a copy. Pure, like the three above.
+// slice 13: the rules — the fog curve, the exit radius and `checkExitWin` are all
+// rules, and a world check that re-derived them would be asserting a copy.
 const rules = await import('./src/game/rules.js')
 
 function makeFakeRenderer() {
@@ -145,8 +347,20 @@ function makeFakeAudio() {
   const record = (name) => () => {
     calls.push(name)
   }
-  return {
+  const fake = {
     calls,
+    /**
+     * The last frame the world handed the router.
+     *
+     * Recording the *call* was enough while the world's contract was "one call
+     * per frame", but it hides everything inside the frame — and the frame is
+     * where §13's facts live. Slice 14's mutation run found the gap: zeroing
+     * `world.creatureAwareness` fed the HUD its meter from a different field, so
+     * every HUD check still passed while the audio frame went blind to the
+     * creature's proximity breath. A recorder that only remembers *that* it was
+     * called cannot see that, so it now remembers what it was called with.
+     */
+    lastFrame: null,
     ready: true,
     unlock: record('unlock'),
     startAmbient: record('startAmbient'),
@@ -154,6 +368,7 @@ function makeFakeAudio() {
     duckAmbient: record('duckAmbient'),
     update(dt, frame) {
       calls.push('update')
+      fake.lastFrame = frame ?? null
       // the routing itself is pure, so the harness can assert on the real decision
       for (const cue of routeAudio(frame ?? {})) calls.push(cue.id)
     },
@@ -161,6 +376,7 @@ function makeFakeAudio() {
     winChord: record('winChord'),
     setMuted: record('setMuted'),
   }
+  return fake
 }
 
 const container = {
@@ -195,229 +411,195 @@ const game = new BellLoopGame(container, { store, audio, createRenderer: makeFak
 // the run
 // ---------------------------------------------------------------------------
 
-check('the world builds its maze, walls, shrines and door', () => {
+check('the world builds a street, three portals, a hammer and an exit car', () => {
   assert.equal(store.get().phase, PHASE.START)
-  assert.equal(game.maze.loop, 1)
-  assert.equal(game.wallEntries.length, game.maze.walls.length)
-  assert.ok(game.wallEntries.length > 200, `only ${game.wallEntries.length} wall instances`)
-  assert.equal(game.shrines.size, 3)
-  assert.ok(game.door.group, 'the door group is missing')
-  assert.equal(game.doorOpen, false)
+  assert.equal(game.streetView.loop, 1)
+  assert.equal(game.streetView.portals.length, 3, '§3.3: one portal per district')
+  assert.deepEqual(
+    game.streetView.portals.map((entry) => entry.id),
+    [...hood.PORTAL_IDS],
+    'and the ids are the rules\' own, not three re-typed strings',
+  )
+  assert.ok(game.streetView.hammer.root, 'the hammer is missing from the world')
+  assert.equal(game.streetView.hammer.taken, false)
+  assert.ok(game.streetView.exitCar.root, 'the exit car is missing from the world')
+  assert.equal(game.streetView.exitCar.lit, false, '§10.3: the car is dark in Act I')
+  // §3.3's fold: the whole neighbourhood hangs off one group, so the wrap is a
+  // single translate. If that group were missing, every later check in this file
+  // would still pass and the player would be walking in a void.
+  assert.equal(game.scene.getObjectByName('street'), game.streetView.group)
+  // the streets the player collides with, and the Act I opening state
+  assert.ok(game.player.colliders.length > 100, `only ${game.player.colliders.length} colliders`)
+  assert.equal(game.creature.state, 'telegraph', '§6.1: Act I opens as a sighting')
   assert.equal(game.player.enabled, false, 'the player must be frozen behind the start overlay')
 })
 
-check('BEGIN starts the loop and raises the walls (no bell: §13 removed the opening toll)', () => {
+check('BEGIN starts the run, and rings no bell (§13 removed the opening toll)', () => {
   game.start()
   assert.equal(store.get().phase, PHASE.PLAYING)
-  assert.equal(store.get().timeLeft, LOOP_SECONDS)
+  assert.equal(game.player.enabled, true)
+  // v1's opening toll was the *world's* clock announcing sixty seconds. §13 keeps
+  // the bell and changes what it is for, and §9 says there is no timer at all, so
+  // the first toll in a v2 run is the awakening — and the awakening is the hammer's.
   assert.equal(
     audio.calls.some((name) => ['awakening', 'banish', 'whiff', 'reset'].includes(name)),
     false,
     'BEGIN rang a toll: v1 opened the loop with the world\'s clock, and v2 has no clock',
   )
   run(game, 4)
-  assert.equal(game.introActive, false, 'the intro reveal should be over')
-  assert.equal(store.get().fade, 0, 'the black should be fully lifted')
-  assert.ok(store.get().timeLeft < LOOP_SECONDS, 'the timer must be running')
+  // §9.3's black is the only fade v2 has, and it belongs to the capture. BEGIN
+  // lifts the *title* black, which is `start()`'s own `fade = 1`; after four
+  // seconds of a running clock, `_updatePlaying` never touches `fade` again, so
+  // what the HUD mirror reads is whatever the last setter left there. The
+  // assertion that means something is that the store agrees with the world, not
+  // that it equals a number v2 no longer has.
+  assert.equal(store.get().fade, game.fade, 'the mirrored fade and the world\'s own must agree')
+  // §9: the thing that used to be the timer is now the run's own state, and none of
+  // it is counting down — it is three portals, a hammer and a creature.
+  assert.equal(game.state.loop, 1)
+  assert.equal(game.state.hammerHeld, false)
 })
 
-check('the player can walk: input moves the camera and triggers footsteps', () => {
+check('the player can walk: input moves the body, the camera follows, footsteps are routed', () => {
   const before = game.player.pos.clone()
-  game.player.keys.add('KeyW')
+  game.player.pressKey('KeyW')
   run(game, 1.2)
-  game.player.keys.delete('KeyW')
+  game.player.releaseKey('KeyW')
   const moved = Math.hypot(game.player.pos.x - before.x, game.player.pos.z - before.z)
   assert.ok(moved > 1, `moved only ${moved.toFixed(2)}m`)
   assert.ok(
     audio.calls.some((name) => ['walk', 'sprint', 'exhausted'].includes(name)),
     'no footsteps emitted',
   )
-  assert.equal(game.camera.position.x, game.player.pos.x, 'the camera should follow the player')
+  // the camera rides the body with the bob's own tolerance, so the two are compared
+  // with a hair of slack rather than for strict equality
+  assert.ok(
+    Math.abs(game.camera.position.x - game.player.pos.x) < 0.2,
+    'the camera should follow the player',
+  )
   assert.ok(game.camera.position.y > 1.4 && game.camera.position.y < 1.8)
 })
 
-check('the player cannot walk out of the maze', () => {
-  game.player.keys.add('KeyW')
-  run(game, 4)
-  game.player.keys.delete('KeyW')
-  const halfSpan = (game.maze.size * game.maze.cellSize) / 2
-  assert.ok(Math.abs(game.player.pos.x) <= halfSpan, 'escaped the maze in x')
-  assert.ok(Math.abs(game.player.pos.z) <= halfSpan, 'escaped the maze in z')
-  assert.equal(
-    game.player.colliders.length,
-    game.maze.walls.length + 1,
-    'the shut door must be a collider as well',
+check('the streets are solid and the world is a wrap, not a maze', () => {
+  // the v1 twin of this check was "the player cannot walk out of the maze". v2 has
+  // no edge to fall off: the player may walk forever, because §3.2's answer is that
+  // the street repeats. What must be solid is the *stuff* — houses, hedges, cars.
+  //
+  // Walked into, not teleported into: `_resolvePenetration` runs on movement, so
+  // a body *placed* inside a box is not the same question as a body that walks at
+  // one. Spawn on an intersection, aim at the nearest building, and hold W.
+  game.player.teleport(hood.SPAWN.position.x, hood.SPAWN.position.z, hood.SPAWN.yaw ?? 0)
+  const target = game.player.colliders[0]
+  const towards = Math.atan2(
+    (target.minX + target.maxX) / 2 - game.player.pos.x,
+    (target.minZ + target.maxZ) / 2 - game.player.pos.z,
   )
-})
-
-check('the chamber is sealed while the door is shut', () => {
-  const centre = cellToWorld(game.maze.center.r, game.maze.center.c)
-  game.player.teleport(centre.x, centre.z)
-  run(game, 0.05)
-  const distance = Math.hypot(game.player.pos.x - centre.x, game.player.pos.z - centre.z)
-  assert.ok(distance > 0.5, `the player stayed inside the sealed chamber (${distance.toFixed(2)}m)`)
-  assert.notEqual(store.get().phase, PHASE.WON, 'the game was won through a shut door')
-})
-
-check('candles: proximity shows the prompt, E lights one and it stays lit', () => {
-  const shrine = game.shrines.get(SHRINE_IDS[0])
-  const { x, z } = cellToWorld(shrine.cell.r, shrine.cell.c)
-  game.player.teleport(x, z + 1.2)
-  run(game, 0.05)
-  assert.equal(store.get().prompt, 'light', 'the prompt should be on next to a shrine')
-  assert.ok(game.tryLight(), 'tryLight() should succeed in reach')
-  assert.equal(store.get().candles[SHRINE_IDS[0]], true)
-  // §13: v1's candle ignition is gone with the candles themselves
-  assert.equal(game.shrines.get(SHRINE_IDS[0]).lit, true)
-  assert.equal(game.tryLight(), false, 'a lit shrine cannot be lit twice')
-
-  const other = game.shrines.get(SHRINE_IDS[1])
-  const far = cellToWorld(other.cell.r, other.cell.c)
-  game.player.teleport(far.x + 12, far.z)
-  run(game, 0.05)
-  assert.equal(store.get().prompt, null, 'no prompt when nowhere near a shrine')
-  assert.equal(game.tryLight(), false)
-})
-
-check('the bell rings at 60s: walls sink, the layout swaps, the loop count rises', () => {
-  const before = game.wallEntries.map((entry) => `${entry.x},${entry.z}`).join('|')
-  store.set({ timeLeft: 0.2 })
-  run(game, 0.4)
-  assert.equal(store.get().phase, PHASE.RESET, 'the bell should put the world into RESET')
-  assert.equal(
-    audio.calls.filter((name) => name === 'reset').length, 1,
-    'the bell reset should be one routed toll (§13), not v1\'s three',
-  )
-  run(game, RESET_TIMELINE.total + 0.2)
-  assert.equal(store.get().phase, PHASE.PLAYING, 'the reset should hand control back')
-  assert.equal(store.get().loop, 2)
-  assert.equal(store.get().timeLeft, LOOP_SECONDS, 'the timer should have refilled')
-  assert.equal(store.get().candles[SHRINE_IDS[0]], true, 'the lit shrine must survive the bell')
-  const after = game.wallEntries.map((entry) => `${entry.x},${entry.z}`).join('|')
-  assert.notEqual(after, before, 'the walls should have moved')
-  assert.equal(game.maze.loop, 2)
-  assert.ok(game.player.enabled, 'the player should be moving again')
-  assert.equal(
-    game.player.colliders.length,
-    game.maze.walls.length + 1,
-    'the shut door is still a collider',
-  )
-  const entrance = cellToWorld(0, 0)
-  assert.ok(
-    Math.hypot(game.player.pos.x - entrance.x, game.player.pos.z - entrance.z) < 0.01,
-    'the player should be back at the entrance',
-  )
-})
-
-check('lighting the last two candles opens the door on the next loop', () => {
-  for (const id of [SHRINE_IDS[1], SHRINE_IDS[2]]) {
-    const shrine = game.shrines.get(id)
-    const { x, z } = cellToWorld(shrine.cell.r, shrine.cell.c)
-    game.player.teleport(x, z - 1.1)
-    run(game, 0.05)
-    assert.ok(game.tryLight(), `could not light shrine ${id}`)
+  game.player.teleport(game.player.pos.x, game.player.pos.z, towards)
+  game.player.pressKey('KeyW')
+  run(game, 3)
+  game.player.releaseKey('KeyW')
+  const inside =
+    game.player.pos.x > target.minX &&
+    game.player.pos.x < target.maxX &&
+    game.player.pos.z > target.minZ &&
+    game.player.pos.z < target.maxZ
+  assert.equal(inside, false, 'the player walked into a building and stayed there')
+  // and the wrap: walk a whole period and the street is still drawn around you,
+  // because the player never wraps and the world slides instead (§3.3)
+  const origin = { ...game.streetView.origin }
+  game.player.teleport(game.player.pos.x + hood.WORLD_EXTENT * 2, game.player.pos.z, 0)
+  game.update(DT)
+  assert.notDeepEqual(game.streetView.origin, origin, 'the world did not slide to follow the player')
+  // the slide is the *whole* trick, so it has to be an exact number of periods: an
+  // off-by-a-metre origin would put the seam in shot and no assertion here would
+  // notice, because the street still looks like a street.
+  for (const axis of ['x', 'z']) {
+    const periods = (game.streetView.origin[axis] - origin[axis]) / hood.WORLD_EXTENT
+    assert.ok(Number.isInteger(periods), `the ${axis} slide is not a whole number of periods (${periods})`)
   }
-  assert.equal(store.get().doorOpen, false, 'the door must wait for the next loop')
-  // §13: v1's door creak is gone with the door itself
-
-  store.set({ timeLeft: 0.2 })
-  run(game, RESET_TIMELINE.total + 0.8)
-  assert.equal(store.get().phase, PHASE.PLAYING)
-  assert.equal(store.get().loop, 3)
-  assert.equal(store.get().doorOpen, true, 'the door stands open from loop 3')
-  assert.equal(game.doorOpen, true)
-  // ...and so is the sound it made, which is why the swap left no dead voice behind
-  assert.equal(
-    game.player.colliders.length,
-    game.maze.walls.length,
-    'the door blocker must be gone once the door is open',
-  )
-  run(game, 2)
-  assert.ok(game.door.swing > 0.5, 'the panel should have swung open')
 })
 
-check('walking into the open chamber wins', () => {
-  const centre = cellToWorld(game.maze.center.r, game.maze.center.c)
-  game.player.teleport(centre.x, centre.z)
-  run(game, 0.05)
-  assert.equal(store.get().phase, PHASE.WON)
-  assert.ok(audio.calls.includes('winChord'), 'the win chord should play')
-  assert.equal(game.player.enabled, false)
+check('the prompt is the nearest objective and nothing else', () => {
+  // §5.2's two verbs need something to be near. v1's twin was the candle prompt;
+  // v2 has three answers and the world picks between them by distance alone.
+  const portal = game.streetView.portals[0]
+  const atPortal = game.streetView.worldOf(portal.position)
+  game.player.teleport(atPortal.x, atPortal.z, 0)
+  run(game, DT)
+  assert.equal(store.get().prompt, 'portal', 'standing at a portal shows no prompt')
+  const hammer = game.streetView.worldOf(game.streetView.hammer.position)
+  game.player.teleport(hammer.x, hammer.z, 0)
+  run(game, DT)
+  assert.equal(store.get().prompt, 'hammer', 'standing at the hammer shows no prompt')
+  game.player.teleport(atPortal.x + 60, atPortal.z + 60, 0)
+  run(game, DT)
+  assert.equal(store.get().prompt, null, 'a prompt is showing from nowhere')
 })
 
-check('the world freezes after the win', () => {
-  const before = { x: game.player.pos.x, z: game.player.pos.z }
-  game.player.keys.add('KeyW')
-  run(game, 1)
-  game.player.keys.delete('KeyW')
-  assert.equal(game.player.pos.x, before.x)
-  assert.equal(game.player.pos.z, before.z)
-})
+// TEARDOWN IS AT THE BOTTOM OF THIS FILE, with the other two. It was here in v1,
+// one block up from the end, and slice 14 moved it: `dispose()` frees the street,
+// the player and the creature view, and every block below this line drives all
+// three. A teardown in the middle of a suite does not fail loudly — the checks
+// after it keep passing against a half-freed world, because `update` has no
+// `disposed` guard of its own and the stale geometry still answers. The v1 file
+// hid that because the block after it never ran.
 
-check('BEGIN AGAIN wipes the run and replays loop 1', () => {
-  game.restart()
-  assert.equal(store.get().phase, PHASE.RESET)
-  for (const id of SHRINE_IDS) assert.equal(store.get().candles[id], false)
-  run(game, RESET_TIMELINE.total + 0.8)
-  assert.equal(store.get().phase, PHASE.PLAYING)
-  assert.equal(store.get().loop, 1)
-  assert.equal(store.get().doorOpen, false)
-  assert.equal(store.get().timeLeft, LOOP_SECONDS)
-  assert.equal(game.doorOpen, false)
-  assert.equal(game.door.swing, 0, 'the panel should be shut again')
-  assert.equal(
-    game.player.colliders.length,
-    game.maze.walls.length + 1,
-    'the door blocker must be back',
-  )
-})
-
-check('dispose() tears the world down without throwing', () => {
-  game.dispose()
-  assert.equal(game.disposed, true)
-  game.update(0.1)
-})
+// The checks that were here and are gone, and where each one went:
+//   - "the chamber is sealed while the door is shut"   -> no chamber, no door
+//   - "candles: proximity shows the prompt, E lights"  -> the prompt check above
+//   - "the bell rings at 60s" and "lighting the last
+//      two candles opens the door on the next loop"    -> no timer, no candles.
+//     §9 deleted the countdown, and the capture/reset cycle those two checks
+//     drove is asserted three times over in the slice-10 and slice-13 blocks
+//     below (`a capture resets the player to spawn`, `a capture on its own
+//     removes the figure`, `BEGIN AGAIN is a full wipe`).
+//   - "walking into the open chamber wins"             -> the slice-13 block's
+//     `walking into the exit wins, rings once, and freezes the world`
+//   - "the world freezes after the win" and "BEGIN AGAIN wipes the run" -> the
+//     same two slice-13 checks, on v2's own win condition.
 
 // ---------------------------------------------------------------------------
-// v2 slice 10 — the world checks, parked and NOT yet runnable
+// slice 10 — the creature view and the capture loop
 // ---------------------------------------------------------------------------
 //
-// DO NOT UN-COMMENT THIS. The file does not run, and slice 14 owns repairing the
-// harness; the instructions for that repair are in `V2-PLAN.md` slice 14, and the
-// reason this block exists at all is below.
-//
-// WHY THE CHECKS BELOW ARE NOT IN THE FILE YET
-// ---------------------------------------------
+// WHY THIS BLOCK WAS PARKED, AND WHAT UN-PARKING IT COST
+// -------------------------------------------------------
 // Slice 10 added `creatureView.js` and the whole Act I -> Act II -> capture ->
-// reset cycle, and every one of its world-level claims belongs here. But this
-// harness exits 1 on an incomplete canvas stub at the base commit, so anything
-// appended to it would be unreachable: the list would look like coverage and
-// measure nothing, which is worse than no list. So it is written out in full, as
-// source, with the assertion text that will be used — and slice 10's *pure* half
-// went into `verify.mjs` instead, where it actually runs today.
+// reset cycle, and every one of its world-level claims belongs here. But the
+// harness did not run, so anything appended to it would have been unreachable:
+// the list would look like coverage and measure nothing, which is worse than no
+// list. So it was written out in full, as source, with the assertion text that
+// would be used — and slice 10's *pure* half went into `verify.mjs` instead,
+// where it actually ran.
 //
 // The split follows §15.2's seam. What is provable in node — the presentation
 // policy, the eye pixel floor, the per-state tells, the §7.4 ladder, the §9.1
 // persistence table, the §7.2 awakening — is in `creature.js` and is asserted in
-// `verify.mjs` (section "Creature view and the capture loop", 14 checks). What is
-// left is the part that genuinely needs a renderer, and it is below.
+// `verify.mjs`. What is left is the part that genuinely needs a renderer.
 //
-// WHEN SLICE 14 LANDS, EACH ITEM HERE IS ONE `check('...', () => {...})`. The
-// list is ordered by the V2-PLAN's own wording for this slice, so it can be diffed
-// against the plan directly.
-//
-// A note for whoever does it: all ten of these were written and run against the
-// *current* stub, in a scratch harness, and all ten passed. They are transcribed
-// from a working run rather than sketched, so slice 14 should find them nearly
-// drop-in. Two of them caught real bugs on the way — see the ORCHESTRATOR-LOG
-// entry for slice 10 — and one needs `document.removeEventListener` added to the
-// stub before `dispose()` can be checked at all.
+// The predictions in the old header, kept because two of them were right and one
+// was the reason the log's "24/31" control run was optimistic:
+//   - "all ten of these were written and run against the *current* stub ... so
+//     slice 14 should find them nearly drop-in" — they were not drop-in. Four
+//     needed work, and the fourth was a real bug in `world.js` that the block was
+//     written to catch and could not, because the check it was written against
+//     assumed the sighting was at long range. It was at zero. See the file header.
+//   - "one needs `document.removeEventListener` added to the stub before
+//     `dispose()` can be checked at all" — the stub has it, and the `dispose()`
+//     check is at the bottom of this file with the other one.
 
-/*
 check('the game constructs a creature view and an Act I apparition', () => {
   // `world.js` builds the view in its constructor and places §6.1's first
   // sighting in front of the spawn. The telegraph is the only thing on the title
   // screen that says there is something out here, so it must be drawn there.
+  //
+  // `restart()` first because this check is about the *opening* state and the block
+  // above it has been playing: `START` is a moment, and a suite that asserts on it
+  // has to put the world back in it. Every check below this one does the same, and
+  // the first two are the only ones that need it, because they are the only ones
+  // about the run's first four seconds.
+  game.restart()
+  run(game, 1.6)
   assert.ok(game.creatureView, 'no creature view')
   assert.equal(game.creatureView.disposed, false)
   assert.equal(game.creature.state, 'telegraph', 'Act I opens as a telegraph')
@@ -426,15 +608,74 @@ check('the game constructs a creature view and an Act I apparition', () => {
   // §8.3's distance floor is also the telegraph's, so the eyes are at their
   // largest here — the pixel floor, not an anatomical eye
   assert.ok(game.creatureView.pose.eyeSize > 1, 'the eyes hold the pixel floor at that range')
+  // SLICE 14: §6.1 says the sighting "appears at long range", and until this fix
+  // the world placed it at *zero* — `_firstSightingPoint` tested the view cone
+  // against canonical node positions in a wrapped world, found nothing, and fell
+  // back to the spawn point itself. A telegraph at distance 0 is not a sighting,
+  // and because `inSightCone` is trivially true at zero it could never end: the
+  // Act I apparition was on screen for the whole of Act I, permanently. The
+  // distance floor is §8.3's, read in metres.
+  //
+  // Measured through `worldOfNear`, because that is the frame the world measures
+  // in and the two are 32 m out of step (§3.3's seam). Measuring the canonical
+  // number here would be a check that disagrees with the code it checks.
+  const floor = hood.BLOCK * Math.SQRT2 * beast.REEMERGE_MIN_GRAPH_DISTANCE
+  const rangeOf = (canonical) => {
+    const folded = game.streetView.worldOfNear(canonical, hood.SPAWN.position)
+    return Math.hypot(folded.x - hood.SPAWN.position.x, folded.z - hood.SPAWN.position.z)
+  }
+  const opened = rangeOf(game.creaturePosition)
+  assert.ok(opened >= floor, `§6.1's sighting stands ${opened.toFixed(1)} m away, not "long range"`)
+  // ...and for EVERY seed, not just 1337. The sighting is a hashed pick out of a
+  // pool of seven in-cone nodes and the closest of those is 5.7 m, so the floor is
+  // load-bearing for some seeds while the default run happens to land on a far
+  // one. A guard only one seed exercises is a guard with one chance, and this one
+  // survived mutation testing on exactly that basis.
+  const seed = game.seed
+  for (let s = 1; s <= 8; s += 1) {
+    game.seed = s
+    const range = rangeOf(game._firstSightingPoint())
+    assert.ok(range >= floor, `seed ${s} put §6.1's sighting at ${range.toFixed(1)} m`)
+  }
+  game.seed = seed
+})
+
+check('the Act I sighting ends when the player looks back (§6.1)', () => {
+  // §6.1: "it appears at long range and is gone when you look back". The second
+  // half of that sentence is a claim about the *player's* action, so the check has
+  // to perform it. Four seconds of standing still facing the apparition is not
+  // looking back, and a world that ended the sighting on that clock would be
+  // inventing a timer the design does not have.
+  game.restart()
+  run(game, 1.6)
+  game.start()
+  assert.equal(game.creature.state, 'telegraph', 'Act I opens as a sighting')
+  run(game, 4)
+  assert.equal(game.creature.state, 'telegraph', '§6.1: it stays while you are looking at it')
+  assert.equal(game.creatureView.root.visible, true, 'and it is on screen the whole time')
+  game.player.teleport(game.player.pos.x, game.player.pos.z, game.player.yaw + Math.PI)
+  run(game, DT * 2)
+  assert.equal(game.creature.state, 'dormant', '§6.1: gone when you look back')
+  assert.equal(game.creatureView.root.visible, false, 'and it stops being drawn')
+  // §6.1's other half: it was never a hunter. Act I is frightening and never unfair.
+  assert.equal(game.creature.awareness, 0, '§8.1: it perceives nothing')
+  assert.equal(game.state.hammerHeld, false, 'and the pickup never happened')
 })
 
 check('the awakening toll moves TELEGRAPH -> STALK on pickup and not before', () => {
   // §7.2. The pickup is the only door into Act II, and it is a one-shot.
+  //
+  // Driven from the *telegraph*, which is the state §6.1's table names
+  // (`telegraph -> stalk, "the hammer pickup tolls"`). It cannot be driven from
+  // `dormant`, and that is not a gap: a creature whose sighting has already ended
+  // is coming back on §8.3's own clock, so a pickup landing in that window has
+  // nothing to promote. The check above ends Act I deliberately; this one is about
+  // the edge, so it opens Act I again and takes the hammer while the sighting is
+  // still live.
+  game.restart()
+  run(game, 1.6)
   game.start()
-  assert.equal(game.creature.state, 'telegraph', 'Act I can still lose the sighting')
-  run(game, 4)
-  assert.equal(game.creature.state, 'dormant', '§6.1: gone when you look back')
-  assert.equal(game.state.hammerHeld, false, 'and the pickup never happened')
+  assert.equal(game.creature.state, 'telegraph', 'Act I opens as a telegraph')
   game._takeHammer()
   run(game, DT * 2)
   assert.equal(game.creature.state, 'stalk', '§7.2: the toll is the awakening')
@@ -497,6 +738,7 @@ check('a banish removes the creature for its window, draws the departure, and re
 check('a CHASE past CHASE_MAX_SECONDS phase-outs, and the phase-out is drawn', () => {
   // §8.2, and the most important rule in the anti-frustration section.
   game.creature = beast.createCreature({ state: 'chase', awareness: 1, chaseSeconds: beast.CHASE_MAX_SECONDS - DT / 2 })
+  const banishesBefore = game.state.banishCount
   game.creaturePosition = { x: game.player.pos.x + 30, z: game.player.pos.z }
   game.update(DT)
   assert.equal(game.creature.state, 'dormant', 'the clock fired')
@@ -504,7 +746,20 @@ check('a CHASE past CHASE_MAX_SECONDS phase-outs, and the phase-out is drawn', (
   assert.equal(game.creature.chaseSeconds, 0)
   assert.equal(game.creature.awareness, 0, '§8.3: it goes knowing nothing')
   // and it earns nothing: a chase that ran out of clock is not a banish
-  assert.equal(game.state.banishCount, 0, '§9.2')
+  //
+  // SLICE 14: this was `assert.equal(game.state.banishCount, 0)`, and it was
+  // wrong twice. It asserted an absolute, in a suite where the check above it had
+  // already advanced the ladder to 1 — so it was really asserting "the previous
+  // check tidied up after itself", which is a property of the file, not of the
+  // game. §9.2's claim is comparative: *this* phase-out advanced nothing. Read
+  // against the count as it stood on the way in, it says what the design says and
+  // it says it whether the ladder is at 0 or at 4.
+  assert.equal(
+    game.state.banishCount,
+    banishesBefore,
+    '§9.2: a chase that ran out of clock is not a banish',
+  )
+  assert.equal(game.creature.banishCount, banishesBefore, 'and the creature agrees')
 })
 
 check('a capture resets the player to spawn, permutes the fixtures, and keeps progress', () => {
@@ -558,15 +813,65 @@ check('the creature is drawn in the copy the player is standing in', () => {
   // world period every time the street slid.
   game.restart()
   run(game, 1.6)
-  assert.deepEqual(game.creatureView.root.position, {
-    x: game.creaturePosition.x + game.streetView.origin.x,
-    z: game.creaturePosition.z + game.streetView.origin.z,
-  }, 'the drawn position is the canonical one, folded into the drawn copy')
-  // and it holds across a wrap
+  // SLICE 14: this was `assert.deepEqual(root.position, { x, z })`, and it could
+  // never pass. `root.position` is a `THREE.Vector3`, not a plain object, so
+  // `deepEqual` was comparing a class instance with a literal — and the failure it
+  // reported ("+ Vector3 { - {") said nothing about the fold, which was correct
+  // all along. The claim is about two coordinates, so it is asserted as two
+  // coordinates.
+  const drawn = game.creatureView.root.position
+  assert.equal(
+    drawn.x,
+    game.creaturePosition.x + game.streetView.origin.x,
+    'the drawn x is the canonical one, folded into the drawn copy',
+  )
+  assert.equal(
+    drawn.z,
+    game.creaturePosition.z + game.streetView.origin.z,
+    'and so is the drawn z',
+  )
+  // The wrap half needs a figure that is actually *being drawn*, because
+  // `CreatureView.present` returns before it touches `root.position` when there is
+  // nothing to show. An Act I sighting the player has looked away from draws
+  // nothing, so the assertion would be reading a position left over from a frame
+  // that is long gone — and it did, which is why the first version of this check
+  // reported "never a whole period away" for a figure that was not on screen.
+  //
+  // And the placement has to be CANONICAL, like every other one in the game
+  // (`reemergeNode` and `_firstSightingPoint` both write canonical values). The
+  // player's position is *not* canonical — the player never wraps, the world does
+  // — so `player.pos + 40` is a world coordinate being stored in a canonical
+  // field, and the fold then carries it a whole `origin` away from where the
+  // check meant to put it. The distance arithmetic hides that, because
+  // `wrapDelta` folds the difference back; the *drawing* does not, and the drawing
+  // is what this check is about. So the canonical player is derived here the same
+  // way the world derives it: world minus origin.
+  game.state = { ...game.state, hammerHeld: true }
+  game.creature = beast.createCreature({ state: 'stalk' })
+  const canonicalPlayer = {
+    x: game.player.pos.x - game.streetView.origin.x,
+    z: game.player.pos.z - game.streetView.origin.z,
+  }
+  game.creaturePosition = { x: canonicalPlayer.x + 40, z: canonicalPlayer.z }
+  game.update(DT)
+  assert.equal(game.creatureView.root.visible, true, 'the Act II figure is on screen')
+  assert.ok(
+    Math.hypot(
+      game.creatureView.root.position.x - game.player.pos.x,
+      game.creatureView.root.position.z - game.player.pos.z,
+    ) > 20,
+    'and it is drawn at the range it was placed at, not a whole period away',
+  )
   game.player.teleport(game.player.pos.x + hood.WORLD_EXTENT, game.player.pos.z, 0)
   game.update(DT)
-  const drawn = game.creatureView.root.position
-  assert.ok(Math.hypot(drawn.x - game.player.pos.x, drawn.z - game.player.pos.z) < hood.WORLD_HALF, 'the figure is never a whole period away')
+  const afterWrap = game.creatureView.root.position
+  assert.ok(
+    Math.hypot(afterWrap.x - game.player.pos.x, afterWrap.z - game.player.pos.z) < 80,
+    `the figure is ${Math.hypot(afterWrap.x - game.player.pos.x, afterWrap.z - game.player.pos.z).toFixed(1)} m from a player 40 m away`,
+  )
+  // and it is the canonical position in the *new* copy, not the old one
+  assert.equal(afterWrap.x, game.creaturePosition.x + game.streetView.origin.x)
+  assert.equal(afterWrap.z, game.creaturePosition.z + game.streetView.origin.z)
 })
 
 check('the finale enrages the creature and the figure is reddened', () => {
@@ -584,29 +889,26 @@ check('the finale enrages the creature and the figure is reddened', () => {
   assert.notEqual(game.creatureView.eyeMaterial.color.getHexString(), 'cfe0ff', 'with hotter eyes')
 })
 
-check('dispose() tears the creature view down without throwing', () => {
-  // §15's definition of done. NOTE: this needs `document.removeEventListener` on
-  // the stub, which the current five-member canvas/DOM stub does not have — that
-  // is one of the things slice 14 has to add, and `player.dispose()` is what
-  // reaches for it, not the creature view.
-  game.dispose()
-  assert.equal(game.disposed, true)
-  assert.equal(game.creatureView.disposed, true, 'the view disposed')
-  assert.equal(game.creatureView.root.parent, null, 'and removed itself from the scene')
-  game.update(0.1)
-  game.dispose()
-})
+// The `dispose()` check that was here moved to the bottom of the file, with the
+// v1 block's: it frees the world every block below this line drives. Its note that
+// it "needs `document.removeEventListener` on the stub" is satisfied — the stub
+// above has it, and `player.dispose()` is what reaches for it.
 
 // ---------------------------------------------------------------------------
-// slice 11 — the audio, driven through the real world (PARKED for slice 14)
+// slice 11 — the audio, driven through the real world
 // ---------------------------------------------------------------------------
 //
 // Transcribed from a working run rather than sketched, like the block above, and
-// parked for the same reason: the canvas stub rotted and the harness does not
-// currently pass on its own (§15.3). `makeFakeAudio` records `update` and replays
+// parked for the same reason. `makeFakeAudio` records `update` and replays
 // the frame through the real `routeAudio`, so each of these is an assertion about
 // what the *player* would have heard on a real frame of the real world — which is
 // the only thing a world check can say about audio.
+//
+// All seven landed as written. The prediction in the old header — that
+// `dispose()` here would find "an earlier check in this file has already disposed
+// the first one" — was describing a bug, not a fact: the earlier `dispose()` was
+// v1's, in the block above, and slice 14 moved it to the bottom. This one already
+// built a second world, which is why it survived the move untouched.
 
 check('the world makes one audio call per frame, and it is the router', () => {
   // `restart()` legitimately rings the reset sting (§13: a wipe is a capture in
@@ -762,9 +1064,10 @@ check('a shutdown is a 25 m event and a commitment tell, and the hum follows it 
 
 check('dispose() stops the hums it started', () => {
   // The hums are oscillators the world created and nothing else would ever stop
-  // them: the drone belongs to the AudioManager, the hums belong to the world. A
-  // second world, because an earlier check in this file has already disposed the
-  // first one and `dispose()` is idempotent.
+  // them: the drone belongs to the AudioManager, the hums belong to the world.
+  // A *second* world rather than the first, because the first one is what the rest
+  // of this file is driving and disposing it here would leave the slice-12 block
+  // below running against a freed street.
   const second = new BellLoopGame(container, { store, audio, createRenderer: makeFakeRenderer })
   second.start()
   second.update(DT)
@@ -774,7 +1077,7 @@ check('dispose() stops the hums it started', () => {
   assert.ok(audio.calls.includes('stopPortalHums'), 'the hums outlived the world')
 })
 // ---------------------------------------------------------------------------
-// slice 12 — the HUD mirror, pause, and motion sensitivity (PARKED for slice 14)
+// slice 12 — the HUD mirror, pause, and motion sensitivity
 // ---------------------------------------------------------------------------
 //
 // Nine checks, transcribed from a working run rather than sketched — and unlike
@@ -782,10 +1085,12 @@ check('dispose() stops the hums it started', () => {
 // written *after* the harness was stood up in a scratch copy: the parked
 // slice-10/11 blocks were transcribed from runs that only the game's own code
 // path had driven, whereas these were run against a real constructed world with
-// a 2D context extended far enough for `streetView`'s procedural textures, which
-// is exactly the stub work §15.3 hands slice 14. The scratch harness is not
-// committed; the two lines it needed on top of the five-member stub are noted at
-// the top of this file.
+// a 2D context extended far enough for `streetView`'s procedural textures. That
+// scratch context is the stub at the top of this file now.
+//
+// All nine landed as written, which is the strongest evidence in the file for the
+// scratch harness having been real: the pause, the lock, the reduced-motion and
+// the repaint-budget checks are all things a static read gets wrong.
 //
 // WHAT THESE COVER, AND WHY IT IS ALL HERE
 // ---------------------------------------
@@ -1062,6 +1367,21 @@ check('the awareness tell is fed the meter, and stops when the creature is gone'
   assert.ok(meter > 0, `§6.2's meter never reached the HUD (${meter})`)
   assert.equal(meter, Math.round(meter * hud.STEPS.awareness) / hud.STEPS.awareness, 'the meter is unquantized')
   assert.equal(game.store.get().creaturePresent, true)
+  // ...and the *same* meter reached the audio frame. The HUD reads the quantized
+  // copy and the audio reads the raw one, so they are two doors off one number and
+  // a world that fed only the first would look correct to every check above.
+  // §13 prices the proximity breath off this one (`rate` and `sharp`), so a break
+  // here is a creature that is metres away and breathing calmly.
+  assert.ok(game.creatureAwareness > 0, 'the world did not keep the meter at all')
+  assert.equal(
+    audio.lastFrame.creatureAwareness,
+    game.creatureAwareness,
+    'the audio frame and the world disagree about the meter',
+  )
+  assert.ok(
+    audio.lastFrame.creatureAwareness > meter,
+    'and the audio frame has the unquantized one, which is what §13 prices',
+  )
   game.player.releaseKey('KeyW')
   // §7.4: a banished creature is off the field, so the vignette it drives stops
   game.state = { ...game.state, banishCount: 1 }
@@ -1092,11 +1412,9 @@ check('the pause card\'s two calls are the only doors React has into the world',
   assert.equal(game.tryInteract(DT), false, 'tryInteract ran through a pause')
   game.setPaused(false)
 })
-*/
 
-/*
 // ---------------------------------------------------------------------------
-// slice 13 — the finale and the win (PARKED for slice 14)
+// slice 13 — the finale and the win
 //
 // Five checks, and the first one is the reason this block exists at all: it
 // drives the three portals through the *real* hold — walk the body to the
@@ -1114,14 +1432,8 @@ check('the pause card\'s two calls are the only doors React has into the world',
 // *world* reads them — that the re-emergence clock it runs is the flat one, and
 // that the lamps it lights are the ones that ignore fog.
 //
-// Transcribed from a working run in a scratch copy of this file whose 2D
-// context had the drawing surface `streetView`'s procedural textures need. The
-// scratch copy is not committed.
-//
-// (This header is `//` lines rather than a nested JSDoc block because the whole
-// slice-13 block is already inside one, and a nested comment's own closer ends
-// the outer one early — which is the exact mistake this line exists to stop the
-// next reader repeating.)
+// All five landed as written. The scratch copy this was transcribed from is not
+// committed; the 2D context it needed is the stub at the top of this file.
 
 check('the third portal and only the third opens the finale', () => {
   game.restart()
@@ -1150,6 +1462,26 @@ check('the third portal and only the third opens the finale', () => {
     assert.equal(game.streetView.exitCar.lit, shut.length === 3, 'the headlights disagree with the finale')
     if (shut.length < 3) {
       assert.notEqual(game.creature.state, 'enraged', `the creature enraged after ${shut.length} portals`)
+    }
+    // §5.4: the rule flipping is not the promise, the *street* going dark is. The
+    // rule state is a boolean in a store and a store survives a refactor; the
+    // ring's material and the lamp behind it are what the player walks past for
+    // the rest of the run. Added in slice 14 because mutation testing found this
+    // line unobserved: making `_onPortalShut` ignore every id but `C` left the
+    // whole suite green, because nothing between the verb and the geometry was
+    // being checked.
+    const view = game.streetView.portals.find((candidate) => candidate.id === entry.id)
+    assert.equal(view.shut, true, `${entry.id} is not dark in the world`)
+    assert.equal(view.light.intensity, 0, `${entry.id} is still throwing light`)
+    assert.equal(view.light.visible, false, `${entry.id}'s lamp is still on`)
+    assert.equal(
+      view.ring.material,
+      game.streetView._materials.portalDead,
+      `${entry.id} is still wearing the live material`,
+    )
+    for (const other of game.streetView.portals) {
+      if (shut.includes(other.id)) continue
+      assert.equal(other.shut, false, `${other.id} went dark without being shut`)
     }
   }
   assert.deepEqual(shut, [...hood.PORTAL_IDS])
@@ -1345,12 +1677,87 @@ check('BEGIN AGAIN is a full wipe: loop 1, no portals, no hammer, no counters', 
   assert.equal(game.player.enabled, true)
   assert.equal(store.get().loop, 1, 'the HUD is showing loop 1')
 })
-*/
+// ---------------------------------------------------------------------------
+// teardown — last, and that is the whole reason
+//
+// v1 ran its `dispose()` check one block up from the end and the parked slice-10
+// block carried a second one of its own, and both were *before* the blocks that
+// needed a live world. Nothing failed: `update` has no `disposed` guard, the
+// street view is emptied rather than nulled, and every check after them kept
+// passing against a half-freed world. A teardown in the middle of a suite is the
+// one failure mode that cannot announce itself, so both live here now.
+// ---------------------------------------------------------------------------
+
+check('the stub is a surface, and it is not a smaller world than the code', () => {
+  // The reason the harness spent five slices reporting `1/12` is that v1's stub
+  // had five members and v1's six procedural textures drew through
+  // `beginPath`/`ellipse`/`fill`. Nothing ran it, so nothing said so. The repair is
+  // the full drawing surface, and this check is what stops the next person from
+  // quietly deleting half of it: it walks every member of the surface a texture
+  // can reach for and asserts none of them is missing.
+  const canvas = makeCanvas()
+  const ctx = canvas.getContext('2d')
+  const surface = [
+    'beginPath', 'closePath', 'moveTo', 'lineTo', 'bezierCurveTo', 'quadraticCurveTo',
+    'arc', 'arcTo', 'ellipse', 'rect', 'roundRect', 'fill', 'stroke', 'clip',
+    'fillRect', 'strokeRect', 'clearRect', 'drawImage', 'save', 'restore', 'scale',
+    'rotate', 'translate', 'transform', 'setTransform', 'resetTransform', 'fillText',
+    'strokeText', 'measureText', 'createImageData', 'getImageData', 'putImageData',
+    'createLinearGradient', 'createRadialGradient', 'createConicGradient',
+    'createPattern', 'setLineDash', 'getLineDash', 'isPointInPath',
+  ]
+  const missing = surface.filter((name) => typeof ctx[name] !== 'function')
+  assert.deepEqual(missing, [], `the 2D stub is missing ${missing.join(', ')}`)
+  // ...and it is a *surface*, not an implementation: calling all of it draws
+  // nothing, throws nothing, and leaves the context usable.
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(0, 0)
+  ctx.lineTo(10, 10)
+  ctx.quadraticCurveTo(1, 2, 3, 4)
+  ctx.bezierCurveTo(1, 2, 3, 4, 5, 6)
+  ctx.arc(0, 0, 4, 0, Math.PI)
+  ctx.ellipse(0, 0, 4, 2, 0, 0, Math.PI)
+  ctx.closePath()
+  ctx.fill()
+  ctx.stroke()
+  ctx.clip()
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.resetTransform()
+  ctx.fillStyle = ctx.createLinearGradient(0, 0, 1, 1)
+  ctx.fillRect(0, 0, 4, 4)
+  ctx.restore()
+  // the one member that is *not* a stub, because `streetView` writes every texel
+  // through it and a texture that throws on `data[i] = value` is a real bug
+  const image = ctx.createImageData(8, 8)
+  assert.equal(image.data.length, 8 * 8 * 4, 'createImageData allocates a real buffer')
+  ctx.putImageData(image, 0, 0)
+  // and `getContext` memoizes, so the context a texture was drawn on is the
+  // context a later `three` call gets back
+  assert.equal(canvas.getContext('2d'), ctx, 'getContext must return the same context')
+})
+
+check('dispose() tears the whole world down without throwing', () => {
+  // §15's definition of done. A `dispose` that throws takes React's unmount down
+  // with it and leaves a WebGL context alive behind the next mount, so the frame
+  // *after* the teardown is part of the assertion: it is the one that proves the
+  // RAF was cancelled and nothing is still holding the scene.
+  game.restart()
+  run(game, 1.6)
+  const view = game.creatureView
+  game.dispose()
+  assert.equal(game.disposed, true)
+  assert.equal(view.disposed, true, 'the creature view disposed')
+  assert.equal(view.root.parent, null, 'and removed itself from the scene')
+  assert.equal(game.streetView.pools.length, 0, 'the instanced pools are released')
+  assert.equal(game.streetView.textures.length, 0, 'and so are the procedural textures')
+  // and it is idempotent, because `dispose` may legitimately be called twice on
+  // the way out of a hot reload
+  game.dispose()
+  game.update(0.1)
+})
 
 
-// ---------------------------------------------------------------------------
-// report
-// ---------------------------------------------------------------------------
 
 let failed = 0
 for (const entry of checks) {

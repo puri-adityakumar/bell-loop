@@ -1014,9 +1014,41 @@ export class StreetView {
     return true
   }
 
-  /** A canonical anchor's position in the copy currently drawn around the player. */
-  worldOf(position) {
-    return { x: position.x + this.origin.x, z: position.z + this.origin.z }
+  /**
+   * A canonical anchor's position in the copy currently drawn around the player.
+   *
+   * The optional second argument is the point to fold around, for callers that are
+   * *deciding* something about the world rather than reading where it is — see
+   * `worldOfNear` for why that is a different question, and for the case where the
+   * difference is the bug.
+   */
+  worldOf(position, near) {
+    if (!near) return { x: position.x + this.origin.x, z: position.z + this.origin.z }
+    return this.worldOfNear(position, near)
+  }
+
+  /**
+   * worldOfNear — the same fold, into the copy that would be drawn around *this*
+   * point rather than the one drawn around the player.
+   *
+   * `worldOf` answers "where does the player see this anchor?", and that is the
+   * right question everywhere except when the caller is deciding where to *put*
+   * something: a placement is a question about the world as it will be, not as it
+   * currently is. Folding against a stale `origin` is how slice 14 found §6.1's
+   * first sighting landing on top of the player — the player had walked two
+   * periods east, so "the node in your view cone" was measured from the wrong
+   * copy of the map and the cone came back empty.
+   *
+   * Non-mutating on purpose: asking where a thing would be is not the same as
+   * moving the world there, and a placement query that slides the street under
+   * the player would be a much worse bug than the one it fixed.
+   *
+   * @param {{x: number, z: number}} position canonical
+   * @param {{x: number, z: number}} near the point to fold around
+   * @returns {{x: number, z: number}} folded
+   */
+  worldOfNear(position, near) {
+    return { x: position.x + originFor(near.x), z: position.z + originFor(near.z) }
   }
 
   _compose() {
