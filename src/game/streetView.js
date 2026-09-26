@@ -1151,6 +1151,44 @@ const FIXTURE_SHAPES = Object.freeze({
   cone: { h: 0.6, lift: 0 },
 })
 
+/**
+ * Fixture kinds that are still emitted by the pure module and no longer drawn.
+ *
+ * `window` and `porchLight` are the two, and they were the pass-5 review's one
+ * real finding. Both predate the facade system and both were superseded by it:
+ * `_addFacadeWindows` builds a window stack out of a pane, a frame, a sill and a
+ * rare lit pane, and `_addEntrance` builds a recessed door under a canopy with a
+ * dim entry lamp on it. While the old two kinds kept drawing, the world carried
+ * a SECOND, parallel set of windows and door lights that no pass-5 check could
+ * see, because every one of those checks counts the facade pools.
+ *
+ * The damage was not a duplicate-looking window. It was that the retired set
+ * drew the wrong rung of T11's emissive ladder: `window` fixtures are
+ * unconditionally `windowLit`, the brightest of the four rungs, so they added 132
+ * always-lit windows to a world whose lit-window rate the pass had just argued is
+ * an event; and `porchLight` fixtures are `sodium`, the lamp-head rung, so they
+ * put 132 fittings that are BRIGHTER than every entry lamp in the world above the
+ * doors the pass had deliberately fitted with the dimmest rung. Both claims —
+ * "lit windows are rare" and "the entry lamp is the lowest rung" — were true of
+ * the constants and false of the render, and no gate in either file could tell,
+ * because the gate for the ladder reads `PALETTE` and the gate for the lit rate
+ * counts `pools.windowLit`.
+ *
+ * The 132 is PLACED instances: 44 slots per kind in the loop-1 fixture pass, each
+ * placed into all three of `WRAP_COPIES`. So the two kinds were 88 of the 346
+ * canonical loop-1 slots and 264 of the 1,038 placed ones — re-derivable from
+ * `chunkFixtures(seed, 1, cx, cz, reserved)` over the 7x7 grid, and from
+ * `fixturePools[kind].used` on the pre-review file, which reports exactly 132.
+ *
+ * The kinds stay in `DECORATIVE_KINDS` on purpose. `neighborhood.js` is the pure
+ * module and its emitted set is part of the loop's determinism contract; dropping
+ * two kinds from it would re-roll every fixture slot in the world and change
+ * captures that have nothing to do with this. They are retired at the POOL, which
+ * is where drawing actually happens, so a retired kind costs one array entry and
+ * draws nothing.
+ */
+const RETIRED_FIXTURE_KINDS = Object.freeze(['window', 'porchLight'])
+
 /** The four frontages, as the yaw whose local -Z faces the street. */
 const FRONT_YAW = Object.freeze({ N: 0, S: Math.PI, W: Math.PI / 2, E: -Math.PI / 2 })
 
@@ -2666,12 +2704,15 @@ export class StreetView {
       if (kind === 'car') return this._materials.car
       if (kind === 'shed') return this._materials.shed
       if (kind === 'bin') return this._materials.metal
-      if (kind === 'window') return this._materials.windowLit
-      if (kind === 'porchLight') return this._materials.sodium
       if (kind === 'cone') return this._material({ color: 0xa8552a })
       return this._materials.metal
     }
     for (const spec of [...STRUCTURAL_KINDS, ...DECORATIVE_KINDS]) {
+      // `window` and `porchLight` are RETIRED — see `RETIRED_FIXTURE_KINDS`. They
+      // get no pool, and `_addFixture` returns on a missing pool, so a retired
+      // kind is dead by construction rather than by a branch that has to be
+      // remembered.
+      if (RETIRED_FIXTURE_KINDS.includes(spec.kind)) continue
       const pool = this._pool(`fixture-${spec.kind}`, geometryFor(spec.kind), materialFor(spec.kind), capacity)
       this.fixturePools[spec.kind] = pool
     }
@@ -2697,16 +2738,15 @@ export class StreetView {
       for (let cz = 0; cz < GRID; cz += 1) fixtures.push(...chunkFixtures(this.seed, loopNumber, cx, cz, this.reserved))
     }
     for (const pool of Object.values(this.fixturePools)) pool.clear()
-    // one `chunkAt` per chunk rather than one per fixture: the fixture pass emits
-    // ~350 entries and a capture is a discrete event, but it should not be nine
-    // times more expensive than it needs to be
-    const lots = new Map()
+    // No per-chunk `lot` lookup here any more. It existed for exactly one reason:
+    // `window` and `porchLight` were placed against their lot's house wall rather
+    // than on their slot, and finding that wall meant reading the lot back. Both
+    // kinds are retired (see `RETIRED_FIXTURE_KINDS` and `_addFixture`), so the
+    // map, the `chunkAt` call that filled it and the `find` that read it are all
+    // gone — a fixture no longer needs to know which lot it is near.
     for (const fixture of fixtures) {
-      const key = `${fixture.chunk.cx},${fixture.chunk.cz}`
-      if (!lots.has(key)) lots.set(key, chunkAt(this.seed, fixture.chunk.cx, fixture.chunk.cz).lots)
-      const lot = lots.get(key).find((entry) => entry.side === fixture.lot)
       for (const copy of WRAP_COPIES) {
-        this._addFixture(fixture, lot, copy)
+        this._addFixture(fixture, copy)
       }
     }
     for (const pool of Object.values(this.fixturePools)) pool.commit()
@@ -2733,32 +2773,32 @@ export class StreetView {
   /**
    * One fixture, three wrapped copies.
    *
-   * `window` and `porchLight` are the kinds that decorate rather than occupy
-   * ground, so they are placed against the house's front wall instead of on the
-   * slot itself. The slot still decides which third of the wall they go on, so
-   * the fixture pass keeps its say over the layout; only the depth is borrowed
-   * from the lot. Floating panels in a yard would have read as a bug.
+   * `window` and `porchLight` — the kinds that used to decorate rather than
+   * occupy ground, and that were placed against the house's front wall — are
+   * RETIRED. They are the pass-5 review's finding, and the reason is that the
+   * facade system now owns both jobs: `_addFacadeWindows` owns the lit-window
+   * ladder and `_addEntrance` owns the entry lamp. Both kinds were still being
+   * drawn, and both were drawing the WRONG RUNG of T11's ladder: a `window`
+   * fixture is unconditionally `windowLit` (the brightest of the four rungs), so
+   * 132 of them were lit windows at a 100% rate, and a `porchLight` fixture is
+   * `sodium` — brighter than every entry lamp in the world — so 132 of them sat
+   * above doors the pass had just fitted with a deliberately dim lamp. The
+   * "lit windows are rare" and "the entry lamp is the lowest rung" claims were
+   * both false on screen while all 268 checks stayed green, because the checks
+   * counted the facade pools and never the fixture pools.
+   *
+   * A missing pool is how a kind is retired: `_addFixture` returns on one, so
+   * there is no branch here to forget.
+   *
+   * @param {object} fixture a `chunkFixtures` entry
+   * @param {number} copy the wrapped copy, one of `WRAP_COPIES`
    */
-  _addFixture(fixture, lot, copy) {
+  _addFixture(fixture, copy) {
     const pool = this.fixturePools[fixture.kind]
     if (!pool) return
     const shape = FIXTURE_SHAPES[fixture.kind] ?? { h: 1, lift: 0 }
     const x = fixture.x + copy * WORLD_EXTENT
     const z = fixture.z + copy * WORLD_EXTENT
-    if (fixture.kind === 'window' || fixture.kind === 'porchLight') {
-      if (!lot) return
-      const frame = lotFrame(lot)
-      const face = atDepth(frame, frame.short - frame.short * 0.55, 0)
-      const sign = frame.back >= frame.front ? 1 : -1
-      // the wall is canonical, so the panel has to be carried into the copy with
-      // everything else — otherwise the ±1 copies' windows all pile up on the
-      // canonical block and the far side of the wrap lights up for no reason
-      const proud = face + copy * WORLD_EXTENT - sign * 0.08
-      const panel = fixture.kind === 'window' ? 1.1 : 0.3
-      if (frame.alongX) pool.place(x, shape.lift, proud, panel, shape.h, 0.1)
-      else pool.place(proud, shape.lift, z, 0.1, shape.h, panel)
-      return
-    }
     pool.place(x, shape.lift + shape.h / 2, z, fixture.w, shape.h, fixture.d)
   }
 

@@ -3867,6 +3867,53 @@ check('no pool overflowed, and every pool is committed', () => {
   assert.ok(view.pools.parapets.mesh.count > 0, 'the parapet pool committed zero instances')
 })
 
+check('the retired window and porchLight fixtures draw nothing (pass 5 review)', () => {
+  // The pass-5 review's finding. `_addFacadeWindows` and `_addEntrance` are the
+  // only things that should put glass or a light on a house wall, and this exists
+  // because for the whole of pass 5 they were NOT: the legacy `window` and
+  // `porchLight` fixture kinds were still emitted by `neighborhood.js` and still
+  // placed, as 132 always-lit `windowLit` panels and 132 `sodium` porch lights.
+  // (44 slots each, placed into all three `WRAP_COPIES`; the pre-review file's
+  // `fixturePools.window.used` reports exactly 132.)
+  //
+  // The two claims that were false because of it are both about the RENDER rather
+  // than the constants, which is why every other gate missed them: the ladder gate
+  // reads `PALETTE` and the lit-rate gate counts `pools.windowLit`. So this gate
+  // is stated in the only units that could have caught it — what the fixture pools
+  // actually hold.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  for (const kind of ['window', 'porchLight']) {
+    assert.equal(
+      view.fixturePools[kind],
+      undefined,
+      `the ${kind} fixture pool exists again — it will draw ${view.fixturePools[kind]?.used ?? 0} ` +
+        'emissive panels on top of the facade system, on a rung of the ladder the pass does not own',
+    )
+  }
+  // ...and the negative form, which is the one that would catch a re-add: no
+  // fixture pool may hold a material that is one of the two facade emissive
+  // rungs. This is the check that has teeth if a THIRD retired kind is added
+  // later and someone forgets to add it to the list above.
+  for (const [kind, pool] of Object.entries(view.fixturePools)) {
+    assert.notEqual(
+      pool.mesh.material,
+      view._materials.windowLit,
+      `the ${kind} fixture draws on the windowLit rung — a lit window is the facade system's job`,
+    )
+    assert.notEqual(
+      pool.mesh.material,
+      view._materials.sodium,
+      `the ${kind} fixture draws on the sodium rung, which is the lamp head, not a fitting`,
+    )
+  }
+  // The world still has its windows and its entry lamps, so this cannot be
+  // satisfied by deleting the facade system instead of retiring the old kinds.
+  assert.ok(view.pools.windowLit.mesh.count > 0, 'the facade system placed no lit windows')
+  assert.ok(view.pools.entryLamps.mesh.count > 0, 'the facade system placed no entry lamps')
+})
+
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down
   // with it and leaves a WebGL context alive behind the next mount, so the frame
