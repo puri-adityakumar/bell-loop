@@ -87,6 +87,11 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 // reimplemented because a second decoder would be a second set of numbers for
 // the same file, and the two would eventually disagree in a comment.
 import { creatureContrast, describeCreatureContrast, repaintBody, LIT_LUMA } from './tools/png-luma.mjs'
+// The swirl-structure gate added in "Portal swirl (iteration 2, pass 3)" measures
+// a *rendered* frame for the same reason the creature gate above does, and it is
+// imported from the same module so the two can never disagree about what a pixel
+// in a committed PNG is worth.
+import { swirlContrast, describeSwirlContrast, repaintSwirl } from './tools/png-luma.mjs'
 
 const VERIFY_LOOPS = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -6731,6 +6736,152 @@ test('a creature washed toward its background loses contrast, monotonically', ()
   assert.ok(
     readings[0].ratio >= 0.62,
     `a creature washed to luma 200 must not pass the gate, and it does: ${describeCreatureContrast(readings[0])}`,
+  )
+})
+
+test('the portal swirl reads as structure in the frame, not a flat cyan disc', () => {
+  // Iteration 2, pass 3. The defect was never the portal's geometry — the rim,
+  // the core disc and the doorway all read correctly. The defect was that the
+  // swirl *texture* held everything inside the core at a floor of 0.25, so the
+  // arms and the gaps between them sat close together and the disc averaged out
+  // to a single field of cyan. The rim around it stayed correct, which is
+  // exactly why the frame still looked composed in a thumbnail and nobody
+  // caught it by looking at the picture.
+  //
+  // So this asserts the SPREAD of luma inside the swirl band, not a brightness
+  // and not a brightness relative to the rim. A flat disc at full cyan is
+  // brighter than a structured one and still washed out; a gate that measured
+  // how much light the portal emits would call the broken render the good one.
+  //
+  // The threshold is 28 and the measured value is 36.5. The margin is
+  // deliberately thin on the same grounds the creature gate's 0.62 is: this is a
+  // small subject against a graded scene, and a loose threshold here would be the
+  // same decorative gate again with a different formula. The number that fails it
+  // is reported below, because it is the reason the threshold is where it is: the
+  // flat core this pass replaced measured sd 1.9, p10 26 and a pupil of 28, so it
+  // failed this threshold and the pupil ceiling together, and anyone can re-measure
+  // it with `git show fc1ab19:benchmark/screenshots/portal-located.png`.
+  const file = new URL(`./${capture.CAPTURE_DIR}/portal-located.png`, import.meta.url)
+  assert.equal(existsSync(file), true, 'portal-located.png is missing — run npm run capture')
+  const measured = swirlContrast(readFileSync(file))
+  // A frame with no portal in it cannot be a frame where the swirl reads. Its
+  // own assertion, because without it the sd below is a number about a
+  // rectangle of nothing.
+  assert.ok(measured.found, `no portal in portal-located.png: ${measured.reason}`)
+  assert.ok(
+    measured.band.sd >= 28,
+    `the swirl inside the portal is washed out: ${describeSwirlContrast(measured)} (needs sd 28 or more)`,
+  )
+  // And the structure has to be structure with a dark end, not noise scattered
+  // through a bright field. A band whose 10th percentile is itself bright has no
+  // gaps in it no matter how high its sd goes, so the floor is checked
+  // separately rather than left to the spread.
+  assert.ok(
+    measured.band.p10 <= 32,
+    `the swirl has no dark gaps left in it: ${describeSwirlContrast(measured)} (needs p10 at or under 32)`,
+  )
+  // The pupil is the other half of the claim. The portal is a hole, and a hole
+  // is the darkest thing in the frame; the swirl tuning must not have
+  // brightened the middle to pay for the arms.
+  assert.ok(
+    measured.pupil <= 20,
+    `the portal's pupil is not a hole any more: luma ${measured.pupil} — ` +
+      'the core is supposed to be near-black so the arms have something to read against',
+  )
+})
+
+test('the swirl gate cannot be satisfied by a frame with no portal in it', () => {
+  // The control for the test above, and the one the gate needs to be worth
+  // anything. `street.png` is shot from the lamp viewpoint and the portal is
+  // nowhere near it, so it is a frame with a night street in it and no portal in
+  // it. If `swirlContrast` reports a portal here, the anchor has stopped being an
+  // anchor and every number in the section above is about something else.
+  //
+  // Asserted rather than assumed, because the failure is silent and
+  // self-flattering: a measure that finds "a portal" in every frame passes this
+  // section forever while measuring nothing at all.
+  const street = new URL(`./${capture.CAPTURE_DIR}/street.png`, import.meta.url)
+  assert.equal(existsSync(street), true, 'street.png is missing — run npm run capture')
+  const measured = swirlContrast(readFileSync(street))
+  assert.equal(
+    measured.found,
+    false,
+    `street.png contains no portal, but the gate found one: ${describeSwirlContrast(measured)}`,
+  )
+})
+
+test('a portal washed toward a flat disc loses swirl structure, monotonically', () => {
+  // The same reasoning as the creature mutation above, applied to the swirl,
+  // and for the same reason: everything above reads a committed PNG, so the
+  // gate is only ever exercised against a frame that happens to exist. A gate
+  // that would have passed the washed-out render is precisely a gate that looks
+  // green on the one artifact nobody re-examined.
+  //
+  // `repaintSwirl` washes the band toward a flat grey and leaves the rim and
+  // the entire rest of the frame alone. The rim is the anchor, so it has to
+  // survive untouched for every row to answer the same question — the only
+  // thing varying between rows is how much structure the swirl holds.
+  //
+  // The expectation is a DIRECTION, not a pair of thresholds. A gate that
+  // passes frame A and fails frame B can be satisfied by a constant; one whose
+  // measurement moves the right way as the subject is washed cannot.
+  const file = new URL(`./${capture.CAPTURE_DIR}/portal-located.png`, import.meta.url)
+  assert.equal(existsSync(file), true, 'portal-located.png is missing — run npm run capture')
+  const bytes = readFileSync(file)
+  const committed = swirlContrast(bytes)
+  assert.ok(committed.found, `portal-located.png should hold a portal: ${committed.reason}`)
+
+  // The ladder is two fixed points and the wash between them, and the first rung
+  // is 0.1 rather than 0.25 for a measured reason rather than a round one: the
+  // band spread falls almost exactly linearly with the mix (36.5 at none, 32.8
+  // at 0.1, 27.4 at 0.25), so 0.1 is the last rung that still clears the 28 the
+  // gate applies and 0.25 is the first that does not. That crossing is the
+  // sensitivity claim, and it is worth stating precisely instead of picking a
+  // number that happened to pass: this gate tolerates a portal losing a tenth
+  // of its swirl and rejects one that has lost a quarter.
+  const ladder = [0.1, 0.25, 0.5, 0.75, 0.9, 1]
+  const readings = ladder.map((mix) => swirlContrast(repaintSwirl(bytes, committed, 60, mix)))
+  // The anchor must hold through the whole ladder, or the later rows are
+  // evidence about a vanished portal rather than about swirl contrast.
+  for (const [i, reading] of readings.entries()) {
+    assert.ok(reading.found, `washing to mix ${ladder[i]} lost the rim anchor, so that row proved nothing`)
+  }
+  // Falling, every step. A single non-decreasing step is a band in which a
+  // washed-out portal still passes, which is the entire class of failure this
+  // gate was written to close.
+  for (let i = 1; i < readings.length; i += 1) {
+    assert.ok(
+      readings[i].band.sd < readings[i - 1].band.sd,
+      `swirl structure did not fall monotonically as the portal was washed toward a flat disc: ` +
+        `${readings.map((r) => r.band.sd.toFixed(1)).join(' > ')} — ` +
+        'a pass could hide in the band where this goes the wrong way',
+    )
+  }
+  // And the ends agree with the gate the first test applies, so the ladder is
+  // anchored to the real threshold rather than merely being tidy.
+  assert.ok(
+    readings[readings.length - 1].band.sd < 28,
+    `a perfectly flat disc must not pass the swirl gate, and it does: ` +
+      `${describeSwirlContrast(readings[readings.length - 1])}`,
+  )
+  // A tenth of the swirl washed away is still a legible swirl. This is the
+  // assertion that keeps the threshold from being decorative in the other
+  // direction: a gate set so high that only a pristine frame clears it would
+  // fail the real gallery on a re-render and get loosened, and the way to stop
+  // that is to say out loud how much the portal is allowed to change.
+  assert.ok(
+    readings[0].band.sd >= 28,
+    `a tenth of the swirl washed away is still legible and must pass, and it does not: ` +
+      `${describeSwirlContrast(readings[0])}`,
+  )
+  // ...and the very next rung down does not, which is the sensitivity this gate
+  // actually buys. Asserted rather than assumed, because a gate with no
+  // documented crossover point is a gate nobody can tell how close it is to
+  // passing a frame nobody has looked at.
+  assert.ok(
+    readings[1].band.sd < 28,
+    `a quarter of the swirl washed away must NOT pass, and it does: ` +
+      `${describeSwirlContrast(readings[1])} — the crossover is supposed to sit between mix 0.1 and 0.25`,
   )
 })
 

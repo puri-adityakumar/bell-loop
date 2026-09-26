@@ -358,6 +358,54 @@ const PORTAL_SWIRL_RADII = Object.freeze([0.66, 0.4])
 const PORTAL_SWIRL_RATES = Object.freeze([0.21, -0.13])
 
 /**
+ * The swirl texture's own three numbers: the floor it holds everywhere inside
+ * the fade, the amplitude of the arms on top of that floor, and how sharply
+ * each arm peaks.
+ *
+ * These are `makeSwirlTexture`'s `floor` / `amp` / `power` arguments, and they
+ * are pinned here because they are the difference between the §16.5.5 frame
+ * reading as a hole and reading as a halo, which the geometry above cannot fix
+ * on its own.
+ *
+ * BEFORE 0.25 / 0.2 / 2. That triple is why the portal still read as a halo
+ * after pass 3 rebuilt it: a floor of 0.25 under an amplitude of 0.2 lays a
+ * constant teal wash across the whole disc and leaves the arms `0.2 / 0.45` =
+ * 44% of the signal to move in. Measured on the 8-bit alpha this function
+ * actually writes, over the same 0.30-0.62 upper annulus `swirlContrast` reads
+ * on the finished PNG, that texture puts p95/p05 at **2.37:1** (83 against 35)
+ * and its global peak alpha at **0.400**. Run that through ACES at exposure 1.02
+ * and the arms land a few luma levels apart on the PNG — which is exactly the
+ * flat dark wash the frame shows, inside a correctly rebuilt rim. The hole was
+ * built and the thing inside it was not.
+ *
+ * AFTER 0.1 / 0.62 / 3. The floor drops to roughly where the pupil already is,
+ * so the disc's dark ground is the disc's own colour rather than a uniform
+ * lift; the amplitude rises to 2.4x the old peak; and cubing the wave turns
+ * each arm from a soft band into a filament with dark ground between it and the
+ * next. Same annulus, same seed, same two rates, and the pupil's `fade` ramp is
+ * untouched so the core stays near-black and the rim stays the brightest thing
+ * in the doorway. Measured on that same annulus: p95/p05 **2.37:1 -> 10.08:1**
+ * (131 against 13), peak alpha **0.400 -> 0.600**. The rendered form of the same
+ * claim is the gate rather than this comment: `swirlContrast`'s band sd on the
+ * committed `portal-located.png` went 1.9 -> 36.5.
+ */
+const PORTAL_SWIRL_TONE = Object.freeze({ floor: 0.1, amp: 0.62, power: 3 })
+
+/**
+ * The swirl texture's resolution, texels per side.
+ *
+ * BEFORE 128, which pass 3 sized for the *old* complaint and never revisited.
+ * The disc is 0.72 m and fills about 400 px of the §16.5.5 frame, so a 128-texel
+ * spiral is magnified roughly 3x, and every arm edge on screen is a bilinear
+ * step of three screen pixels. That was survivable while the arms were soft
+ * bands; it is not once they are filaments, because a filament widened by
+ * three pixels of blur is a band again. AFTER 192, a 1.5x on the old one for
+ * about 2.2x the texels on a texture that is built once at start-up and never
+ * touched again.
+ */
+const PORTAL_SWIRL_SIZE = 192
+
+/**
  * How far along its own opening axis each structure's gate stands from that
  * structure's origin, metres, in `PORTAL_STRUCTURES` order.
  *
@@ -576,7 +624,15 @@ function makePoolTexture({ size = 128, peak = 1, rim = 0 } = {}) {
  * and the rim is already at full cyan — the swirl has to be *under* the edge or
  * the hole stops being the first thing the eye reads.
  */
-function makeSwirlTexture({ size = 128, seed = 1, arms = 3, twist = 5 } = {}) {
+function makeSwirlTexture({
+  size = PORTAL_SWIRL_SIZE,
+  seed = 1,
+  arms = 3,
+  twist = 5,
+  floor = PORTAL_SWIRL_TONE.floor,
+  amp = PORTAL_SWIRL_TONE.amp,
+  power = PORTAL_SWIRL_TONE.power,
+} = {}) {
   const canvas = document.createElement('canvas')
   canvas.width = size
   canvas.height = size
@@ -596,12 +652,23 @@ function makeSwirlTexture({ size = 128, seed = 1, arms = 3, twist = 5 } = {}) {
         // a dark pupil in the middle and nothing at the rim: the swirl has to
         // fade out into the same near-black the disc behind it is painted, or it
         // draws an edge of its own and gives the hole away as a decal
+        // `power` is the shape, and it is the one that made this a halo. BEFORE a
+        // bare `wave * wave`, with `0.25 +` a constant in front of it: a floor
+        // under an amplitude is a wash, and a wash with a ripple in it is still a
+        // wash. The floor is now `PORTAL_SWIRL_TONE.floor` — low enough that the
+        // ground between arms is the disc's own near-black — and the arm is
+        // `wave ** power` at 3, which is a filament and not a band. The comment
+        // on `PORTAL_SWIRL_TONE` carries the measured 2.37:1 -> 10.08:1.
+        const arm = wave ** power
         const fade = Math.min(1, Math.max(0, (r - 0.16) / 0.24)) * (1 - r * r)
         // the same per-pixel dither `makeSurfaceTexture` uses, for the same
         // reason: a smooth spiral across a 40-segment disc bands, and a hole in
-        // the world is the last place in this game that should band.
-        const grain = (noise(x / size, y / size) - 0.5) * 0.18
-        tone = Math.max(0, fade * (0.25 + 0.2 * wave * wave) + grain * fade)
+        // the world is the last place in this game that should band. Halved from
+        // 0.18 to 0.09 for the reason the arms were cubed — at 3x the contrast
+        // the dither is no longer hiding the banding, it is competing with the
+        // arms, and an arm you cannot tell from its own noise is not a filament.
+        const grain = (noise(x / size, y / size) - 0.5) * 0.09
+        tone = Math.max(0, fade * (floor + amp * arm) + grain * fade)
       }
       const i = (y * size + x) * 4
       data[i] = 255

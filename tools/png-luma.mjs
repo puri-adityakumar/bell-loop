@@ -714,3 +714,237 @@ export function repaintBody(buffer, measured, luma) {
   }
   return encodePng(width, height, rgb)
 }
+
+/**
+ * PORTAL_RIM_MIN — the Rec. 601 luma a pixel has to reach to count as rim.
+ *
+ * The rim is the portal's only fully-saturated surface: `PALETTE.portal` is
+ * applied at full strength, so it lands at 185-188 in every capture, while the
+ * swirl inside it is an alpha-blended wash that never gets near that. The gap
+ * is wide enough that the anchor survives a large change to the swirl itself,
+ * which is the property that matters — this threshold has to keep finding the
+ * *ring* while the thing the gate measures changes underneath it.
+ */
+const PORTAL_RIM_MIN = 170
+
+/**
+ * The swirl band, as a fraction of the rim radius, and which half of the disc
+ * to read.
+ *
+ * `0.30` is inside both swirl layers (`PORTAL_SWIRL_RADII` is `[0.66, 0.40]`
+ * of a 0.72 m core) and `0.62` stops short of the core's own edge so a rim
+ * highlight can never leak in and read as swirl.
+ *
+ * THE UPPER HALF ONLY, and that is not a convenience. The floor apron under a
+ * portal is the brightest thing below the disc, it is lit by the same 26 m
+ * point light, and it brightens and dims with camera distance. A full annulus
+ * measures it, so a full annulus reports a number that partly describes where
+ * the photographer stood. The upper half cannot see the floor at all, which
+ * makes the measurement a property of the portal alone.
+ */
+const PORTAL_BAND = Object.freeze({ inner: 0.3, outer: 0.62, upperHalf: true })
+
+/** Enough rim pixels to be a ring and not a stray highlight. */
+const RIM_MIN_PIXELS = 1500
+
+/** Enough band pixels for a standard deviation to mean anything. */
+const BAND_MIN_PIXELS = 1500
+
+/**
+ * swirlContrast — is the light inside the portal a swirl, or a wash?
+ *
+ * WHAT THIS IS FOR
+ * -----------------
+ * The complaint behind iteration 2, pass 3 was not that the portal was the
+ * wrong shape and not that the wrong thing was being built. The geometry was
+ * fine. The swirl *texture* held everything inside the core at a floor of
+ * 0.25, so the arms and the gaps between them sat close together and the whole
+ * disc averaged out to a single flat cyan field. The rim around it was correct,
+ * which is exactly why the frame still looked composed in a thumbnail.
+ *
+ * So the quantity under test is not brightness, and not brightness *relative
+ * to the rim* — a flat disc at full cyan is brighter than a structured one and
+ * still washed out. It is the **spread of luma inside the swirl band**. A
+ * swirl has dark gaps and bright filaments; a wash has one value everywhere.
+ * The standard deviation separates those two cases by more than a factor of
+ * 1.7, and it needs no reference level: it rises when structure appears and
+ * falls when it is smoothed away, which is also what makes the mutation test
+ * meaningful.
+ *
+ * WHY NOT A PERCENTILE RATIO
+ * --------------------------
+ * The obvious formula is p95/p05, and it was the one tried first. It is wrong,
+ * and the failure is instructive: a portal with a *perfectly flat* core and a
+ * near-black pupil measures 8.86:1 on it. The pupil supplies the low percentile
+ * and the rim supplies the high one, and everything between them — the only
+ * pixels that show whether a swirl exists — goes unexamined. A ratio across the
+ * whole annulus rewards exactly the frame that has a hard edge and a dark
+ * middle, which is the stale pre-pass-3 render. The band has no such blind
+ * spot, because the pupil and the rim are both outside it.
+ *
+ * HOW IT FINDS THE PORTAL
+ * ----------------------
+ * Self-locating, from the frame alone: the hot cyan rim's bounding box gives
+ * the centre and the radius, and the band is that box scaled by
+ * `PORTAL_BAND`. No hard-coded rectangle, because a hard-coded rectangle is a
+ * second copy of "where the portal is" and it stops matching silently the
+ * first time the camera moves.
+ *
+ * @param {Buffer} buffer a PNG
+ */
+export function swirlContrast(buffer) {
+  const notFound = (reason) => ({
+    found: false,
+    reason,
+    rim: { minX: 0, maxX: 0, topY: 0 },
+    centre: { x: 0, y: 0 },
+    radius: 0,
+    band: null,
+    pupil: 0,
+    rimPixels: 0,
+  })
+  const { width, height, channels, data } = decodePng(Buffer.from(buffer))
+  // `lumaAt` indexes raw bytes, so it needs the channel stride folded in — the
+  // same convention `creatureContrast`'s own `at` uses, and the reason this is
+  // a one-liner rather than a reimplementation.
+  const luma = (x, y) => lumaAt(data, (y * width + x) * channels, channels)
+  // Cyan, not just bright. The world has other bright things in it — the sodium
+  // lamps are the obvious one — and they are warm, so requiring the blue
+  // channel to lead both red and green is what keeps the anchor on the portal
+  // rather than on the street lighting.
+  const isRim = (x, y) => {
+    const i = (y * width + x) * channels
+    return (
+      data[i + 2] > 60 &&
+      data[i + 2] - data[i] > 22 &&
+      data[i + 1] - data[i] > 14 &&
+      luma(x, y) >= PORTAL_RIM_MIN
+    )
+  }
+  let minX = Infinity
+  let maxX = -1
+  let topY = Infinity
+  let rimPixels = 0
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!isRim(x, y)) continue
+      rimPixels += 1
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < topY) topY = y
+    }
+  }
+  if (rimPixels < RIM_MIN_PIXELS) {
+    return notFound(`only ${rimPixels} hot cyan pixels, needs ${RIM_MIN_PIXELS} to call it a portal`)
+  }
+  // The rim is a ring seen slightly from below, so its bounding box is wider
+  // than it is tall and its bottom edge is cut off by the doorway it stands in.
+  // The width is the honest measure of its diameter; the centre sits one radius
+  // below the topmost rim pixel, which is where the circle through that pixel
+  // has to put its centre.
+  const cx = (minX + maxX) / 2
+  const R = (maxX - minX) / 2
+  const cy = topY + R
+  const { inner, outer, upperHalf } = PORTAL_BAND
+  const values = []
+  for (let y = Math.max(0, Math.floor(cy - R * outer)); y <= Math.min(height - 1, Math.floor(cy + R * outer)); y += 1) {
+    if (upperHalf && y > cy) continue
+    for (let x = Math.max(0, Math.floor(cx - R * outer)); x <= Math.min(width - 1, Math.floor(cx + R * outer)); x += 1) {
+      const d = Math.hypot(x - cx, y - cy) / R
+      if (d >= inner && d < outer) values.push(luma(x, y))
+    }
+  }
+  if (values.length < BAND_MIN_PIXELS) {
+    return notFound(`the swirl band holds only ${values.length} pixels, needs ${BAND_MIN_PIXELS}`)
+  }
+  values.sort((a, b) => a - b)
+  const at = (f) => values[Math.min(values.length - 1, Math.round(f * (values.length - 1)))]
+  const mean = values.reduce((a, b) => a + b, 0) / values.length
+  const variance = values.reduce((a, b) => a + (b - mean) * (b - mean), 0) / values.length
+  return {
+    found: true,
+    reason: '',
+    rim: { minX, maxX, topY },
+    centre: { x: cx, y: cy },
+    radius: R,
+    band: {
+      n: values.length,
+      mean,
+      sd: Math.sqrt(variance),
+      p10: at(0.1),
+      p50: at(0.5),
+      p90: at(0.9),
+      max: at(1),
+    },
+    pupil: luma(Math.round(cx), Math.round(cy)),
+    rimPixels,
+  }
+}
+
+/** One line, every number, so a retune starts from the measurement. */
+export function describeSwirlContrast(measured) {
+  if (!measured.found) return `no portal in frame (${measured.reason})`
+  const b = measured.band
+  return (
+    `swirl band sd ${b.sd.toFixed(1)} (mean ${b.mean.toFixed(1)}, p10 ${b.p10}, p50 ${b.p50}, ` +
+    `p90 ${b.p90}, n ${b.n}), pupil luma ${measured.pupil}, rim x ${measured.rim.minX}-${measured.rim.maxX} r ${measured.radius.toFixed(1)}`
+  )
+}
+
+/**
+ * repaintSwirl — a copy of `buffer` with the swirl band washed toward a flat
+ * `luma`, by `mix`.
+ *
+ * The control for the swirl gate, and it exists for the same reason
+ * `repaintBody` does: a gate read only against committed PNGs is only ever
+ * exercised against frames that happen to exist, and a gate that would have
+ * passed the washed-out render is exactly a gate that looks green on the one
+ * artifact nobody re-examined.
+ *
+ * The band is derived from `swirlContrast`'s OWN reported centre and radius, so
+ * the mutation lands on precisely the pixels the gate reads. The rim is left
+ * completely alone — it is the anchor, and repainting it would move the very
+ * thing being held fixed, which is how the creature mutation stays honest and
+ * how this one does too.
+ *
+ * `mix` is what makes this a *monotonic* control rather than an on/off switch.
+ * At `mix: 1` the band is perfectly flat and the spread is exactly zero, which
+ * only ever exercises one end of the curve. Stepping it down traces the whole
+ * path from the real render to a wash, and the sd has to fall along it without
+ * a bump — a measure that is not monotone in the amount of structure removed is
+ * not measuring structure.
+ *
+ * @param {Buffer} buffer a PNG
+ * @param {ReturnType<typeof swirlContrast>} measured the same PNG, already measured
+ * @param {number} luma 0-255, the flat grey the swirl washes toward
+ * @param {number} mix 0-1, how far to wash it (1 is perfectly flat)
+ * @returns {Buffer} a new PNG
+ */
+export function repaintSwirl(buffer, measured, luma, mix = 1) {
+  if (!measured.found) throw new Error('repaintSwirl needs a frame that actually has a portal in it')
+  const { width, height, channels, data } = decodePng(Buffer.from(buffer))
+  const rgb = Buffer.allocUnsafe(width * height * 3)
+  for (let i = 0; i < width * height; i += 1) {
+    rgb[i * 3] = data[i * channels]
+    rgb[i * 3 + 1] = data[i * channels + 1]
+    rgb[i * 3 + 2] = data[i * channels + 2]
+  }
+  const { centre, radius } = measured
+  const { inner, outer, upperHalf } = PORTAL_BAND
+  for (let y = Math.max(0, Math.floor(centre.y - radius * outer)); y <= Math.min(height - 1, Math.floor(centre.y + radius * outer)); y += 1) {
+    if (upperHalf && y > centre.y) continue
+    for (let x = Math.max(0, Math.floor(centre.x - radius * outer)); x <= Math.min(width - 1, Math.floor(centre.x + radius * outer)); x += 1) {
+      const d = Math.hypot(x - centre.x, y - centre.y) / radius
+      if (d < inner || d >= outer) continue
+      // Per channel rather than on the luma, so a pixel blends along the line
+      // between its own colour and the grey instead of drifting through a
+      // different hue on the way. The gate only reads luma, so this does not
+      // change the measured value — it just keeps the intermediate frames
+      // honest if anyone opens them.
+      for (let c = 0; c < 3; c += 1) {
+        rgb[(y * width + x) * 3 + c] = Math.round(rgb[(y * width + x) * 3 + c] * (1 - mix) + luma * mix)
+      }
+    }
+  }
+  return encodePng(width, height, rgb)
+}
