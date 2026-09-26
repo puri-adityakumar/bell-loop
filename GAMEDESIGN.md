@@ -649,8 +649,11 @@ Carried forward and extended from v1's `PALETTE` in `src/game/world.js`:
 
 | Role | Hex |
 | --- | --- |
-| Sky / dusk horizon | `#2a2233` → `#4a3550` → `#12101a` |
-| Fog | `#1a1622`, density rising with dusk stage |
+| Sky / dusk horizon | `#6b5836` → `#7a6440` → `#3f3320` (sodium ochre; iteration 2 pass 1 replaced a violet `#2a2233` → `#4a3550` → `#12101a`) |
+| Fog | `#574a30` → `#6a5938` → `#332a1c`, density rising with dusk stage |
+| Horizon key light | `#ffc27a` at 0.34, falling to 0.20 |
+| Sky fill (hemisphere) | sky `#6b5836` / ground `#0d0b12`, intensity 0.85 falling to 0.67 |
+| Tone-mapping exposure | `1.02 − 0.14t²` — 1.02 at dusk 0, 0.88 at dusk 1 |
 | Asphalt | `#17151b` |
 | Sidewalk | `#2b2830` |
 | House siding | `#3a3540` and `#4a4038` (two-tone, per-lot deterministic) |
@@ -660,9 +663,53 @@ Carried forward and extended from v1's `PALETTE` in `src/game/world.js`:
 | Headlight beacon | `#ffe2a8` |
 | Creature | near-black `#08070a` with a faint wet specular — it should read as a hole in the fog rather than an object in it |
 
+The three sky stops and the three fog stops are a single dusk ramp, and they
+carry four properties the gate asserts rather than four intentions a comment
+states (`verify.mjs`, "Sodium dusk (iteration 2, pass 1)"):
+
+1. **Every stop is warm** (red > green > blue). The first run of this design was
+   violet, and a violet sky over a sodium-lit street reads as two unrelated
+   palettes meeting in the middle of frame.
+2. **Every stop is lighter than the violet it replaced**, by 3.0× to 9.8× in
+   relative luminance (the smallest lift is the sky's own mid stop). This is the
+   "too dark to see things" report, held as a floor so a later mood pass cannot
+   quietly take it back.
+3. **The ramp still closes.** Stop 0 is 1.7× the luma of stop 2 in 8-bit sRGB
+   (2.9× in linear relative luminance), so §3.7's dusk
+   is still a clock, and the mid stop is still the *brightest* — a sodium overcast
+   is brightest where the haze is thickest, and a monotone ramp is a grey sky.
+4. **The fog is darker than the sky at every stop.** Geometry fades *towards* the
+   fog colour, so a fog that rose above the sky would light the far roofs more
+   than the sky behind them and the world would read inside-out.
+
+The exposure curve is quadratic rather than linear, and that is the substance of
+the fix rather than its endpoints: Act I and Act II are played between `t = 0` and
+`t ≈ 0.66`, and the previous linear curve had already surrendered 8.5% of its
+exposure by `t = 0.5` — charging the player for darkness during the part of the
+run where the design wants them looking at the street. The new curve costs 1.75%
+there and spends almost all of its fall on the finale, which is the only stretch
+of the run where §3.7 wants the world tightening.
+
 The creature being a silhouette rather than a model is deliberate: at fog
 distances a low-detail dark mass with a hard rim reads far more disturbingly than
 a detailed mesh, and it is also cheaper to render and to verify.
+
+**The hue is part of the constraint (iteration 2, pass 1).** §12.1 originally
+specified *how much* light the world has and left *what colour* it to §12.3, and
+the two together shipped a violet sky over a sodium-lit street — a contradiction
+that a brightness number cannot express and that no §12.1 reading would have
+caught. The player report was "the world is too dark to see things", and the
+underlying fault was that the sky was not the same colour as the light source:
+sodium lamps bounce amber, a violet sky bounces nothing, so the road was lit only
+where the lamps reached and the space between them was black regardless of how
+far the exposure was turned up. Fixing the *hue* is therefore part of fixing the
+brightness, and §12.2's "amber is the neighbourhood" now extends to the air
+between the buildings, not only to the lamps themselves.
+
+The reference is the Backrooms video (67ktSmxCniA): a mono-yellow sodium haze.
+It is used for its *colour logic* — one warm family, lit from a sky as well as
+from lamps — and not for its content, which is a different game in a different
+place.
 
 ---
 

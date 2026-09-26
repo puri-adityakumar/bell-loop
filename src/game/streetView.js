@@ -93,10 +93,47 @@ import { OCCLUDER_KINDS } from './creature.js'
  * world is nearly gone by stage 3, and §12.1's reason for the whole ramp is that a
  * fully dark world would hide the creature and a fully lit one would remove the
  * fog.
+ *
+ * ITERATION 2, PASS 1 — THE SODIUM RETUNE
+ * ---------------------------------------
+ * The first run of this design was too dark to play, and the reason was a hue
+ * rather than a level: the sky ramp was *violet* (0x2a2233 / 0x4a3550 / 0x12101a)
+ * sitting at 15% / 24% / 7% luma, and a violet sky is a sky that reflects nothing
+ * amber back at a street that is lit entirely by amber. Everything the player
+ * could see was the four sodium pools and nothing between them.
+ *
+ * The brief was the Backrooms reference (67ktSmxCniA): a mono-yellow sodium haze,
+ * *lighter* than what shipped, and still night. So both ramps moved to a sodium
+ * ochre (hue ~36°, R > G > B) and up by 3.0x to 9.8x in relative luminance:
+ *
+ *   skyStops   0x2a2233 / 0x4a3550 / 0x12101a  ->  0x6b5836 / 0x7a6440 / 0x3f3320
+ *     luma        38.3  / 62.4  / 17.7          ->   89.9 / 102.5 / 52.5  (0-255)
+ *   fogStops   0x241d2a / 0x1e1826 / 0x141018  ->  0x574a30 / 0x6a5938 / 0x332a1c
+ *     luma        32.6  / 27.4  / 18.1          ->   75.0 /  90.4 / 43.1
+ *
+ * Three properties of the new ramp are load-bearing and are asserted by the gate
+ * rather than left to this comment:
+ *
+ *  - **the world still closes.** stop 0 is 1.7x the luma of stop 2 in 8-bit sRGB
+ *    (2.9x in linear relative luminance), so §3.7's dusk
+ *    is still a clock the player can read without looking at a number, and the
+ *    finale is still the darkest frame in the game.
+ *  - **the mid stop is the brightest.** A sodium overcast is brightest where the
+ *    haze is thickest, and it is what makes the sky read as *lit* rather than as a
+ *    flat wash. The old ramp had this too (0x4a3550 was lighter than 0x2a2233) and
+ *    it is kept deliberately: a monotone ramp is a grey sky.
+ *  - **the fog is darker than the sky at every stop.** Geometry fades *towards*
+ *    the fog colour, so if the two ever crossed, roofs and hedges would go
+ *    lighter than the sky behind them and the world would read inside-out.
+ *
+ * The fog stays *below* the sky rather than matching it, which is the one
+ * departure from "mono-yellow" that is load-bearing: §12.1's silhouette rule needs
+ * a near-black creature (below) to have something to be a hole in, and a fully
+ * matched fog gives it nothing.
  */
 export const PALETTE = Object.freeze({
-  skyStops: Object.freeze([0x2a2233, 0x4a3550, 0x12101a]),
-  fogStops: Object.freeze([0x241d2a, 0x1e1826, 0x141018]),
+  skyStops: Object.freeze([0x6b5836, 0x7a6440, 0x3f3320]),
+  fogStops: Object.freeze([0x574a30, 0x6a5938, 0x332a1c]),
   asphalt: 0x17151b,
   sidewalk: 0x2b2830,
   kerb: 0x35313b,

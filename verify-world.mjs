@@ -844,6 +844,124 @@ check('a capture resets the player to spawn, permutes the fixtures, and keeps pr
   assert.equal(store.get().phase, PHASE.PLAYING, 'and play resumes')
 })
 
+// ---------------------------------------------------------------------------
+// iteration 2, pass 1 — the sodium retune, measured on the live lights
+// ---------------------------------------------------------------------------
+
+/**
+ * Rec. 709 relative luminance of a Three.js colour, 0-255, *in sRGB*.
+ *
+ * The conversion is the whole point of this helper. Three.js stores a `Color`'s
+ * components in the linear working space, so `fog.color.r` for #332a1c is 0.033,
+ * not 0.200 — and taking a luminance straight off those numbers reports 6 luma
+ * for a fog that `streetView.js` and §12.3 both call a 43. It is the same colour;
+ * it is just written down in the units the renderer will encode it in later, and
+ * a gate that compares across those two units is a gate measuring nothing.
+ */
+function lumaOf(color) {
+  const encode = (linear) => {
+    const c = Math.max(0, Math.min(1, linear))
+    return (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055) * 255
+  }
+  return 0.2126 * encode(color.r) + 0.7152 * encode(color.g) + 0.0722 * encode(color.b)
+}
+
+/** How warm a colour is: how far its green sits between its red and its blue. */
+function warmth(color) {
+  const encode = (linear) => {
+    const c = Math.max(0, Math.min(1, linear))
+    return c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055
+  }
+  const r = encode(color.r) * 255
+  const g = encode(color.g) * 255
+  const b = encode(color.b) * 255
+  return { r, g, b, ratio: g / r, spread: r - b }
+}
+
+check('the world is lit, and what lights it is sodium', () => {
+  // The counterpart to `verify.mjs`'s source-level section, and it exists because
+  // a source grep cannot see a *rendered* light. Every number asserted there is a
+  // claim about the text of `world.js`; this one is a claim about the `THREE.Light`
+  // objects the game actually puts in its scene after `_applyDusk`.
+  //
+  // The bug class it is aimed at is specific: a hemisphere whose colour was never
+  // set (so it renders white, and the sodium street goes grey), a fog whose
+  // `background` was left as a different colour than its `color` (so the horizon
+  // line the fog is supposed to hide becomes visible), and a dusk curve whose
+  // falloff cancels the palette's own rise. All three pass a source grep.
+  game.restart()
+  run(game, 1.2)
+
+  const readings = [0, 0.5, 1].map((dusk) => {
+    game._applyDusk(dusk)
+    return {
+      dusk,
+      exposure: game.renderer.toneMappingExposure,
+      ambient: game.hemisphere.intensity,
+      key: game.sunset.intensity,
+      sky: game.hemisphere.color.clone(),
+      fog: game.scene.fog.color.clone(),
+    }
+  })
+
+  // §12.1: "dusk, not night" is a claim about the frame, so it is checked as one.
+  // The brief for this pass asked for a *lighter* world than shipped, and the
+  // numbers the pure gate reads out of the source are only meaningful if the
+  // lights they configure are the ones the renderer uses.
+  for (const reading of readings) {
+    assert.ok(reading.exposure > 0.85, `dusk ${reading.dusk}: exposure is ${reading.exposure.toFixed(3)} — the frame is being crushed`)
+    assert.ok(reading.exposure <= 1.15, `dusk ${reading.dusk}: exposure is ${reading.exposure.toFixed(3)}, which is day`)
+    assert.ok(reading.ambient >= 0.6, `dusk ${reading.dusk}: ambient is ${reading.ambient.toFixed(2)} — the world has no floor under it`)
+  }
+
+  // and it is *sodium*, not merely bright. A warm ramp is a hue claim and hue is
+  // the thing a luma check cannot see: a white hemisphere at the same intensity
+  // satisfies every brightness assertion above and still delivers a grey street.
+  for (const reading of readings) {
+    for (const [name, color] of [['sky', reading.sky], ['fog', reading.fog]]) {
+      const { r, g, b, spread } = warmth(color)
+      assert.ok(r > g, `dusk ${reading.dusk}: the ${name} light is not red-dominant (${r.toFixed(0)}, ${g.toFixed(0)}, ${b.toFixed(0)})`)
+      assert.ok(g > b, `dusk ${reading.dusk}: the ${name} light is not amber (${r.toFixed(0)}, ${g.toFixed(0)}, ${b.toFixed(0)})`)
+      assert.ok(spread > 0.1, `dusk ${reading.dusk}: the ${name} light is grey, not sodium`)
+    }
+  }
+
+  // the fog and the background are the same colour, which is the trick the whole
+  // fogged-horizon look rests on (§12.1) and the easiest thing in the file to
+  // break by assigning one and forgetting the other.
+  assert.equal(
+    game.scene.background.getHex(),
+    game.scene.fog.color.getHex(),
+    'the background and the fog are different colours, so the horizon draws a hard line',
+  )
+
+  // §3.7: the world still closes. Fog luma has to fall across a run or dusk is
+  // not a clock any more, and the ambient has to fall with it or the *sky* closes
+  // while the light on the street does not.
+  const fogLum = readings.map((reading) => lumaOf(reading.fog))
+  assert.ok(fogLum[0] > fogLum[2], `the fog does not darken across a run: ${fogLum.map((v) => v.toFixed(0)).join(' -> ')}`)
+  assert.ok(
+    readings[0].ambient > readings[2].ambient,
+    'the ambient light does not fall with dusk, so §3.7 has no clock left',
+  )
+  // and the darkest frame is still a *lit* frame — the "too dark to see things"
+  // complaint, restated as a bound rather than as a hope.
+  assert.ok(fogLum[2] > 35, `dusk 1 fog is ${fogLum[2].toFixed(0)} luma — the finale is a black frame`)
+
+  // the mid stop is the crest, on the live colours and not only in the source:
+  // the middle of a run is brighter than the start, which is what makes the sky
+  // read as a lit overcast rather than a flat wash.
+  assert.ok(fogLum[1] > fogLum[0], 'the mid-dusk fog is not the brightest of the three')
+
+  // the key light is warm too, and it is what lifts the rooflines out of the fog
+  const key = warmth(game.sunset.color)
+  assert.ok(key.r > key.b, `the horizon key is ${game.sunset.color.getHexString()}, which is cold against a sodium sky`)
+
+  // put the world back the way the checks below it expect to find it
+  game._applyDusk(game.state.dusk)
+})
+
+
 check('a capture on its own removes the figure, with no frame around it', () => {
   // `_capture` is self-contained. Inside `update` the next `_updateCreatureView`
   // would hide the figure anyway, so this is belt-and-braces — but it is the

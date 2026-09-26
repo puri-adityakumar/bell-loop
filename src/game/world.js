@@ -110,6 +110,29 @@ const LAMP_LIGHTS = 4
 const LAMP_RADIUS = 40
 
 /**
+ * §12.1's exposure curve, as two numbers instead of two literals.
+ *
+ * ITERATION 2, PASS 1. BEFORE the pair `(0.95, 0.17)`, read in `_applyDusk` as
+ * `0.95 - 0.17 * t` — a linear 18% cut across a run. AFTER `(1.02, 0.14)`, read
+ * as `1.02 - 0.14 * t * t`.
+ *
+ * Two things changed and they are different in kind. The base is up 7% because
+ * the sky ramp itself came up 3.0x to 6.2x in luma and ACES at the old 0.95 was
+ * compressing a palette that no longer needed compressing. The *shape* is the
+ * actual fix: the cut is now quadratic, so it is almost free through Act I and
+ * Act II (`t = 0.5` costs 1.75% where the old curve cost 8.5%) and lands almost
+ * all of itself on the last third, which is the only stretch of the run where
+ * §3.7 wants the world visibly tightening.
+ *
+ * These are named because there are now two readers — the constructor and
+ * `_applyDusk` — and the constructor's value has to be the curve's value at
+ * `t = 0` or the first frame is a different exposure from every frame after it.
+ * The gate asserts they agree.
+ */
+const EXPOSURE_BASE = 1.02
+const EXPOSURE_CUT = 0.14
+
+/**
  * How bright a lamp head is, in the units a Three.js point light wants.
  *
  * The number is calibrated, not chosen, and this is the comment that has to
@@ -209,8 +232,14 @@ export class LongQuietGame {
     this.renderer.shadowMap.enabled = false
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     // v1 sat at 0.92 for a cellar; §12.1 is a lit horizon over a dark street,
-    // which wants slightly more of it, and the dusk curve takes it down from there
-    this.renderer.toneMappingExposure = 0.95
+    // which wants slightly more of it, and the dusk curve takes it down from there.
+    //
+    // BEFORE a bare `0.95`; AFTER `EXPOSURE_BASE`, which is the same number named.
+    // The reason to name it is that `_applyDusk(0)` runs a few lines below this,
+    // the moment the scene exists, and it writes the curve's value at `t = 0`.
+    // Leaving the constructor on a literal means the value a reader greps for is
+    // not the value the first frame renders at, and the gate cannot tell.
+    this.renderer.toneMappingExposure = EXPOSURE_BASE
     this.canvas = this.renderer.domElement
     this.canvas.style.display = 'block'
     this.canvas.style.width = '100%'
@@ -453,10 +482,29 @@ export class LongQuietGame {
    * because they are attached to geometry rather than to the player.
    */
   _buildLights() {
-    this.hemisphere = new THREE.HemisphereLight(PALETTE.skyStops[0], 0x0d0b12, 0.5)
+    // §12.1's ambient term, and the half of this pass that is a *number* rather
+    // than a colour.
+    //
+    // BEFORE 0.5 / AFTER 0.85. The hemisphere is standing in for the lit
+    // overcast, and at 0.5 it was contributing almost nothing: a violet 15%-luma
+    // sky at half strength is roughly 7% of white, which is below what ACES at
+    // this exposure can resolve into anything a player can navigate by. §4 promises
+    // the streetlight grid is the primary orientation mechanism and §12.1 promises
+    // silhouettes survive at range; both of those need a world with a floor
+    // under it, and 0.85 with a warm sky is that floor. It is deliberately below
+    // the 1.0 that would flatten the lamps' pools into a wash — the sodium grid
+    // has to stay the brightest thing on the road.
+    this.hemisphere = new THREE.HemisphereLight(PALETTE.skyStops[0], 0x0d0b12, 0.85)
     this.scene.add(this.hemisphere)
 
-    this.sunset = new THREE.DirectionalLight(0x6b4a6b, 0.32)
+    // BEFORE 0x6b4a6b / AFTER 0xffc27a, intensity 0.32 -> 0.34.
+    //
+    // The horizon key was the last violet thing left in the frame, and with a
+    // sodium sky behind it a mauve key reads as a colour error rather than as
+    // dusk. It is now the same family as `PALETTE.sodium` but a stop paler, so
+    // it lifts the upper faces of roofs and hedges toward the sky without
+    // competing with the lamps for the road.
+    this.sunset = new THREE.DirectionalLight(0xffc27a, 0.34)
     this.sunset.position.set(-1, 0.28, -0.6)
     this.scene.add(this.sunset)
 
@@ -486,9 +534,31 @@ export class LongQuietGame {
     this.scene.fog = new THREE.FogExp2(lerpStops(PALETTE.fogStops, t).getHex(), rules.fogDensityForDusk(t))
     this.scene.background = this.scene.fog.color
     this.hemisphere.color.copy(lerpStops(PALETTE.skyStops, t))
-    this.hemisphere.intensity = 0.5 - 0.22 * t
-    this.sunset.intensity = 0.32 - 0.2 * t
-    this.renderer.toneMappingExposure = 0.95 - 0.17 * t
+    // BEFORE `0.5 - 0.22 * t` / AFTER `0.85 - 0.18 * t`. The slope comes down
+    // because the palette did the darkening already: the stop-2 sky is 52 luma
+    // where the old one was 17, so keeping the old falloff on top of the new
+    // colour would have crushed the finale twice — once in the ramp and once in
+    // the intensity — and the finale is the frame §11.3's balance assertion is
+    // played out in. Ambient still fades (the dusk is a clock, §3.7) but it never
+    // goes below 0.67, so the world at its darkest is still a lit world.
+    this.hemisphere.intensity = 0.85 - 0.18 * t
+    // BEFORE `0.32 - 0.2 * t` / AFTER `0.34 - 0.14 * t`, same reasoning.
+    this.sunset.intensity = 0.34 - 0.14 * t
+    // §12.1's exposure, and the second half of this pass.
+    //
+    // BEFORE `0.95 - 0.17 * t`, which spans 0.95 -> 0.78 and is a *linear* 18%
+    // cut. Multiplied against the old violet ramp, the far end of a run rendered
+    // at 0.78 exposure on a 7%-luma sky, which is the "can't see the street"
+    // complaint reproduced as arithmetic.
+    //
+    // AFTER `EXPOSURE_BASE - EXPOSURE_CUT * t * t` — the same endpoints' intent
+    // with the bite taken out of the middle. The quadratic matters more than the
+    // endpoints: at t = 0.5 the old curve had already given up 8.5% while the
+    // player is still in Act II hunting three portals, and the new one has given
+    // up 1.75%. The curve is therefore *flat where the game is played* and only
+    // closes in the last third, which is the finale's job — and §3.7's promise
+    // that the world visibly tightens survives, just at 0.88 rather than 0.78.
+    this.renderer.toneMappingExposure = EXPOSURE_BASE - EXPOSURE_CUT * t * t
   }
 
   /**

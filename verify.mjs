@@ -6271,6 +6271,279 @@ test('the win card says §10.4, and v1 never comes back', () => {
 })
 
 // ---------------------------------------------------------------------------
+// iteration 2, pass 1 — the sodium retune: sky, fog, hemisphere, exposure
+//
+// The player report this section exists for was "the world is too dark to see
+// things", with a reference to the Backrooms video (67ktSmxCniA) and a request
+// for a mono-yellow sodium haze that is *lighter* than what shipped.
+//
+// WHY THE CHECKS BELOW ARE ARITHMETIC AND NOT ECHOES
+// --------------------------------------------------
+// `streetView.js` imports Three.js, so `verify.mjs` cannot import `PALETTE` and
+// read it (§15.1's seam). The obvious workaround — assert the literal hex — is
+// worthless: it restates the file back at itself, passes the moment someone edits
+// a hex, and fails the moment someone edits it in a *good* way. So the values are
+// read out of the source the way §15.1 already reads it, and what is asserted is
+// the four *properties* the retune was for:
+//
+//   1. every stop is warm and sodium (R > G > B) — the hue complaint
+//   2. every stop is lighter than the violet it replaced — the "too dark" complaint
+//   3. the ramp still closes, and the mid stop is still the crest — §3.7
+//   4. the fog is darker than the sky at every stop — the silhouette rule
+//
+// A future pass that retunes the palette again passes these as long as the world
+// is still warm, still legible, still a clock, and still has a dark thing to be a
+// hole in. Only a regression fails, which is the entire job.
+// ---------------------------------------------------------------------------
+
+section('Sodium dusk (iteration 2, pass 1)')
+
+/** Rec. 709 relative luminance of a 24-bit hex, 0-255. */
+function relLuma(hex) {
+  const r = (hex >> 16) & 0xff
+  const g = (hex >> 8) & 0xff
+  const b = hex & 0xff
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/**
+ * The three stops of one of §12.3's ramps, read out of `streetView.js`'s source.
+ *
+ * Comment-stripped first, and that is the whole reason: the retune's own comments
+ * quote the old hexes (`0x2a2233 / 0x4a3550 / 0x12101a`) so a reader of the file
+ * can see what changed without a git log, which means a naive source grep for hex
+ * literals returns nine values instead of three and silently reads the comment.
+ * `stripProse` is the existing answer to exactly this problem (the audio-module
+ * checks use it for the same reason), so it is reused rather than reinvented.
+ */
+function paletteStops(key) {
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const line = new RegExp(`${key}:\\s*Object\\.freeze\\(\\[([^\\]]+)\\]\\)`).exec(code)
+  assert.ok(line, `${key} is not a frozen three-stop array in streetView.js`)
+  const stops = [...line[1].matchAll(/0x([0-9a-fA-F]{6})/g)].map((m) => Number.parseInt(m[1], 16))
+  assert.equal(stops.length, 3, `${key} has ${stops.length} stops, not the three §3.7 slides between`)
+  return stops
+}
+
+const SKY_STOPS = paletteStops('skyStops')
+const FOG_STOPS = paletteStops('fogStops')
+
+test('the palette is the six stops this pass chose (iteration 2, pass 1)', () => {
+  // The four tests after this one are *properties*, and a property gate is
+  // deliberately loose: swapping 0x6b5836 for a brighter ochre leaves every one of
+  // them green while visibly changing the look of the game. Nothing about "warm",
+  // "lighter than the violet", "still closes" or "fog under sky" says which amber
+  // was picked, so on their own they would let the next mood pass drift the
+  // benchmark's whole subject without a single failure.
+  //
+  // The two are not in tension, and the split is the point. An *accidental*
+  // regression fails the property tests and is caught by anyone, thinking about
+  // colour or not. A *deliberate* retune is expected to fail this one, and the
+  // remedy is to move the pin in the same commit that moves the colour — which is
+  // precisely the moment a reviewer gets told the world got brighter, rather than
+  // the moment they notice on a screenshot three passes later.
+  assert.deepEqual(
+    SKY_STOPS,
+    [0x6b5836, 0x7a6440, 0x3f3320],
+    `skyStops is now ${SKY_STOPS.map((s) => `0x${s.toString(16)}`).join(' / ')}, ` +
+      'not the sodium ramp this pass selected — move this pin in the same commit as the colour',
+  )
+  assert.deepEqual(
+    FOG_STOPS,
+    [0x574a30, 0x6a5938, 0x332a1c],
+    `fogStops is now ${FOG_STOPS.map((s) => `0x${s.toString(16)}`).join(' / ')}, ` +
+      'not the sodium ramp this pass selected — move this pin in the same commit as the colour',
+  )
+})
+
+test('the sky and fog are sodium ochre, not violet (iteration 2, pass 1)', () => {
+  // The hue claim, as a comparison rather than a comment. R > G > B on every stop
+  // is what "warm" means numerically; the old ramp was 0x2a2233, which is
+  // R < G < B, i.e. blue-violet, and a blue-violet sky is what made a sodium-lit
+  // street read as two unrelated colour schemes meeting in the middle of frame.
+  for (const [key, stops] of [['skyStops', SKY_STOPS], ['fogStops', FOG_STOPS]]) {
+    for (const stop of stops) {
+      const r = (stop >> 16) & 0xff
+      const g = (stop >> 8) & 0xff
+      const b = stop & 0xff
+      assert.ok(r > g, `${key} stop 0x${stop.toString(16)}: red is not above green — that is not a warm hue`)
+      assert.ok(g > b, `${key} stop 0x${stop.toString(16)}: green is not above blue — the stop is cold, not sodium`)
+    }
+  }
+  // and the two ramps are the *same* hue family, which is what makes the world
+  // read as one lit thing rather than as a warm street under a foreign sky. The
+  // ratios are close rather than identical because the fog is deliberately the
+  // darker of the pair (the next test says why).
+  const spread = [...SKY_STOPS, ...FOG_STOPS].map((stop) => {
+    const r = (stop >> 16) & 0xff
+    const g = (stop >> 8) & 0xff
+    return g / r
+  })
+  const min = Math.min(...spread)
+  const max = Math.max(...spread)
+  assert.ok(max - min < 0.1, `the ramps disagree on hue: g/r spans ${min.toFixed(3)}-${max.toFixed(3)}`)
+})
+
+test('every stop is lighter than the violet it replaced (iteration 2, pass 1)', () => {
+  // The "too dark to see things" half of the report, and the one that is easiest
+  // to regress by accident: someone lifting the mid stop for a sunset and
+  // dropping stop 2 for mood would satisfy every other test in this section.
+  //
+  // The pre-pass values are restated here as a specification rather than read
+  // back out of git, so the floor is a claim the gate holds the palette to.
+  const VIOLET_SKY = [0x2a2233, 0x4a3550, 0x12101a]
+  const VIOLET_FOG = [0x241d2a, 0x1e1826, 0x141018]
+  for (const [key, stops, before] of [
+    ['skyStops', SKY_STOPS, VIOLET_SKY],
+    ['fogStops', FOG_STOPS, VIOLET_FOG],
+  ]) {
+    for (const [index, stop] of stops.entries()) {
+      const now = relLuma(stop)
+      const then = relLuma(before[index])
+      assert.ok(
+        now > then * 1.5,
+        `${key}[${index}] is ${now.toFixed(1)} luma against the old ${then.toFixed(1)} — the pass was to make the world lighter`,
+      )
+    }
+  }
+  // and a floor in absolute terms, because "1.5x a number that was nearly black"
+  // is a ratio that can be satisfied by 3 luma. §12.1's dusk is lit: the darkest
+  // sky the game ever draws has to be a colour a player can see the creature
+  // against, and the capture floor (6% of the lower scene) is the same claim
+  // measured on a photograph instead of on arithmetic.
+  const darkestSky = Math.min(...SKY_STOPS.map(relLuma))
+  const darkestFog = Math.min(...FOG_STOPS.map(relLuma))
+  assert.ok(darkestSky > 45, `the darkest sky stop is ${darkestSky.toFixed(1)} luma — the finale is a black frame`)
+  assert.ok(darkestFog > 35, `the darkest fog stop is ${darkestFog.toFixed(1)} luma — the finale is a black frame`)
+})
+
+test('the dusk ramp still closes, and its crest is still the middle (iteration 2, pass 1)', () => {
+  // §3.7: dusk is keyed to portals shut, and its entire design purpose is to be a
+  // clock the player can read without a number. A brighter palette makes that
+  // easier to break, not harder — the temptation is to lift the whole ramp evenly
+  // and end up with a world that never gets dark, which is §12.1's failure mode
+  // ("a fully lit one would destroy it differently by removing the fog").
+  for (const [key, stops] of [['skyStops', SKY_STOPS], ['fogStops', FOG_STOPS]]) {
+    const lumas = stops.map(relLuma)
+    assert.ok(lumas[0] > lumas[2], `${key}: stop 0 (${lumas[0].toFixed(1)}) is not lighter than stop 2 (${lumas[2].toFixed(1)}) — the world never closes`)
+    // a real ratio, not just "greater": the dusk has to be *legible* as a ramp
+    assert.ok(
+      lumas[0] > lumas[2] * 1.5,
+      `${key}: the ramp is only ${(lumas[0] / lumas[2]).toFixed(2)}x end to end, which is not a visible dusk`,
+    )
+    // the crest. A sodium overcast is brightest where the haze is thickest, and
+    // the old ramp had it too (0x4a3550 was lighter than 0x2a2233). A monotone
+    // ramp is a grey sky, so this is held deliberately rather than tidied away.
+    assert.ok(lumas[1] > lumas[0], `${key}: the mid stop is no longer the crest — the sky went flat`)
+  }
+})
+
+test('the fog is darker than the sky at every stop (§12.1 silhouettes)', () => {
+  // Geometry fades *towards* `fog.color`, and `scene.background` is set to the
+  // same colour. So the two are not two decorative choices: if the fog ever rose
+  // above the sky, a distant roof would be lighter than the sky behind it and the
+  // world would read inside-out. This was true of the old pair and it has to stay
+  // true of the new one, which is why it is checked pairwise at all three stops
+  // rather than only at the one the captures happen to show.
+  for (const index of [0, 1, 2]) {
+    const fog = relLuma(FOG_STOPS[index])
+    const sky = relLuma(SKY_STOPS[index])
+    assert.ok(fog < sky, `stop ${index}: the fog (${fog.toFixed(1)}) is not darker than the sky (${sky.toFixed(1)})`)
+  }
+
+test('the ambient and exposure curves are warmer, higher and flatter (iteration 2, pass 1)', () => {
+  // The three numbers in `world.js`, read as numbers rather than as prose, and
+  // then checked against the *claims* made about them. `EXPOSURE_BASE` and
+  // `EXPOSURE_CUT` are named constants precisely so this can parse them; a
+  // literal in a method body would be unreadable from outside without re-running
+  // the renderer, which is the failure mode §15.1's seam is designed around.
+  const code = stripProse(WORLD_SOURCE)
+  const exposureBase = Number(/const EXPOSURE_BASE = ([\d.]+)/.exec(code)?.[1])
+  const exposureCut = Number(/const EXPOSURE_CUT = ([\d.]+)/.exec(code)?.[1])
+  assert.ok(Number.isFinite(exposureBase), 'EXPOSURE_BASE is not a readable constant')
+  assert.ok(Number.isFinite(exposureCut), 'EXPOSURE_CUT is not a readable constant')
+
+  // The expression `_applyDusk` actually evaluates, and the one the properties
+  // below are reasoned about have to be the same expression. Without this the
+  // whole test is a description of a curve that may not exist: restoring the old
+  // `0.95 - 0.17 * t` in the method body while leaving the two constants at their
+  // new values passes every numeric assertion here, because those assertions read
+  // the constants and never the call site. That was a real hole — it was found by
+  // reverting the curve and watching this test stay green.
+  // `[^\n;]` rather than a character class of the legal tokens: the previous
+  // version allowed whitespace in the class, which let the match run past the end
+  // of the line and swallow the identifiers on the next one.
+  const applied = /this\.renderer\.toneMappingExposure = ([^\n;]+)/g
+  const expressions = [...code.matchAll(applied)].map((m) => m[1].trim())
+  assert.equal(expressions.length, 2, `the exposure is written ${expressions.length} times, not the two writers §15.2 expects`)
+  assert.ok(expressions.includes('EXPOSURE_BASE'), 'nothing seeds the renderer with the curve at t = 0')
+  const curve = expressions.find((expression) => expression !== 'EXPOSURE_BASE')
+  assert.equal(
+    curve,
+    'EXPOSURE_BASE - EXPOSURE_CUT * t * t',
+    'the dusk curve is not the quadratic this section specifies — the quadratic *is* the fix',
+  )
+
+  // BEFORE `0.95 - 0.17t` / AFTER `1.02 - 0.14t^2`, restated so the gate holds the
+  // shape rather than the numbers. The quadratic is the actual fix and it is the
+  // part worth protecting: Act I and Act II are played between t = 0 and t = 0.66,
+  // and the old curve was already charging the player for darkness during the
+  // part of the run where the design wants them looking at the street.
+  const oldAt = (t) => 0.95 - 0.17 * t
+  const newAt = (t) => exposureBase - exposureCut * t * t
+  for (const t of [0, 0.25, 0.5, 0.66, 1]) {
+    assert.ok(newAt(t) > oldAt(t), `exposure at t = ${t} is ${newAt(t).toFixed(3)}, at or below the old ${oldAt(t).toFixed(3)}`)
+  }
+  // and it is still a curve, in the right direction: §3.7 wants the world to
+  // tighten as the run advances, so a flat exposure would be as wrong as a
+  // descending one that crushes.
+  assert.ok(newAt(0) > newAt(1), 'exposure does not fall across a run at all — §3.7 dusk is no longer visible')
+  assert.ok(exposureCut > 0, 'EXPOSURE_CUT is not positive, so the curve cannot fall')
+  // the endpoints are bounded on both sides: not a wash, not a cellar
+  assert.ok(newAt(1) >= 0.85, `the finale exposure is ${newAt(1).toFixed(3)} — the world crushes at dusk 1`)
+  assert.ok(newAt(0) <= 1.15, `the opening exposure is ${newAt(0).toFixed(3)}, which is day, not dusk`)
+
+  // the hemisphere, BEFORE 0.5 / AFTER 0.85, and its slope BEFORE 0.22 / AFTER 0.18
+  const hemisphere = /new THREE\.HemisphereLight\(PALETTE\.skyStops\[0\], 0x[0-9a-fA-F]{6}, ([\d.]+)\)/.exec(code)
+  assert.ok(hemisphere, 'the hemisphere light is not built from the sky stop any more')
+  const ambient = Number(hemisphere[1])
+  assert.equal(ambient, 0.85, 'the hemisphere intensity is not the 0.85 this pass set')
+  assert.ok(ambient >= 0.75 && ambient <= 0.9, `the hemisphere is at ${ambient}, outside the 0.75-0.9 the brief asked for`)
+  const falloff = /this\.hemisphere\.intensity = ([\d.]+) - ([\d.]+) \* t/.exec(code)
+  assert.ok(falloff, 'the hemisphere no longer fades with dusk, so §3.7 has no clock')
+  assert.equal(Number(falloff[1]), ambient, 'the constructor and the dusk curve disagree about the ambient level')
+  assert.ok(Number(falloff[2]) > 0, 'the ambient does not fall with dusk')
+  assert.ok(ambient - Number(falloff[2]) >= 0.6, 'the ambient at dusk 1 is under 0.6 — the finale is unlit again')
+
+  // the sky the hemisphere casts has to be the retuned sky, not a private colour
+  // that happens to be nearby. This is the line that keeps §12.3's table and the
+  // light rig from drifting into two palettes.
+  assert.match(code, /PALETTE\.skyStops\[0\]/)
+  // and the directional key is no longer the mauve it shipped as
+  const sunset = /new THREE\.DirectionalLight\(0x([0-9a-fA-F]{6}), ([\d.]+)\)/.exec(code)
+  assert.ok(sunset, 'the horizon key light is gone')
+  const keyR = Number.parseInt(sunset[1].slice(0, 2), 16)
+  const keyB = Number.parseInt(sunset[1].slice(4, 6), 16)
+  assert.ok(keyR > keyB, `the horizon key is 0x${sunset[1]}, which is violet against a sodium sky`)
+  assert.ok(Number(sunset[2]) > 0.3, 'the horizon key is too dim to lift the rooflines')
+})
+
+test('the constructor exposure is the curve at dusk 0', () => {
+  // `_applyDusk(0)` runs during construction, so the two writers are a few lines
+  // apart and a literal in one of them is invisible to the reader of the other.
+  // This is a one-line bug class and it is worth a test that the two agree.
+  const code = stripProse(WORLD_SOURCE)
+  const constructor = /this\.renderer\.toneMapping = THREE\.ACESFilmicToneMapping[\s\S]*?this\.renderer\.toneMappingExposure = ([A-Z_0-9]+)/.exec(code)
+  assert.ok(constructor, 'the renderer exposure is not written next to the tone mapping any more')
+  assert.equal(constructor[1], 'EXPOSURE_BASE', 'the constructor stopped using the named exposure constant')
+  const base = /const EXPOSURE_BASE = ([\d.]+)/.exec(code)
+  assert.equal(Number(base[1]), 1.02, 'EXPOSURE_BASE is not the 1.02 this pass set')
+})
+
+})
+
+
+// ---------------------------------------------------------------------------
 // v2 slice 16 — the captures of §16.5, and the deletion of v1
 //
 // WHAT THIS SECTION IS FOR
