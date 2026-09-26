@@ -79,6 +79,13 @@ import { PlayerController } from './src/game/player.js'
 // decisions in the first place. Imported as a namespace for the same reason as
 // `rules` and `beast`: `bellToll`, `reset` and `drone` are all rule names here.
 import * as audio from './src/game/audio.js'
+// v2 slice 12. The HUD as a pure projection, in `src/ui/hud.js`. Imported as a
+// namespace under its own name for the same reason as `rules`, `beast` and
+// `audio` — `hud`, `sigil`, `hold` and `clamp01` are all rule names here and
+// half of them collide with things already imported flat. It is also the module
+// that *replaced* v1's `hudSnapshot` in `loop.js`, so nothing here has to be
+// renamed when slice 16 deletes `loop.js`.
+import * as hud from './src/ui/hud.js'
 import { readFileSync } from 'node:fs'
 import {
   LOOP_SECONDS,
@@ -97,7 +104,6 @@ import {
   wallRiseProgress,
   wallRiseDelay,
   createStore,
-  hudSnapshot,
   DOOR_WIN_RADIUS,
   isInsideChamber,
 } from './src/game/loop.js'
@@ -5241,18 +5247,14 @@ test('store.update() runs the pure reducers', () => {
   assert.equal(store.get().doorOpen, true)
 })
 
-test('hudSnapshot exposes exactly what the HUD paints', () => {
-  const state = createInitialState(4)
-  state.timeLeft = LOOP_SECONDS / 2
-  state.candles.A = true
-  const hud = hudSnapshot(state)
-  assert.equal(hud.loop, 4)
-  assert.equal(hud.timeFraction, 0.5)
-  assert.equal(hud.candlesLit, 1)
-  assert.equal(hud.candles.A, true)
-  assert.equal(hud.fade, 0)
-  assert.equal(hud.prompt, null)
-  assert.equal(hudSnapshot(createInitialState(2)).timeFraction, 1)
+test('loop.js no longer owns a HUD projection, and the v2 one lives in src/ui', () => {
+  // slice 12 moved the projection into `src/ui/hud.js` and deleted the v1 one
+  // from here, so this module no longer exports a `hudSnapshot` at all. The store
+  // and the reducers around it are v1's and stay until slice 16 deletes them.
+  const loopSource = readFileSync(new URL('./src/game/loop.js', import.meta.url), 'utf8')
+  const hudSource = readFileSync(new URL('./src/ui/hud.js', import.meta.url), 'utf8')
+  assert.equal(/export function hudSnapshot/.test(loopSource), false, 'loop.js grew a second HUD projection')
+  assert.match(hudSource, /export function hudSnapshot/)
 })
 
 // ---------------------------------------------------------------------------
@@ -5305,6 +5307,755 @@ test('one candle per loop, then the door opens and the chamber is a walk away', 
   assert.ok(isInsideChamber({ x: centre.x, z: centre.z }, centre))
   assert.ok(!isInsideChamber({ x: centre.x + CELL_SIZE, z: centre.z }, centre))
   assert.ok(!isInsideChamber(null, centre))
+})
+
+// ---------------------------------------------------------------------------
+// v2 slice 12 — the HUD and the accessibility layer
+// ---------------------------------------------------------------------------
+
+section('HUD and accessibility (v2 slice 12)')
+
+const HUD_SOURCE = readFileSync(new URL('./src/ui/hud.js', import.meta.url), 'utf8')
+const HUD_JSX_SOURCE = readFileSync(new URL('./src/ui/Hud.jsx', import.meta.url), 'utf8')
+const PAUSE_JSX_SOURCE = readFileSync(new URL('./src/ui/PauseOverlay.jsx', import.meta.url), 'utf8')
+const STYLES_SOURCE = readFileSync(new URL('./src/ui/styles.css', import.meta.url), 'utf8')
+
+/** A state object shaped like the one the world writes, for the projection. */
+function hudState(patch = {}) {
+  return {
+    phase: PHASE.PLAYING,
+    loop: 1,
+    fade: 0,
+    prompt: null,
+    fps: 0,
+    showFps: false,
+    portals: { A: false, B: false, C: false },
+    hammerHeld: false,
+    hammerFlash: 0,
+    hold: 0,
+    awareness: 0,
+    breath: 1,
+    exhausted: false,
+    creaturePresent: false,
+    finale: false,
+    finaleLevel: 0,
+    paused: false,
+    motionPreference: null,
+    reducedMotionSystem: false,
+    ...patch,
+  }
+}
+
+test('the projection returns a closed set of fields, and none of them is a meter', () => {
+  // §6.4 "no awareness bar", §7.3's undrawn breath, §14.1's "no distance
+  // readout": all three are claims about what the HUD is *able* to show, so they
+  // are checked against the key set rather than against a stylesheet. Adding a
+  // readout to this game now means adding a line to `HUD_FIELDS` first.
+  const painted = hud.hudSnapshot(hudState())
+  assert.deepEqual([...hud.HUD_FIELDS].sort(), Object.keys(painted).sort(), 'the projection grew a field')
+  for (const forbidden of ['awareness', 'breath', 'distance', 'creatureDistance', 'awarenessLevel', 'stamina', 'meter']) {
+    assert.equal(forbidden in painted, false, `the projection exposes ${forbidden}`)
+  }
+  // and the three sigils plus the hammer, which is the whole of §14.1
+  assert.equal(painted.sigils.length, 3)
+  assert.equal(painted.hammer.state, hud.SIGIL_DARK)
+})
+
+test('the projection is total over a v1-shaped store', () => {
+  // the store is still built from v1's `createInitialState` until slice 16, so
+  // every v2 field arrives as `undefined` on the first frame and a projection
+  // that assumed otherwise would take the title screen down with it
+  const painted = hud.hudSnapshot(createInitialState(1, PHASE.START))
+  assert.equal(painted.phase, PHASE.START)
+  assert.equal(painted.loop, 1)
+  assert.equal(painted.prompt, null)
+  assert.equal(painted.reducedMotion, false)
+  assert.deepEqual([...hud.HUD_FIELDS].sort(), Object.keys(painted).sort())
+})
+
+test('every string the HUD can paint comes from a closed vocabulary', () => {
+  // §14.1: "No new text is introduced." The loop counter is a *number* in a
+  // dedicated slot. Everything else the projection can hand a renderer is a
+  // token, and the whole set is written down here: the two prompt kinds, the
+  // three portal ids, the two sigil states and the four inks. There is no string
+  // in the projection from which a label could be assembled, which is the
+  // checkable form of "no new text".
+  const vocabulary = new Set([
+    ...hud.HUD_STRING_VALUES,
+    ...Object.values(PHASE),
+    ...hood.PORTAL_IDS,
+    hud.SIGIL_LIT,
+    hud.SIGIL_DARK,
+    hud.PORTAL_SIGIL_LIT,
+    hud.PORTAL_SIGIL_DARK,
+    hud.PORTAL_SIGIL_INK,
+    hud.HAMMER_SIGIL_LIT,
+    hud.HAMMER_SIGIL_DARK,
+    hud.HAMMER_SIGIL_INK,
+  ])
+  const strings = new Set()
+  const walk = (value) => {
+    if (value === null) {
+      strings.add(null)
+      return
+    }
+    // a numeric string is SVG geometry (`strokeDashoffset`), not a label
+    if (typeof value === 'string') {
+      if (!Number.isFinite(Number(value))) strings.add(value)
+      return
+    }
+    if (typeof value === 'object') for (const inner of Object.values(value)) walk(inner)
+  }
+  for (const state of [hudState(), hudState({ prompt: 'portal' }), hudState({ prompt: 'hammer' })]) {
+    walk(hud.hudSnapshot(state))
+  }
+  for (const value of strings) {
+    assert.ok(vocabulary.has(value), `the projection can paint an unvouched string: ${JSON.stringify(value)}`)
+  }
+  // and the two that are load-bearing are the prompt kinds, exactly
+  assert.ok(strings.has('portal') && strings.has('hammer') && strings.has(null))
+  // nothing in the vocabulary reads as a phrase: the only multi-word token the
+  // HUD can emit is a phase, and §10.5 documents those four
+  for (const value of strings) {
+    if (value === null) continue
+    assert.equal(value.includes(' '), false, `${JSON.stringify(value)} reads like a label`)
+  }
+  assert.deepEqual([...Object.values(PHASE)].sort(), ['playing', 'reset', 'start', 'won'])
+})
+
+test('a portal sigil goes DARK when its portal is shut, and lit while it is live', () => {
+  // The one polarity in this slice that is genuinely easy to get backwards, and
+  // §14.1 is explicit: "cyan and lit, dark and extinguished". `state.portals[id]`
+  // is §5.3's *shut* flag, which is the opposite of v1's `candles[id]`, so the
+  // v1 mirror lit its three flames on progress and this one must not.
+  const shut = hud.portalSigils({ A: true, B: false, C: true })
+  assert.deepEqual(shut.map((s) => s.state), [hud.SIGIL_DARK, hud.SIGIL_LIT, hud.SIGIL_DARK])
+  assert.equal(hud.portalSigil(true), hud.SIGIL_DARK)
+  assert.equal(hud.portalSigil(false), hud.SIGIL_LIT)
+  // §5.3 is permanent, and the sigil has no way back: there is no `unshut`
+  const live = hud.portalSigils({ A: false, B: false, C: false })
+  assert.deepEqual(live.map((s) => s.state), [hud.SIGIL_LIT, hud.SIGIL_LIT, hud.SIGIL_LIT])
+  // and the hammer is dark until pickup, in its own family
+  assert.equal(hud.hammerMark(false).state, hud.SIGIL_DARK)
+  assert.equal(hud.hammerMark(true).state, hud.SIGIL_LIT)
+  assert.notEqual(hud.hammerMark(true).color, hud.portalSigils({})[0].color, 'the hammer is not a portal')
+})
+
+test('lit is a solid fill and extinguished is a hollow outline', () => {
+  // §14.3's first bullet, as geometry: the two states differ in *shape* before
+  // they differ in hue, which is what survives a greyscale screenshot.
+  const palette = { lit: hud.PORTAL_SIGIL_LIT, dark: hud.PORTAL_SIGIL_DARK, rim: '#ffffff' }
+  const lit = hud.sigilMark(hud.SIGIL_LIT, palette)
+  const dark = hud.sigilMark(hud.SIGIL_DARK, palette)
+  assert.equal(lit.filled, true)
+  assert.equal(dark.filled, false, 'an extinguished sigil is not hollow')
+  assert.notEqual(lit.glow, dark.glow)
+})
+
+test('every sigil state is legible in greyscale, on the shell background', () => {
+  // §12.2's own extinguished cyan is 1.36:1 on `--bg` — a mark nobody can see —
+  // so the HUD ink is a lifted member of the same family, and the two numbers
+  // below are what make that a rule rather than an opinion.
+  for (const ink of [hud.PORTAL_SIGIL_LIT, hud.PORTAL_SIGIL_DARK, hud.HAMMER_SIGIL_LIT, hud.HAMMER_SIGIL_DARK]) {
+    assert.ok(
+      hud.contrastRatio(ink, hud.HUD_BACKDROP) >= hud.SIGIL_MIN_CONTRAST,
+      `${ink} is invisible on the HUD backdrop (${hud.contrastRatio(ink, hud.HUD_BACKDROP).toFixed(2)}:1)`,
+    )
+  }
+  // the greyscale channel: with hue removed, lit and extinguished still separate
+  assert.ok(hud.luminanceRatio(hud.PORTAL_SIGIL_LIT, hud.PORTAL_SIGIL_DARK) >= hud.SIGIL_MIN_LUMINANCE_RATIO)
+  assert.ok(hud.luminanceRatio(hud.HAMMER_SIGIL_LIT, hud.HAMMER_SIGIL_DARK) >= hud.SIGIL_MIN_LUMINANCE_RATIO)
+  // and the two families do not collide, so nothing in the game is two things
+  assert.ok(hud.relativeLuminance(hud.PORTAL_SIGIL_LIT) < hud.relativeLuminance(hud.HAMMER_SIGIL_LIT))
+  // a lit sigil's keyline is drawn *over* its body, so the edge it draws has to
+  // clear 3:1 against the fill — otherwise the solid shape loses its outline and
+  // the sigil is a coloured blob with no edge in greyscale
+  assert.ok(hud.contrastRatio(hud.PORTAL_SIGIL_INK, hud.PORTAL_SIGIL_LIT) >= hud.SIGIL_MIN_CONTRAST)
+  assert.ok(hud.contrastRatio(hud.HAMMER_SIGIL_INK, hud.HAMMER_SIGIL_LIT) >= hud.SIGIL_MIN_CONTRAST)
+  // and the outline ink is the *same* in both states, so the fill is the only
+  // channel carrying the state at all
+  const litMark = hud.portalSigils({})[0]
+  const darkMark = hud.portalSigils({ A: true })[0]
+  assert.equal(litMark.stroke, darkMark.stroke, 'the outline ink changes with the state')
+  assert.notEqual(litMark.color, darkMark.color)
+  // §12.2: cyan is the objective and amber is the neighbourhood, and they mix
+  assert.equal(hud.PORTAL_SIGIL_LIT, '#3ad6d6')
+  assert.notEqual(hud.PORTAL_SIGIL_DARK, '#0b2b2b', 'the world ink is not the HUD ink')
+})
+
+test('the colour maths is a real WCAG implementation, not a stand-in', () => {
+  // white on black is the 21:1 anchor and black on black the 1:1 one; a broken
+  // transfer function would still produce a plausible-looking number for cyan
+  assert.ok(Math.abs(hud.contrastRatio('#ffffff', '#000000') - 21) < 1e-6)
+  assert.ok(Math.abs(hud.contrastRatio('#000000', '#000000') - 1) < 1e-6)
+  assert.ok(Math.abs(hud.relativeLuminance('#ffffff') - 1) < 1e-6)
+  assert.equal(hud.relativeLuminance('#000000'), 0)
+  assert.equal(hud.parseHex('nonsense'), null)
+  // #abc is the short form of #aabbcc, and both are the same colour
+  assert.equal(hud.relativeLuminance('#abc'), hud.relativeLuminance('#aabbcc'))
+})
+
+test('the hold ring reaches exactly 1, and its tick sits on the rule threshold', () => {
+  // §14.2 and §5.2 together. The ring's midpoint tick is the noise threshold
+  // communicated spatially, so the tick has to be at the same place the rule
+  // charges for the sound — derived from `PORTAL_NOISE_THRESHOLD`, never a
+  // literal, and asserted against the rule itself over the whole range.
+  assert.equal(hud.HOLD_RING.tick, rules.PORTAL_NOISE_THRESHOLD)
+  assert.equal(hud.holdRing(0).fraction, 0)
+  assert.equal(hud.holdRing(1).fraction, 1, 'the ring does not close')
+  assert.equal(hud.holdRing(1).loud, true)
+  assert.equal(hud.holdRing(0).loud, false)
+  // through the quantizer the world writes it on, 1 is still exactly 1
+  for (const steps of [1, hud.STEPS.hold, 48, 96, 1000]) {
+    assert.equal(hud.quantize(1, steps), 1, `quantize(1, ${steps}) is not 1`)
+    assert.equal(hud.quantize(0, steps), 0, `quantize(0, ${steps}) is not 0`)
+  }
+  // and the midpoint lands on a whole step, so the tick cannot fall between two
+  // painted frames
+  assert.equal(hud.quantize(rules.PORTAL_NOISE_THRESHOLD, hud.STEPS.hold), rules.PORTAL_NOISE_THRESHOLD)
+})
+
+test('the ring is loud exactly when the rule starts charging for the sound', () => {
+  // "emits its sound event only past the midpoint tick" — and "past" read as
+  // `>=`, because `rules.js` compares with `>=` and the world's own gate uses
+  // the same expression. One thousand fractions, compared against the rule's own
+  // answer for the same fraction rather than against a restatement of it.
+  for (let step = 0; step <= 1000; step += 1) {
+    const fraction = step / 1000
+    const rule = rules.portalShutProgress(0, fraction * rules.PORTAL_SHUT_SECONDS, true)
+    assert.equal(hud.holdLoud(fraction), rule.soundEmitted, `the ring disagrees at ${fraction}`)
+  }
+  // the rule is the authority on the value itself, too
+  assert.equal(rules.PORTAL_NOISE_THRESHOLD, 0.5)
+})
+
+test("the ring's geometry is a real 0 -> 1 -> 0 arc", () => {
+  // a sweep of the offset has to be linear and complete: a ring that fills and
+  // then empties is v1's heartbeat language, and §14.2 asks for that language
+  const full = hud.HOLD_RING.circumference
+  assert.ok(Math.abs(hud.holdRing(0).dashOffset - full) < 1e-9, 'a fresh ring is not empty')
+  assert.ok(Math.abs(hud.holdRing(1).dashOffset) < 1e-9, 'a full ring still has an offset')
+  assert.ok(Math.abs(hud.holdRing(0.5).dashOffset - full / 2) < 1e-9, 'the arc is not linear')
+  // out-of-range input is clamped rather than drawn outside the circle
+  assert.equal(hud.holdRing(-4).fraction, 0)
+  assert.equal(hud.holdRing(9).fraction, 1)
+  assert.equal(hud.holdRing(NaN).fraction, 0)
+  // and the tick is where the threshold is, in degrees from twelve o'clock
+  assert.equal(hud.holdRing(0).tickAngle, 180)
+})
+
+test('the ring is inactive without a prompt and active with one', () => {
+  assert.equal(hud.holdRing(0, null).active, false)
+  assert.equal(hud.holdRing(0, 'portal').active, true)
+  assert.equal(hud.holdRing(0, 'hammer').active, true)
+  // the projection carries the prompt through as the ring's kind, so the
+  // component never has to decide what is in reach
+  assert.equal(hud.hudSnapshot(hudState({ hold: 0.4, prompt: 'portal' })).ring.kind, 'portal')
+  assert.equal(hud.hudSnapshot(hudState({ hold: 0.4 })).ring.active, false)
+})
+
+test('the awareness tell tightens and coarsens monotonically, and only while present', () => {
+  // §6.4: the meter is read as a *trend* in two channels — a narrowing clear
+  // radius and a coarsening grain — never as a number. Both must be monotone, or
+  // the tell is unreadable, and the grain scale has to rise (bigger tiles =
+  // coarser) rather than fall.
+  let previous = null
+  for (let step = 0; step <= 200; step += 1) {
+    const value = step / 200
+    const tell = hud.awarenessTell(value, { present: true })
+    assert.ok(tell.vignette >= 0 && tell.vignette <= 1, `vignette out of range at ${value}`)
+    assert.ok(tell.grain >= 0 && tell.grain <= 1, `grain out of range at ${value}`)
+    assert.ok(tell.grainScale >= hud.AWARENESS_GRAIN_FINE, `the grain got finer at ${value}`)
+    if (previous) {
+      assert.ok(tell.vignette >= previous.vignette - 1e-12, `the vignette loosened at ${value}`)
+      assert.ok(tell.grain >= previous.grain - 1e-12, `the grain cleared at ${value}`)
+      assert.ok(tell.grainScale >= previous.grainScale - 1e-12, `the grain sharpened at ${value}`)
+    }
+    previous = tell
+  }
+  assert.equal(hud.awarenessTell(0, { present: true }).vignette, 0, 'an unaware creature darkens the screen')
+  assert.ok(hud.awarenessTell(1, { present: true }).vignette > 0)
+  // §6.4 plus §7.4: a banished or dormant creature is off the field, so a full
+  // meter belonging to something that is not there reads as nothing at all
+  assert.equal(hud.awarenessTell(1, { present: false }).vignette, 0)
+  assert.equal(hud.awarenessTell(1, { present: false }).grainScale, hud.AWARENESS_GRAIN_FINE)
+  // §6.2's own bands: investigating is visible, and a chase is more so
+  assert.ok(hud.awarenessTell(beast.AWARENESS_INVESTIGATE, { present: true }).vignette > 0)
+  assert.ok(
+    hud.awarenessTell(1, { present: true }).vignette > hud.awarenessTell(beast.AWARENESS_INVESTIGATE, { present: true }).vignette,
+  )
+  // the input is clamped, so a pinned ENRAGED meter (§10.2) cannot blow past the layer
+  assert.equal(hud.awarenessTell(5, { present: true }).vignette, hud.awarenessTell(1, { present: true }).vignette)
+  assert.equal(hud.awarenessTell(NaN, { present: true }).vignette, 0)
+})
+
+test('the breath tell rises with exhaustion and its pulse stays slow enough to be safe', () => {
+  // §7.3: the meter is a readout without a bar. The pulse period is the
+  // photosensitivity number — §14.3 wants steady values, and a sub-1 Hz opacity
+  // cycle is two orders of magnitude below the 3-30 Hz band that provokes
+  // photosensitive seizures while still reading unmistakably as breathing.
+  const fresh = hud.breathTell(1, false)
+  const tired = hud.breathTell(0.5, false)
+  const winded = hud.breathTell(0, true)
+  assert.ok(winded.vignette > tired.vignette, 'exhaustion does not darken the screen')
+  assert.ok(tired.vignette > fresh.vignette, 'tiring does not darken the screen')
+  assert.ok(fresh.amplitude > 0, 'a rested player does not breathe')
+  for (const tell of [fresh, tired, winded]) {
+    assert.ok(tell.period >= 2, `${tell.period}s is too fast to be a breath`)
+    assert.ok(1 / tell.period < 0.8, `${(1 / tell.period).toFixed(2)} Hz is a flicker, not a breath`)
+    assert.ok(tell.vignette >= 0 && tell.vignette <= 1)
+    assert.ok(tell.amplitude >= 0 && tell.amplitude <= 1)
+  }
+  // a winded player breathes faster than a rested one, and that is the only
+  // thing §7.3's exhaustion changes about the rhythm
+  assert.ok(winded.period < fresh.period)
+  assert.equal(hud.breathTell(1, true).vignette, winded.vignette, 'the flag and the meter are one fact')
+  // out-of-range breath clamps rather than inverting the readout, and it clamps
+  // towards *tired*: a breath value the world could not read must not read as a
+  // rested player
+  assert.equal(hud.breathTell(0, true).vignette, hud.breathTell(-3, true).vignette)
+  assert.equal(hud.breathTell(2, false).vignette, hud.breathTell(1, false).vignette)
+  assert.equal(hud.breathTell(NaN, false).vignette, winded.vignette)
+})
+
+test('the two tells share one vignette and can only ever reinforce each other', () => {
+  // §6.4's vignette and §7.3's vignette are the same layer. Two owners writing
+  // two inline styles on one element is a fight; the composition is a sum with a
+  // cap, so the worst case is a dark screen and never a layer past opaque, which
+  // is where two overlaid alphas would start cancelling.
+  const worst = hud.vignetteTell(hud.awarenessTell(1), hud.breathTell(0, true))
+  assert.ok(worst.level <= 1, 'the vignette went past opaque')
+  assert.ok(worst.breathAmplitude >= 0)
+  assert.ok(worst.breathAmplitude <= 1 - worst.level + 1e-12, 'the pulse can push the layer past opaque')
+  assert.equal(hud.vignetteTell(hud.awarenessTell(0), hud.breathTell(1, false)).level, 0)
+  // the clear radius is the awareness tell's alone, and it tightens with it
+  assert.equal(hud.vignetteTell(hud.awarenessTell(0), hud.breathTell(0, true)).clear, hud.VIGNETTE_CLEAR_OPEN)
+  assert.equal(hud.vignetteTell(hud.awarenessTell(1), hud.breathTell(0, true)).clear, hud.VIGNETTE_CLEAR_TIGHT)
+  assert.ok(hud.VIGNETTE_CLEAR_TIGHT < hud.VIGNETTE_CLEAR_OPEN, 'the vignette does not tighten')
+  // the composition is a sum, so it is symmetric in its two arguments' order
+  const a = hud.vignetteTell(hud.awarenessTell(0.8), hud.breathTell(0.3, false))
+  const b = hud.vignetteTell(hud.awarenessTell(0.8), hud.breathTell(0.3, false))
+  assert.equal(a.level, b.level)
+})
+
+test('the finale effect is rate-limited, monotone, and off under reduced motion', () => {
+  // §14.3: v1's grain and desat layers are "retained but rate-limited during the
+  // finale". A limiter is a claim about *time*, so it is driven here over a
+  // thousand frames of simulated `dt` and the number of times the painted level
+  // may move is counted.
+  let hold = hud.finaleEffectInit()
+  const seen = [hold.level]
+  for (let frame = 0; frame < 1000; frame += 1) {
+    hold = hud.finaleEffect(hold, 1 / 60, true)
+    seen.push(hold.level)
+  }
+  // six steps at 1.5 s each is nine seconds to full, and never a partial value
+  assert.equal(hold.level, 1, 'the finale never reached full')
+  const distinct = [...new Set(seen)]
+  assert.equal(distinct.length, hud.FINALE_EFFECT_STEPS + 1, 'the finale is not on its six-step grid')
+  for (const level of distinct) {
+    assert.ok(Math.abs(level * hud.FINALE_EFFECT_STEPS - Math.round(level * hud.FINALE_EFFECT_STEPS)) < 1e-9)
+  }
+  // and it is monotone: a screen effect that can go back down can flicker
+  for (let index = 1; index < seen.length; index += 1) {
+    assert.ok(seen[index] >= seen[index - 1], 'the finale level went backwards')
+  }
+  // the interval is respected: between two adoptions at least 1.5 s passes
+  const stamps = []
+  hold = hud.finaleEffectInit()
+  let elapsed = 0
+  for (let frame = 0; frame < 1000; frame += 1) {
+    const before = hold.level
+    elapsed += 1 / 60
+    hold = hud.finaleEffect(hold, 1 / 60, true)
+    if (hold.level !== before) stamps.push(elapsed)
+  }
+  for (let index = 1; index < stamps.length; index += 1) {
+    assert.ok(
+      stamps[index] - stamps[index - 1] >= hud.FINALE_EFFECT_INTERVAL - 1e-9,
+      `two level changes ${(stamps[index] - stamps[index - 1]).toFixed(2)}s apart`,
+    )
+  }
+  // §14.3's motion row: reduced motion removes the finale's effects entirely,
+  // and does so without waiting out the interval
+  const still = hud.finaleEffect({ level: 1, remaining: 0 }, 1 / 60, true, { reducedMotion: true })
+  assert.equal(still.level, 0)
+  // a target that is already met is not a change, however many frames pass
+  const settled = hud.finaleEffect({ level: 1, remaining: 5 }, 1 / 60, true)
+  assert.equal(settled.changed, false)
+  assert.equal(settled.level, 1)
+  // the limiter is pure, so it survives garbage history rather than NaN-ing
+  assert.equal(hud.finaleEffect({}, 1 / 60, true).level, 1 / hud.FINALE_EFFECT_STEPS)
+  assert.equal(hud.finaleEffect({ level: NaN, remaining: NaN }, 1 / 60, true).level, 1 / hud.FINALE_EFFECT_STEPS)
+})
+
+test("a run's finale level comes back down only through a full wipe", () => {
+  // §10.4's BEGIN AGAIN is the one place a reset is correct, and the level is
+  // part of that: the direction of travel is the only thing that is allowed to
+  // change, and only when the target does.
+  let hold = hud.finaleEffectInit()
+  for (let frame = 0; frame < 700; frame += 1) hold = hud.finaleEffect(hold, 1 / 60, true)
+  assert.equal(hold.level, 1)
+  const down = []
+  for (let frame = 0; frame < 700; frame += 1) {
+    hold = hud.finaleEffect(hold, 1 / 60, false)
+    down.push(hold.level)
+  }
+  assert.equal(hold.level, 0)
+  for (let index = 1; index < down.length; index += 1) {
+    assert.ok(down[index] <= down[index - 1], 'the wipe ramp is not monotone either')
+  }
+})
+
+test('the sigil flash decays on a clock, and slower and dimmer under reduced motion', () => {
+  // §14.3: the banish toll and §7.2's awakening both need a visual counterpart,
+  // so a deaf player loses the atmosphere of a swing and none of its
+  // information. It is a decaying *level* rather than an animation so the store
+  // can carry it and the toggle can damp it.
+  let level = 1
+  const frames = Math.round(hud.SIGIL_FLASH_SECONDS * 60)
+  for (let frame = 0; frame < frames; frame += 1) level = hud.flashDecay(level, 1 / 60).level
+  assert.equal(level, 0, 'the flash outlived its window')
+  assert.ok(hud.flashDecay(1, 1 / 60).level < 1, 'the flash does not fall at all')
+  assert.equal(hud.flashDecay(1, 0).level, 1, 'a zero frame still decays the flash')
+  assert.equal(hud.flashDecay(0, 1).level, 0)
+  assert.equal(hud.flashDecay(NaN, 1).level, 0)
+  // and the two answers compose where they meet — in the sigil, not the world —
+  // so the dimmer peak is a pure function the gate can see
+  assert.equal(hud.hammerMark(true, 1, 1).flash, 1)
+  assert.equal(hud.hammerMark(true, 1, 0.45).flash, 0.45, 'the damped flash is not dimmer')
+  assert.equal(hud.hammerMark(true, 0.5, 0.45).flash, 0.225)
+  assert.equal(hud.hammerMark(true, 1).flash, 1, 'the default amplitude is not full')
+  // reduced motion: the same information, longer and dimmer — never faster
+  assert.ok(hud.flashDecay(1, 1 / 60, { reducedMotion: true }).level > hud.flashDecay(1, 1 / 60).level)
+  assert.ok(hud.flashDecay(1, 1 / 60, { reducedMotion: true }).amplitude < 1)
+  assert.equal(hud.flashDecay(1, 1 / 60).amplitude, 1)
+  assert.ok(hud.SIGIL_FLASH_SECONDS_REDUCED > hud.SIGIL_FLASH_SECONDS)
+  // and the window is bounded below by the swing cooldown, so a held mouse button
+  // produces one flash per swing rather than one per frame
+  assert.ok(hud.SIGIL_FLASH_SECONDS * 2 > 0.55, 'the flash is faster than the swing cooldown')
+})
+
+test('reduced motion resolves the OS preference unless the player has overridden it', () => {
+  // §14.3 wants the toggle to be honest, and a single boolean cannot be honest
+  // in both directions at once: a player whose OS asked for reduced motion and
+  // who then presses the button in this game has expressed a preference this
+  // game is entitled to honour, and a second press puts them back.
+  assert.equal(hud.resolveReducedMotion({ system: true }), true)
+  assert.equal(hud.resolveReducedMotion({ system: false }), false)
+  assert.equal(hud.resolveReducedMotion({}), false, 'the default is motion on')
+  assert.equal(hud.resolveReducedMotion({ preference: false, system: true }), false, 'the override cannot win')
+  assert.equal(hud.resolveReducedMotion({ preference: true, system: false }), true, 'the override cannot be ignored')
+  assert.equal(hud.resolveReducedMotion({ preference: null, system: true }), true)
+  // it is a pure function of two arguments, and the media query is read by the
+  // world — a pure module that reached for `window` could not be in this harness
+  const code = HUD_SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+  assert.equal(/\bwindow\b|\bdocument\b|matchMedia/.test(code), false, 'hud.js reached for a global')
+})
+
+test('reduced motion suppresses exactly three things', () => {
+  // §14.3 names three: the head bob, the camera shake and the finale's screen
+  // effects. The flags are the only channel to those three consumers, so a fourth
+  // row here would be a fourth switch nobody asked for.
+  assert.deepEqual(hud.motionFlags(false), { headBob: true, cameraShake: true, finaleEffects: true })
+  assert.deepEqual(hud.motionFlags(true), { headBob: false, cameraShake: false, finaleEffects: false })
+  assert.deepEqual(Object.keys(hud.motionFlags(true)).sort(), ['cameraShake', 'finaleEffects', 'headBob'])
+})
+
+test('the reduced-motion path through the tells keeps the information', () => {
+  // the commitment is "a deaf player loses atmosphere, not information" and the
+  // same has to be true for a player who cannot take the motion: the tells go
+  // steady and dimmer, never to nothing
+  const still = hud.awarenessTell(1, { present: true, reducedMotion: true })
+  assert.ok(still.vignette > 0, 'a full meter is invisible under reduced motion')
+  assert.ok(still.grain > 0)
+  assert.equal(still.grainScale, hud.AWARENESS_GRAIN_FINE, 'the grain is still moving under reduced motion')
+  assert.equal(hud.breathTell(0, true, { reducedMotion: true }).amplitude, 0, 'the breath still pulses')
+  assert.ok(hud.breathTell(0, true, { reducedMotion: true }).vignette > 0, 'exhaustion is invisible')
+  // and the projection agrees, because the world and the HUD resolve the same
+  // preference through the same function
+  const painted = hud.hudSnapshot(hudState({ awareness: 1, breath: 0, exhausted: true, reducedMotionSystem: true }))
+  assert.equal(painted.reducedMotion, true)
+  assert.equal(painted.breathPulse.amplitude, 0)
+  assert.ok(painted.vignette.level > 0, 'the whole layer went dark under reduced motion')
+  assert.ok(hud.hudSnapshot(hudState({ awareness: 1, breath: 0, exhausted: true })).breathPulse.amplitude > 0)
+})
+
+test('the quantizer is what keeps React from re-rendering sixty times a second', () => {
+  // `createStore` skips notifying when every patched key is `===`, so the
+  // quantizer is the whole mechanism. It has to land on exact endpoints (the
+  // ring must still close at 1) and it has to map `NaN` to a stable 0, because
+  // `NaN !== NaN` would re-notify every frame forever.
+  for (const steps of [hud.STEPS.hold, hud.STEPS.awareness, hud.STEPS.breath, hud.STEPS.flash, hud.STEPS.finale]) {
+    assert.ok(steps > 0, 'a zero-step quantizer was exported')
+    assert.equal(hud.quantize(0.5, steps) * steps, Math.round(0.5 * steps))
+    assert.equal(hud.quantize(NaN, steps), 0)
+    assert.equal(hud.quantize(Infinity, steps), 0)
+    assert.equal(hud.quantize(-Infinity, steps), 0)
+    assert.equal(hud.quantize(undefined, steps), 0)
+    assert.equal(hud.quantize(2, steps), 1)
+    assert.equal(hud.quantize(-2, steps), 0)
+  }
+  assert.equal(hud.quantize(0.4, 0), 0.4, 'a zero-step quantizer must pass the value through')
+  // the hold grid is *even*, so §5.2's 0.5 lands on a painted step rather than
+  // between two frames — that is the whole reason it is 24 and not 20
+  assert.equal(hud.STEPS.hold % 2, 0, 'the midpoint tick would fall between two frames')
+  // the awareness grid has to resolve §6.2's two bands and still be coarse enough
+  // to be a few repaints a second rather than sixty
+  assert.ok(hud.STEPS.awareness >= beast.AWARENESS_INVESTIGATE * 16, 'the awareness grid cannot resolve the investigate band')
+  assert.ok(hud.STEPS.awareness <= 64, 'the awareness grid is finer than a few repaints a second')
+  // and the two decayed levels are small grids, because they are *held* values
+  // rather than per-frame signals
+  assert.ok(hud.STEPS.flash <= 12 && hud.STEPS.finale <= 8)
+})
+
+test('clamp01 is total, which is what lets the projection read raw frame values', () => {
+  for (const value of [0, 0.5, 1, -1, 2, NaN, Infinity, -Infinity, undefined, null, '0.5']) {
+    const clamped = hud.clamp01(value)
+    assert.ok(clamped >= 0 && clamped <= 1, `clamp01(${String(value)}) escaped to ${clamped}`)
+    assert.ok(Number.isFinite(clamped))
+  }
+  assert.equal(hud.clamp01(0.25), 0.25)
+})
+
+test('the HUD paints no text but the loop counter and the key hint', () => {
+  // §14.1: "No new text is introduced." The two overlays are exempt by their own
+  // argument (a menu that cannot say anything is not a menu), so this greps the
+  // HUD's JSX for text nodes and asserts the exact set v1 was allowed: the
+  // `LOOP` label, and the `E` key hint — which is a named constant, so a grep for
+  // text nodes cannot see it and the constant is checked by value instead.
+  const textNodes = [...HUD_JSX_SOURCE.matchAll(/>([^<>{}]+)</g)]
+    .map((match) => match[1].trim())
+    .filter((text) => /[a-z]/i.test(text))
+  assert.deepEqual([...new Set(textNodes)].sort(), ['LOOP'])
+  assert.match(HUD_JSX_SOURCE, /const PROMPT_KEY = 'E'/, 'the key hint is not a single named glyph')
+  assert.match(HUD_JSX_SOURCE, /\{hud\.loop\}/, 'the loop counter is not the number §9.2 wants')
+  // the awareness and breath numbers are read into the file only as tell levels
+  assert.equal(/hud\.awareness|hud\.breath\b/.test(HUD_JSX_SOURCE), false, 'the HUD reads a meter')
+  // and the FPS counter is a number in its own slot, not a label
+  assert.match(HUD_JSX_SOURCE, /\{hud\.fps\}/)
+})
+
+test('the post layers are driven by variables, and reduced motion can stop them', () => {
+  // the tells are painted as custom properties and oscillated by CSS, which is
+  // what keeps a 2.2 s breath off the React path — and it is only reachable
+  // because §14.3's switch arrives as a *class*: a store flag cannot reach a
+  // running keyframe, and `animation: none` is the only thing that stops one.
+  for (const layer of ['vignette', 'grain', 'desat']) {
+    assert.match(STYLES_SOURCE, new RegExp(`\\.${layer} \\{`), `${layer} is gone from the stylesheet`)
+    assert.match(HUD_JSX_SOURCE, new RegExp(`className=[{\`"][^\\n]*${layer}`), `${layer} is not painted by the HUD`)
+  }
+  for (const variable of ['--vignette', '--vignette-clear', '--breath-amp', '--breath-period', '--grain-opacity', '--grain-scale', '--finale']) {
+    assert.ok(HUD_JSX_SOURCE.includes(variable), `the HUD never paints ${variable}`)
+    assert.ok(STYLES_SOURCE.includes(variable), `${variable} is never read`)
+  }
+  assert.match(STYLES_SOURCE, /@property --pulse/, 'the breath pulse is not a registered property')
+  assert.match(STYLES_SOURCE, /animation: none !important/, 'reduced motion cannot stop a keyframe')
+  assert.match(HUD_JSX_SOURCE, /hud--still/, 'the HUD has no reduced-motion class')
+  // the baseline grain is v1's, and the finale swaps it for something slower —
+  // §14.3 rate-limits the finale, and rate-limiting a 4.5 Hz jitter means
+  // replacing it, not merely dimming it
+  assert.match(STYLES_SOURCE, /\.grain--finale \{[^}]*animation: grain-jitter 2\.2s/)
+  assert.ok(/animation: grain-jitter 0\.66s/.test(STYLES_SOURCE), "v1's baseline grain animation was dropped")
+  // and nothing new was added to the DOM: the same three layers, four sigils
+  assert.equal((HUD_JSX_SOURCE.match(/<Sigil /g) ?? []).length, 2, 'the sigil row is not one map plus one hammer')
+  // one owner per layer, which is the real claim: §6.4's vignette and §7.3's
+  // vignette are the *same* element, so a second one would be the two tells
+  // fighting over a layer instead of composing on it
+  for (const layer of ['vignette', 'grain', 'desat']) {
+    const owners = [...HUD_JSX_SOURCE.matchAll(new RegExp(`className=[{\`"][^\\n]*${layer}`, 'g'))]
+    assert.equal(owners.length, 1, `${layer} has ${owners.length} owners in the HUD`)
+  }
+})
+
+test("v1's flame sigils and heartbeat line are gone from the stylesheet and the HUD", () => {
+  // §14.1 replaces three flames with three portals and the hammer; the heartbeat
+  // line was a *countdown*, and v2 has no countdown (slice 09 pinned it full and
+  // §9.2 counts captures instead). Keeping either would be keeping a v1 promise
+  // this game does not make.
+  for (const gone of ['flame-sigil', 'hud__candles', 'hud__timer', 'hud__heartbeat', 'heartbeat-throb']) {
+    assert.equal(STYLES_SOURCE.includes(gone), false, `${gone} survived in the stylesheet`)
+    assert.equal(HUD_JSX_SOURCE.includes(gone), false, `${gone} survived in the HUD`)
+  }
+  assert.equal(/timeFraction|candles|doorOpen/.test(HUD_JSX_SOURCE), false, 'the HUD still reads a v1 field')
+})
+
+test('the pause card is overlay chrome and the world owns the flag', () => {
+  // §10.5: the finale is a flag rather than a fifth phase, and §14.3's pause is a
+  // flag for the same reason — a player who pauses during a capture's black has
+  // not invented a phase. `PHASE` therefore still has exactly four members, and
+  // the card reads a store field rather than owning one.
+  assert.equal(Object.keys(PHASE).length, 4, 'a fifth phase appeared')
+  assert.equal(PHASE.PAUSED, undefined, 'pause became a phase')
+  assert.match(WORLD_SOURCE, /setPaused\(paused\) \{/, 'the pause flag is not written in one place')
+  assert.match(APP_SOURCE, /hud\.paused \?/, 'the card is not driven by the projection')
+  // Esc is the documented key and pointer-lock loss is the documented trigger
+  assert.match(WORLD_SOURCE, /e\.code === 'Escape'/)
+  assert.match(WORLD_SOURCE, /pointerlockchange/)
+  // and the card is a sibling of the other two overlays, not a fifth thing in
+  // `.hud` — which is what keeps §14.1's "no new text" a HUD-scoped promise
+  assert.match(PAUSE_JSX_SOURCE, /overlay--pause/)
+  assert.match(APP_SOURCE, /PauseOverlay/)
+  assert.equal(HUD_JSX_SOURCE.includes('PauseOverlay'), false, 'the pause card moved into the HUD')
+})
+
+test('the pause freezes the simulation before any of it runs', () => {
+  // §14.3: "freezes the simulation completely, including the creature". The
+  // early return has to be *before* `animTime` moves and before the phase
+  // machine, or the creature's clocks keep running behind the card — which is
+  // the one failure the design singles out by name.
+  const start = WORLD_SOURCE.indexOf('  update(dt) {')
+  const body = WORLD_SOURCE.slice(start, WORLD_SOURCE.indexOf('\n  }', start))
+  const pauseAt = body.indexOf('if (this.paused)')
+  const clockAt = body.indexOf('this.animTime += dt')
+  const viewAt = body.indexOf('this._updateCreatureView(dt)')
+  assert.ok(pauseAt > 0 && clockAt > 0 && viewAt > 0, 'update() no longer has the three landmarks')
+  assert.ok(pauseAt < clockAt, 'the pause returns after the world clock has moved')
+  assert.ok(pauseAt < viewAt, 'the pause returns after the creature has been ticked')
+  // and it still mirrors the store, or the card would be shown over a HUD that
+  // had stopped updating
+  assert.match(body.slice(pauseAt), /this\._syncHud\(\)/)
+})
+
+test('the world quantizes what it writes, and writes the portals map only on a change', () => {
+  // the store is the only channel to React, and `createStore` compares patched
+  // keys with `!==`, so an unquantized awareness would repaint the HUD sixty
+  // times a second and a fresh `portals` object every frame would do it even
+  // with nothing changed at all
+  assert.match(WORLD_SOURCE, /this\._awareness = hud\.quantize\(step\.awareness, hud\.STEPS\.awareness\)/, 'awareness is written unquantized')
+  assert.match(WORLD_SOURCE, /hold: hud\.quantize\(/, 'the hold is written unquantized')
+  assert.match(WORLD_SOURCE, /if \(key !== this\._sigilKey\)/, 'the sigil key guard is gone')
+  assert.match(WORLD_SOURCE, /patch\.portals = \{ \.\.\.this\.state\.portals \}/)
+  // and the world reaches into `src/ui/` for the grid, never for the projection:
+  // the HUD's shape is the HUD's business
+  assert.match(WORLD_SOURCE, /import \* as hud from '\.\.\/ui\/hud\.js'/)
+  assert.equal(/hud\.hudSnapshot/.test(WORLD_SOURCE), false, 'the world projects the HUD itself')
+  assert.equal(/hud\.portalSigils|hud\.awarenessTell|hud\.breathTell|hud\.vignetteTell/.test(WORLD_SOURCE), false, 'the world draws a tell')
+})
+
+test('the player takes a head-bob switch as a boolean and applies it at once', () => {
+  // §14.3's motion row reaches the camera through one multiplier on both terms,
+  // so the bob and the sway go together, and `bobPhase` is left running so that
+  // turning motion back on resumes the gait rather than snapping the camera.
+  const start = PLAYER_SOURCE.indexOf('  _applyCamera()')
+  const camera = PLAYER_SOURCE.slice(start, PLAYER_SOURCE.indexOf('\n  }', start))
+  // the comment in that method names `bobScale` too, so the code is read alone
+  const code = camera.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+  assert.equal((code.match(/bobScale/g) ?? []).length, 2, 'the bob and the sway do not share one switch')
+  assert.equal(/bobPhase = 0/.test(camera), false, 'the stride clock is being reset')
+  assert.match(PLAYER_SOURCE, /  setHeadBob\(enabled\) \{/)
+  assert.match(PLAYER_SOURCE, /this\.bobScale = enabled === false \? 0 : 1/)
+  // and it is a boolean, not a scale: a comfort setting is on or off. The only
+  // two writes in the file are the constructor's default and the setter, so
+  // nothing else in the game can quietly scale the bob.
+  const writes = [...PLAYER_SOURCE.matchAll(/bobScale = ([^\n;]+)/g)].map((m) => m[1].trim())
+  assert.deepEqual(writes, ['1', 'enabled === false ? 0 : 1'])
+  assert.match(PLAYER_SOURCE, /this\.bobScale = 1/)
+})
+
+test('pause drops the held keys and the pending swing', () => {
+  // §5.2's hold is a commitment; a commitment that re-arms itself because a menu
+  // was open is not a commitment, and a pause caught mid-click must not resume
+  // as a banish the player never aimed
+  const start = WORLD_SOURCE.indexOf('  setPaused(paused) {')
+  const setPaused = WORLD_SOURCE.slice(start, WORLD_SOURCE.indexOf('\n  }', start))
+  assert.match(setPaused, /this\.player\.releaseAllKeys\(\)/)
+  // and it must NOT drain the swing through `consumeSwing`: that is the door that
+  // *performs* a swing and fires the callback, so using it to throw one away
+  // would banish something on the frame the player opened a menu
+  assert.equal(/consumeSwing/.test(setPaused), false, 'the pause performs a swing instead of dropping it')
+  assert.match(PLAYER_SOURCE, /releaseAllKeys\(\) \{[\s\S]*?this\.swingRequested = false/)
+  // both halves of the lock dance, in the order that makes them safe: the flag
+  // first so the lock-change it causes is a no-op, and the grace window before
+  // the re-lock so a slow round trip cannot re-pause the game
+  assert.ok(setPaused.indexOf('this.paused = next') < setPaused.indexOf('exitPointerLock'), 'the lock is released before the flag is set')
+  assert.match(setPaused, /_lockGraceUntil/)
+  assert.ok(setPaused.indexOf('_lockGraceUntil') < setPaused.indexOf('requestLock'), 'no grace window before the re-lock')
+  // one-way: losing the lock pauses, and never resumes
+  const lockStart = WORLD_SOURCE.indexOf('    this._onLockChange = ()')
+  const onLockChange = WORLD_SOURCE.slice(lockStart, WORLD_SOURCE.indexOf('\n    }', lockStart))
+  assert.match(onLockChange, /this\.setPaused\(true\)/)
+  assert.equal(/setPaused\(false\)/.test(onLockChange), false, 'losing the lock can un-pause the game')
+  // and Esc is a toggle, gated on a run actually being in progress
+  assert.match(WORLD_SOURCE, /e\.code === 'Escape' && this\.startedOnce && this\.phase === PHASE\.PLAYING/)
+  assert.match(WORLD_SOURCE, /  togglePause\(\) \{/)
+  // the one-shot interact helper is frozen by the same flag
+  assert.match(WORLD_SOURCE, /if \(this\.phase !== PHASE\.PLAYING \|\| this\.paused\) return false/)
+})
+
+test('a paused frame routes silence rather than freezing a rasp at its last gain', () => {
+  // `routeAudio` sends every sustained row on every started frame, so a paused
+  // world that simply stopped calling the router would hold a winded player's
+  // breath for as long as they sat in the menu. The pause therefore answers with
+  // the title screen's own frame — the one moment in the game where nothing is
+  // playing at all — which drops every sustained voice and pulls the drone back.
+  assert.match(WORLD_SOURCE, /if \(this\.paused\) return \{ started: false \}/)
+  assert.equal((WORLD_SOURCE.match(/_audioFrame\(\)/g) ?? []).length, 2, 'the audio frame is not built in one place')
+  assert.deepEqual(audio.routeAudio({ started: false }), [], 'the silence frame is not silent')
+  // and the world's one audio call is still the router, on paused frames too
+  assert.match(WORLD_SOURCE, /if \(this\.paused\) \{\n      this\._updateAudio\(dt\)/)
+})
+
+test('the world adds a sigil flash on both of the tolls §14.3 names', () => {
+  // "the banish toll has a sigil flash" — and §7.2's awakening is the same sigil,
+  // so the player's eye learns one place to look for "something rang"
+  assert.match(WORLD_SOURCE, /if \(step\.swing && step\.swing\.result === 'banish'\) this\.hammerFlash = 1/)
+  assert.equal((WORLD_SOURCE.match(/this\.hammerFlash = 1/g) ?? []).length, 2, 'the flash is raised somewhere other than the two tolls')
+  // it decays on the world clock, because a decay needs one, and its dimmer peak
+  // under reduced motion is a second number the projection composes with the level
+  assert.match(WORLD_SOURCE, /hud\.flashDecay\(this\.hammerFlash, dt/)
+  assert.match(WORLD_SOURCE, /hammerFlashAmplitude: this\._flashAmplitude/)
+  assert.match(WORLD_SOURCE, /this\._flashAmplitude = flash\.amplitude/)
+  // and a capture or a full wipe clears it
+  assert.match(WORLD_SOURCE, /this\.hammerFlash = 0/)
+})
+
+test('the finale effect is owned by the world and reset by the wipe', () => {
+  // §15.1 gives the world the post-processing role, and §10.4's wipe is the one
+  // place a full reset is correct — the level goes back to zero with everything
+  // else, and ramps up again on the new run's own clock
+  assert.match(WORLD_SOURCE, /hud\.finaleEffect\(this\.finaleEffect, dt, this\.state\.finale/)
+  // the constructor, a full wipe and a reduced-motion switch: three, no more
+  assert.equal((WORLD_SOURCE.match(/this\.finaleEffect = hud\.finaleEffectInit\(\)/g) ?? []).length, 3)
+  // and reduced motion stops it being advanced at all
+  assert.match(WORLD_SOURCE, /if \(!this\._motion\.finaleEffects\) return/)
+})
+
+test('the camera shake is gated on both sides of reduced motion', () => {
+  // the outbound gate is obvious; the inbound one is the one that bites. A
+  // capture under reduced motion must not *accumulate* a shake that is then
+  // never applied, or turning the setting back off mid-run would release a punch
+  // the player was not there for
+  assert.match(WORLD_SOURCE, /  addShake\(amount\) \{\n    if \(!this\._motion\.cameraShake\) return/)
+  assert.match(WORLD_SOURCE, /_applyShake\(dt\) \{\n    if \(!this\._motion\.cameraShake\) \{/)
+  // and the world still owns all three consumers of the preference
+  assert.match(WORLD_SOURCE, /this\.player\?\.setHeadBob\(this\._motion\.headBob\)/)
+  assert.match(WORLD_SOURCE, /if \(!this\._motion\.cameraShake\) this\.shake = 0/)
+  assert.match(WORLD_SOURCE, /if \(!this\._motion\.finaleEffects\) this\.finaleEffect = hud\.finaleEffectInit\(\)/)
+})
+
+test('the motion preference is read from the world, guarded for the headless harness', () => {
+  // `verify-world.mjs`'s window stub has no `matchMedia`, and this slice must
+  // not change *how* that harness fails — slice 14 owns repairing it, and a
+  // constructor that throws on a missing media query would replace a known
+  // failure with a new one
+  assert.match(WORLD_SOURCE, /typeof window\.matchMedia === 'function'/)
+  assert.match(WORLD_SOURCE, /typeof document !== 'undefined'/)
+  assert.match(WORLD_SOURCE, /document\.removeEventListener\?\./, 'teardown would throw on the stub')
+  // and the teardown removes the two new listeners, or a restarted world leaks
+  assert.match(WORLD_SOURCE, /_motionQuery\?\.removeEventListener\?\./)
+  assert.match(WORLD_SOURCE, /document\.addEventListener\('pointerlockchange', this\._onLockChange\)/)
+})
+
+test('the world still makes exactly one audio call, and the router still owns the frame', () => {
+  // §13's discipline, re-asserted: slice 12 added a pause branch and had no
+  // business reaching for a voice from it
+  const calls = [...WORLD_SOURCE.matchAll(/this\.audio\?\.\s*(\w+)/g)].map((m) => m[1])
+  assert.deepEqual([...new Set(calls)].sort(), ['stopPortalHums', 'update', 'winChord'])
+  assert.equal(calls.filter((name) => name === 'update').length, 1)
+  for (const field of audio.AUDIO_FRAME_FIELDS) {
+    assert.ok(new RegExp(`\\b${field}:`).test(WORLD_SOURCE), `the world never fills in ${field}`)
+  }
 })
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,14 @@
  * - seven slice-11 audio checks are **parked in a block comment at the bottom**,
  *   transcribed from a working run. They are the deliverable slice 14 should start
  *   from alongside the ten slice-10 ones above them.
+ * - slice 12 added **nine more parked checks in the same block**, covering the
+ *   v2 HUD mirror, §14.3's pause and its reduced-motion toggle. Those nine are
+ *   the only ones in this file that were written with the harness already working
+ *   — validated in a scratch copy of this file whose 2D context had the drawing
+ *   surface `streetView`'s procedural textures need, which is precisely the stub
+ *   work §15.3 hands slice 14. The scratch copy is not committed. `hud` is
+ *   imported for them alongside `beast` and `hood`; all three are read only by
+ *   the parked blocks, which is why the linter calls all three unused.
  *
  * Run: node verify-world.mjs   (exit code 0 = the whole loop works)
  */
@@ -97,6 +105,9 @@ const { cellToWorld } = await import('./src/game/maze.js')
 // nothing for the live block — and it is two lines less for slice 14 to rediscover.
 const beast = await import('./src/game/creature.js')
 const hood = await import('./src/game/neighborhood.js')
+// slice 12: the HUD projection, which the parked block below asserts against.
+// Pure, so importing it here costs the live block nothing.
+const hud = await import('./src/ui/hud.js')
 
 function makeFakeRenderer() {
   return {
@@ -752,8 +763,327 @@ check('dispose() stops the hums it started', () => {
   audio.calls.length = 0
   second.dispose()
   assert.ok(audio.calls.includes('stopPortalHums'), 'the hums outlived the world')
+// ---------------------------------------------------------------------------
+// slice 12 — the HUD mirror, pause, and motion sensitivity (PARKED for slice 14)
+// ---------------------------------------------------------------------------
+//
+// Nine checks, transcribed from a working run rather than sketched — and unlike
+// the two blocks above them, these are the first ones in this file that were
+// written *after* the harness was stood up in a scratch copy: the parked
+// slice-10/11 blocks were transcribed from runs that only the game's own code
+// path had driven, whereas these were run against a real constructed world with
+// a 2D context extended far enough for `streetView`'s procedural textures, which
+// is exactly the stub work §15.3 hands slice 14. The scratch harness is not
+// committed; the two lines it needed on top of the five-member stub are noted at
+// the top of this file.
+//
+// WHAT THESE COVER, AND WHY IT IS ALL HERE
+// ---------------------------------------
+// - the sigil state tracking portal state through a capture and a wipe, which is
+//   §14.1's "lit" polarity and the one thing in this slice that was genuinely
+//   easy to get backwards;
+// - the ring closing on *exactly* 1.0, its tick crossing on the same frame as
+//   §5.2's sound event, and its 0 -> 1 -> 0 bleed, which is §14.2;
+// - pause freezing the creature, the player, every clock in the world, and the
+//   held keys — §14.3's "freezes the simulation completely", and the failure the
+//   design singles out by name;
+// - pointer-lock loss pausing one-way, with the grace window that keeps the
+//   pause's own lock release from re-pausing the game;
+// - reduced motion suppressing the head bob, the camera shake (on *both* sides)
+//   and the finale ramp, and restoring all three;
+// - the mirror's repaint budget, which is the only assertion that the quantizer
+//   is on the path rather than merely present in the source;
+// - the awareness tell being fed the real meter, and §7.4's banish stopping it.
+//
+// MUTATION-TESTED, because a check that cannot fail is worse than no check
+// -----------------------------------------------------------------------
+// Seven mutations were tried and the suite caught six: never re-locking into a
+// pause, not dropping held keys, a head bob that ignores the switch, an
+// unquantized awareness, a shake banked while suppressed, and a finale ramp that
+// ignores reduced motion. Two survived and both are honest:
+//   - dropping the `|| this.paused` guard in `_onLockChange` is *equivalent*,
+//     because `setPaused(true)` on an already-paused world is a no-op. The guard
+//     stays because it documents the intent, and the pure gate pins its source.
+//   - draining a pending swing with `consumeSwing()` instead of
+//     `releaseAllKeys()` is unobservable *here*, because the world never sets
+//     `onSwing` — but it is wrong, and it is wrong in a way that would banish
+//     something the moment the real callback existed. Slice 12 removed the call
+//     rather than the test, and `verify.mjs` now asserts the absence directly.
+
+// --- slice 12: the HUD mirror, pause, and motion sensitivity ----------------
+
+check('the sigil state tracks portal state through a reset', () => {
+  game.restart()
+  run(game, 1.6)
+  const shot = () => game.store.get().portals
+  assert.deepEqual(Object.values(shot()), [false, false, false], 'a fresh run is not all-lit')
+  // shut one for real: a held key, a real hold, through the world's own verb
+  const entry = game.streetView.portals[0]
+  const spot = game.streetView.worldOf(entry.position)
+  game.player.teleport(spot.x, spot.z, 0)
+  game.player.pressKey('KeyE')
+  run(game, 1.4)
+  game.player.releaseKey('KeyE')
+  assert.equal(shot()[entry.id], true, 'the portal did not shut')
+  assert.equal(Object.values(shot()).filter(Boolean).length, 1)
+  // §9.1: a capture keeps shut portals, so the sigil has to still be dark
+  game._capture()
+  run(game, 1.4)
+  assert.equal(shot()[entry.id], true, 'a capture un-shut a portal, or the sigil re-lit itself')
+  assert.equal(Object.values(shot()).filter(Boolean).length, 1)
+  // and the *wipe* is the one place they come back, which is §10.4
+  game.restart()
+  run(game, 0.3)
+  assert.deepEqual(Object.values(shot()), [false, false, false], 'BEGIN AGAIN did not restore the sigils')
+})
+
+check('the hold ring reaches exactly 1.0 and its tick passes the noise threshold', () => {
+  game.restart()
+  run(game, 1.6)
+  const entry = game.streetView.portals[0]
+  const spot = game.streetView.worldOf(entry.position)
+  game.player.teleport(spot.x, spot.z, 0)
+  game.update(DT) // one frame, so the verb has run and the prompt is on screen
+  assert.equal(game.store.get().hold, 0)
+  assert.equal(game.store.get().prompt, 'portal', 'standing at a portal shows no prompt')
+  const seen = []
+  game.player.pressKey('KeyE')
+  for (let i = 0; i < Math.round(1.25 / DT); i += 1) {
+    game.update(DT)
+    seen.push(game.store.get().hold)
+  }
+  game.player.releaseKey('KeyE')
+  // the ring is the one new geometry, and it has to close *exactly*
+  assert.equal(Math.max(...seen), 1, `the ring peaked at ${Math.max(...seen)}`)
+  // the tick and the sound event cross on the same frame, by construction
+  const firstLoud = seen.findIndex((value) => value >= 0.5)
+  assert.ok(firstLoud > 0, 'the ring never reached its midpoint tick')
+  const progressAtTick = game.state.progress[entry.id]
+  assert.ok(progressAtTick >= 0.5, 'the ring passed the tick before the rule did')
+  // and §5.2's rule is what closed it, not the ring
+  assert.equal(game.state.portals[entry.id], true)
+  // a fresh hold starts from nothing: 0 -> 1 -> 0
+  game.restart()
+  run(game, 1.6)
+  assert.equal(game.store.get().hold, 0, 'the ring did not reset')
+})
+
+check('the ring bleeds off when the hold is released, so aborting is visibly free', () => {
+  game.restart()
+  run(game, 1.6)
+  const entry = game.streetView.portals[0]
+  const spot = game.streetView.worldOf(entry.position)
+  game.player.teleport(spot.x, spot.z, 0)
+  game.player.pressKey('KeyE')
+  run(game, 0.5)
+  const held = game.store.get().hold
+  assert.ok(held > 0.2, 'the hold did not progress')
+  game.player.releaseKey('KeyE')
+  run(game, 0.8)
+  assert.ok(game.store.get().hold < held, 'the ring froze instead of bleeding off')
+  assert.equal(game.state.portals[entry.id], false, 'a released hold still shut the portal')
+})
+
+check('pause freezes the creature as well as the player', () => {
+  game.restart()
+  run(game, 1.6)
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.5 })
+  game.creaturePosition = { x: game.player.pos.x + 4, z: game.player.pos.z }
+  game.player.pressKey('KeyW')
+  // §5.2's hold is down when the player pauses: the commitment must not survive
+  // the menu, or it would resume by itself the moment they came back
+  game.player.pressKey('KeyE')
+  run(game, 0.5)
+  // and a pending swing is dropped with it: a pause caught mid-click must not
+  // resume as a banish the player never aimed. Raised *after* the run above,
+  // because a real frame would have consumed it.
+  game.player.pressButton(0)
+  assert.equal(game.player.swingRequested, true, 'the harness is not actually mid-swing')
+  const before = {
+    x: game.player.pos.x,
+    z: game.player.pos.z,
+    animTime: game.animTime,
+    creature: { ...game.creature },
+    creaturePosition: { ...game.creaturePosition },
+    awareness: game.creatureAwareness,
+    shake: game.shake,
+  }
+  assert.equal(game.setPaused(true), true, 'the pause did not take')
+  assert.equal(game.store.get().paused, true)
+  assert.equal(game.player.interactHeld(), false, 'a held key survived the pause')
+  assert.equal(game.player.keys.size, 0, 'the pause did not drop every held key')
+  assert.equal(game.player.consumeSwing(), false, 'a pending swing survived the pause')
+  assert.equal(game.state.banishCount, 0, 'the pause banished something')
+  assert.equal(game.store.get().hold, 0, 'the ring kept a hold through the pause')
+  // every clock in the world stops, the creature included
+  game.player.pressKey('KeyW')
+  run(game, 1.5)
+  assert.equal(game.player.pos.x, before.x, 'the player walked while paused')
+  assert.equal(game.player.pos.z, before.z, 'the player walked while paused')
+  assert.equal(game.animTime, before.animTime, 'the world clock ran while paused')
+  assert.deepEqual(game.creature, before.creature, 'the creature state machine ran while paused')
+  assert.deepEqual(game.creaturePosition, before.creaturePosition, 'the creature walked while paused')
+  assert.equal(game.creatureAwareness, before.awareness, "the creature's awareness decayed while paused")
+  assert.equal(game.shake, before.shake, 'the shake decayed while paused')
+  // and a paused frame is routed as silence rather than frozen audio
+  audio.calls.length = 0
+  run(game, 0.5)
+  assert.ok(audio.calls.includes('update'), 'the router was not called on a paused frame')
+  assert.equal(audio.calls.includes('breath'), false, 'a paused frame kept breathing')
+  assert.equal(game.setPaused(false), true, 'the resume did not take')
+  assert.equal(game.store.get().paused, false)
+  run(game, 0.3)
+  assert.ok(game.animTime > before.animTime, 'the world did not restart')
+})
+
+check('losing pointer lock pauses, and the pause cannot be undone by the lock', () => {
+  game.restart()
+  run(game, 1.6)
+  assert.equal(game.paused, false)
+  game._onLockChange()
+  assert.equal(game.paused, true, 'alt-tabbing away did not pause the game')
+  // the lock-change that the pause itself causes must not toggle it back off,
+  // and a lock we failed to re-acquire must never resume on its own
+  game._onLockChange()
+  assert.equal(game.paused, true, 'a second lock event un-paused the game')
+  assert.equal(game.setPaused(false), true)
+  run(game, 0.05)
+  game._onLockChange()
+  assert.equal(game.paused, false, 'the grace window did not cover the re-lock')
+  // and a real loss after the grace window does pause
+  run(game, 0.8)
+  game._onLockChange()
+  assert.equal(game.paused, true, 'a genuine lock loss was swallowed by the grace window')
+  game.setPaused(false)
+})
+
+check('reduced motion suppresses head bob, camera shake and finale effects', () => {
+  game.restart()
+  run(game, 1.6)
+  // the OS preference seeds the game, and the player's toggle overrides it
+  assert.equal(game.reducedMotion, false, 'motion is off by default')
+  game.setReducedMotion(true)
+  assert.equal(game.reducedMotion, true)
+  assert.equal(game._motion.headBob, false)
+  assert.equal(game._motion.cameraShake, false)
+  assert.equal(game._motion.finaleEffects, false)
+  assert.equal(game.store.get().motionPreference, true)
+  // the head bob: the camera's Y is pinned while walking
+  game.player.pressKey('KeyW')
+  run(game, 1.0)
+  const heights = new Set()
+  for (let i = 0; i < 12; i += 1) {
+    game.update(DT)
+    heights.add(game.camera.position.y.toFixed(6))
+  }
+  assert.equal(heights.size, 1, `the camera is still bobbing under reduced motion (${heights.size} heights)`)
+  assert.equal(game.player.bobScale, 0)
+  game.player.releaseKey('KeyW')
+  // the shake: a capture must not accumulate one it will never apply
+  game.addShake(0.9)
+  assert.equal(game.shake, 0, 'a shake was banked under reduced motion')
+  game._applyShake(DT)
+  assert.equal(game.shake, 0)
+  // the finale: §14.3's screen effects are off, and the level stays at zero
+  game.state = { ...game.state, finale: true }
+  run(game, 12)
+  assert.equal(game.finaleEffect.level, 0, 'the finale ramped under reduced motion')
+  // and turning it back off gives all three back
+  game.setReducedMotion(false)
+  assert.equal(game.player.bobScale, 1)
+  game.player.pressKey('KeyW')
+  run(game, 1.0)
+  const bobHeights = new Set()
+  for (let i = 0; i < 24; i += 1) {
+    game.update(DT)
+    bobHeights.add(game.camera.position.y.toFixed(6))
+  }
+  assert.ok(bobHeights.size > 1, 'the head bob did not come back')
+  game.player.releaseKey('KeyW')
+  run(game, 12)
+  assert.ok(game.finaleEffect.level > 0, 'the finale never ramped with motion on')
+  game.addShake(0.9)
+  assert.ok(game.shake > 0, 'the shake never came back')
+})
+
+check('the HUD mirror does not re-render React every frame', () => {
+  // `createStore` skips notifying when every patched key is `===`, so this is
+  // the check that the quantizer is actually on the path: a still player in a
+  // still street must cost React nothing, and a held ring must cost it about one
+  // repaint per grid step rather than one per frame.
+  game.restart()
+  run(game, 1.6)
+  let notifications = 0
+  const unsubscribe = store.subscribe(() => {
+    notifications += 1
+  })
+  run(game, 1.0)
+  const idle = notifications
+  assert.ok(idle <= 2, `${idle} repaints on a still frame in a still street`)
+  notifications = 0
+  const entry = game.streetView.portals[0]
+  const spot = game.streetView.worldOf(entry.position)
+  game.player.teleport(spot.x, spot.z, 0)
+  game.player.pressKey('KeyE')
+  run(game, 1.2)
+  game.player.releaseKey('KeyE')
+  const frames = Math.round(1.2 / DT)
+  const holding = notifications
+  assert.ok(holding > 0, 'a hold repainted nothing at all')
+  assert.ok(holding < frames / 2, `${holding} repaints in ${frames} frames: the ring is not quantized`)
+  unsubscribe()
+})
+
+check('the awareness tell is fed the meter, and stops when the creature is gone', () => {
+  game.restart()
+  run(game, 1.6)
+  // Act I's creature is a TELEGRAPH: §6.1 says it is a sighting, so it is
+  // legitimately "present" — and §8.1's immunity is what pins the meter to zero,
+  // so the tell has nothing to show even though a figure is on the street
+  assert.equal(game.creature.state, 'telegraph')
+  assert.equal(game.store.get().creaturePresent, true, 'a telegraph sighting is not a presence')
+  assert.equal(game.store.get().awareness, 0, '§8.1: Act I deafness did not hold')
+  // a stalking creature with a filling meter has to reach the store
+  game.creature = beast.createCreature({ state: 'stalk' })
+  game.creaturePosition = { x: game.player.pos.x + 5, z: game.player.pos.z }
+  game.player.pressKey('KeyW')
+  run(game, 1.2)
+  const meter = game.store.get().awareness
+  assert.ok(meter > 0, `§6.2's meter never reached the HUD (${meter})`)
+  assert.equal(meter, Math.round(meter * hud.STEPS.awareness) / hud.STEPS.awareness, 'the meter is unquantized')
+  assert.equal(game.store.get().creaturePresent, true)
+  game.player.releaseKey('KeyW')
+  // §7.4: a banished creature is off the field, so the vignette it drives stops
+  game.state = { ...game.state, banishCount: 1 }
+  game.creature = beast.createCreature({ state: 'stagger', banishCount: 1 })
+  run(game, 0.2)
+  assert.equal(game.store.get().creaturePresent, false, 'a banished creature is still being read')
+  // and a capture wipes it
+  game._capture()
+  run(game, 0.2)
+  assert.equal(game.store.get().awareness, 0, 'a capture kept the awareness vignette')
+})
+
+check('the pause card\'s two calls are the only doors React has into the world', () => {
+  // §14.3 promises a toggle, and a toggle has to be operable; these are the two
+  // methods `PauseOverlay` can reach, and the world is what they change
+  assert.equal(typeof game.setPaused, 'function')
+  assert.equal(typeof game.togglePause, 'function')
+  assert.equal(typeof game.setReducedMotion, 'function')
+  game.restart()
+  run(game, 1.6)
+  game.togglePause()
+  assert.equal(game.paused, true, 'the toggle did not pause')
+  game.togglePause()
+  assert.equal(game.paused, false, 'the toggle did not resume')
+  // and `tryInteract` is frozen by the same flag, so a one-shot caller cannot
+  // drive a verb through the pause
+  game.setPaused(true)
+  assert.equal(game.tryInteract(DT), false, 'tryInteract ran through a pause')
+  game.setPaused(false)
 })
 */
+
 
 // ---------------------------------------------------------------------------
 // report

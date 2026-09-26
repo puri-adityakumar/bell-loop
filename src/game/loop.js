@@ -206,23 +206,15 @@ export function createStore(initialState = createInitialState()) {
 }
 
 /**
- * The slice of state the HUD paints. Kept small on purpose: the simulation
- * writes to the store every frame, React only re-renders these.
+ * v1's HUD projection used to live here, at the bottom of the store, and slice 12
+ * moved it to `src/ui/hud.js`.
+ *
+ * The reason is scope, not tidiness. Everything this projection paints is §14's
+ * vocabulary — sigils, a hold ring, awareness and breath tells, a pause — and
+ * keeping it here would have meant a v1 module that still imported `maze.js` for
+ * its shrine ids and still knew about a countdown, describing a game that has
+ * neither. It is now the closed field list of a module about §14, and this file
+ * is left holding what is still genuinely v1 until slice 16 deletes it.
  */
-export function hudSnapshot(state) {
-  return {
-    phase: state.phase,
-    loop: state.loop,
-    timeLeft: state.timeLeft,
-    timeFraction: LOOP_SECONDS > 0 ? Math.max(0, Math.min(1, state.timeLeft / LOOP_SECONDS)) : 0,
-    candlesLit: candlesLit(state.candles),
-    candles: { ...state.candles },
-    doorOpen: state.doorOpen,
-    fade: state.fade,
-    prompt: state.prompt,
-    fps: state.fps ?? 0, // loop 14: hidden perf counter, toggled with F
-    showFps: state.showFps ?? false,
-  }
-}
 
 export default createStore

@@ -30,7 +30,13 @@ export default function StartOverlay({ onBegin }) {
         <span className="title-controls__word">look</span>
         <span className="title-controls__dot" />
         <span className="title-controls__key">E</span>
-        <span className="title-controls__word">light candles</span>
+        <span className="title-controls__word">hold to shut a portal</span>
+        <span className="title-controls__dot" />
+        <span className="title-controls__key">LMB</span>
+        <span className="title-controls__word">swing</span>
+        <span className="title-controls__dot" />
+        <span className="title-controls__key">ESC</span>
+        <span className="title-controls__word">pause</span>
       </div>
     </div>
   )

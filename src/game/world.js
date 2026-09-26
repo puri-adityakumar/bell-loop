@@ -27,17 +27,19 @@
  *
  * WHAT IS STILL IMPORTED FROM v1
  * -----------------------------
- * `PHASE`, `createStore` and `LOOP_SECONDS` only, from `loop.js`. §10.5 is
- * explicit that `PHASE` keeps its meaning — start / playing / reset / won — and
- * that the finale is a flag rather than a fifth phase, so re-typing four string
- * constants here to make a module look clean would be the worst of both worlds: a
- * second definition of the phase machine, and an `App.jsx` diff larger than the
- * one line the design promised. Everything else in `loop.js` — candles, the door,
- * the wall rise, the countdown — is dead code, and so is all of `maze.js`. Slice
- * 16 deletes both files and folds `PHASE` into wherever the HUD ends up.
+ * `PHASE` and `createStore` only, from `loop.js`. §10.5 is explicit that `PHASE`
+ * keeps its meaning — start / playing / reset / won — and that the finale is a
+ * flag rather than a fifth phase, so re-typing four string constants here to make
+ * a module look clean would be the worst of both worlds: a second definition of
+ * the phase machine, and an `App.jsx` diff larger than the one line the design
+ * promised. `LOOP_SECONDS` was the third import until slice 12: it existed only
+ * to pin the v1 countdown full, because v2 has no countdown. Everything else in
+ * `loop.js` — candles, the door, the wall rise, the heartbeat projection — is
+ * dead code, and so is all of `maze.js`. Slice 16 deletes both files and folds
+ * `PHASE` into wherever the HUD ends up.
  */
 import * as THREE from 'three'
-import { createStore, LOOP_SECONDS, PHASE } from './loop.js'
+import { createStore, PHASE } from './loop.js'
 import { PlayerController } from './player.js'
 import { PALETTE, StreetView } from './streetView.js'
 import { CreatureView } from './creatureView.js'
@@ -46,6 +48,14 @@ import * as rules from './rules.js'
 import { streamAt } from './hash.js'
 import * as hood from './neighborhood.js'
 import { SPAWN, placeObjectives, streetNodeToWorld } from './neighborhood.js'
+// §14.1/§14.2/§14.3. The one place a game module reaches into `src/ui/`, and it
+// reaches for the *quantizer* and the rate limiter rather than for the
+// projection: the simulation writes numbers into the store, and `hud.js` is
+// what decides how finely they are written. Keeping the grid in the view module
+// is what stops the world and the HUD from disagreeing about how often React is
+// allowed to re-render, and there is no cycle because `hud.js` imports only
+// `neighborhood.js` and `rules.js`.
+import * as hud from '../ui/hud.js'
 
 export { PALETTE }
 
@@ -59,6 +69,17 @@ const CAPTURE_FADE_SECONDS = 1.1
 const LAMP_LIGHTS = 4
 /** How far a lamp light reaches before the pool stops looking for another. */
 const LAMP_RADIUS = 40
+
+/**
+ * How long after a resume a lost pointer lock is forgiven, seconds of world time.
+ *
+ * §14.3 pauses on losing the lock, and the pause *causes* a lock loss. Without a
+ * grace window, resuming would ask for the lock, fail or lag for a frame, and
+ * the `pointerlockchange` that follows would pause the game again — a pause menu
+ * that cannot be left. Half a second is the width of a slow round trip and no
+ * more: any longer and a genuine alt-tab in that window would be swallowed.
+ */
+const LOCK_GRACE_SECONDS = 0.5
 
 function clamp01(t) {
   return t < 0 ? 0 : t > 1 ? 1 : t
@@ -202,10 +223,6 @@ export class LongQuietGame {
     this.reemergeElapsed = beast.FADE_SECONDS.reemerge
     this._creatureFacing = 0
     this.creatureAwareness = 0
-    this._lampKey = ''
-    this._candleKey = ''
-    this._prompt = null
-
     // --- runtime ------------------------------------------------------------
     this.phase = this.store.get().phase ?? PHASE.START
     this.resetElapsed = 0
@@ -217,17 +234,65 @@ export class LongQuietGame {
     this._fpsAccum = 0
     this.clock = new THREE.Clock()
 
+    // --- §14.3 pause and motion sensitivity ---------------------------------
+    //
+    // A pause is a *flag* and not a fifth `PHASE`, for §10.5's reason stated in
+    // `loop.js`: the phase machine is the game's four moments and the world
+    // reads it; a pause is an overlay on top of whichever moment is running, and
+    // a player who pauses during a capture's black has not invented a phase.
+    // `paused` therefore freezes `update` outright rather than selecting a
+    // different branch inside it.
+    this.paused = false
+    /** §14.3's toggle. `null` = "whatever the OS asked for", which is the default. */
+    this.motionPreference = null
+    /** Absolute time at which a pause-induced lock loss stops counting (§14.3). */
+    this._lockGraceUntil = 0
+    /** §14.3's banish/pickup flash, decaying; §11.3's counterpart to a toll. */
+    this.hammerFlash = 0
+    /** The §14.3 finale screen-effect rate limiter's own state. */
+    this.finaleEffect = hud.finaleEffectInit()
+    this.reducedMotion = false
+    this._motion = hud.motionFlags(false)
+    this._applyMotionPreference()
+    this._lampKey = ''
+    /** The mirror's value key: the sigil set *and* the per-portal hold. */
+    this._sigilKey = ''
+    this._hold = 0
+    this._holdByPortal = Object.fromEntries(hood.PORTAL_IDS.map((id) => [id, '0']))
+    this._awareness = 0
+    this._creaturePresent = false
+    this._flashAmplitude = 1
+    this._prompt = null
+
     // --- input --------------------------------------------------------------
     // `E` and LMB are the two verbs of §5.2 and both belong to the player, which
     // is why neither is wired here: `player.js` turns them into an interact hold
     // and a swing edge, and the world consumes both once per frame.
     this._onKeyDown = (e) => {
       if (e.code === 'KeyF') this.store.update((state) => ({ ...state, showFps: !state.showFps }))
+      // §14.3: Esc pauses. Gated on actually playing, because a title screen with
+      // a pause card on it is a bug and a win screen with one is worse — the win
+      // is already frozen, and §10.4's card owns the screen from there.
+      if (e.code === 'Escape' && this.startedOnce && this.phase === PHASE.PLAYING) this.setPaused(!this.paused)
     }
     this._onMouseDown = () => {
-      if (this.startedOnce && this.phase !== PHASE.WON && !this.player.locked) this.player.requestLock()
+      if (this.startedOnce && this.phase !== PHASE.WON && !this.paused && !this.player.locked) this.player.requestLock()
+    }
+    // §14.3: losing pointer lock *is* the pause. Alt-tabbing away from a game
+    // that keeps hunting you is the single most hostile thing a first-person
+    // game can do, and the browser fires this event whether the player meant it
+    // or not. It is one-way — losing the lock pauses, it never resumes — because
+    // a lock we failed to re-acquire must not be able to un-pause a game the
+    // player has deliberately stopped.
+    this._onLockChange = () => {
+      const locked = typeof document !== 'undefined' && document.pointerLockElement === this.canvas
+      if (locked || this.paused) return
+      // the grace window covers the pause this very call caused: releasing the
+      // lock to show a menu fires a second `pointerlockchange` a frame later
+      if (this.startedOnce && this.animTime >= this._lockGraceUntil) this.setPaused(true)
     }
     window.addEventListener('keydown', this._onKeyDown)
+    document.addEventListener('pointerlockchange', this._onLockChange)
     this.canvas.addEventListener('mousedown', this._onMouseDown)
 
     this._onWindowResize = () => this.resize()
@@ -235,6 +300,14 @@ export class LongQuietGame {
     this._resizeObserver =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => this.resize())
     this._resizeObserver?.observe(container)
+
+    this._motionQuery =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null
+    this._onMotionChange = () => this._applyMotionPreference()
+    this._motionQuery?.addEventListener?.('change', this._onMotionChange)
+    this._applyMotionPreference()
 
     this.store.set({ fade: this.fade })
     this._syncHud()
@@ -375,6 +448,18 @@ export class LongQuietGame {
    * with a plain `dt`, which is why there is no clock read outside `_animate`.
    */
   update(dt) {
+    // §14.3: "pauses and freezes the simulation *completely*, including the
+    // creature". Complete means this returns before `animTime` moves, so every
+    // clock in the world stops: the player, the hold, the creature's awareness
+    // and its state machine, the dismissal and re-emergence windows, the shake
+    // decay, and the lamps. The store is still mirrored below, because a paused
+    // HUD that stopped updating would drop the pause card it is being shown
+    // behind, and the one thing a pause must never do is look frozen-buggy.
+    if (this.paused) {
+      this._updateAudio(dt)
+      this._syncHud()
+      return
+    }
     this.animTime += dt
     this.phase = this.store.get().phase ?? this.phase
     this.streetView.update(dt)
@@ -398,6 +483,7 @@ export class LongQuietGame {
         break
     }
     this._updateCreatureView(dt)
+    this._updateHudTells(dt)
     this._updateAudio(dt)
     this._syncHud()
   }
@@ -420,6 +506,17 @@ export class LongQuietGame {
    * table is the only thing that knows what it costs.
    */
   _audioFrame() {
+    // §14.3: a paused frame is not a frame the simulation had, so it never gets
+    // one. What it gets instead is the *silence* frame — `started: false`, the
+    // title screen's frame, and the title screen is the only moment in the game
+    // where nothing is playing at all. That matters because `routeAudio` sends
+    // every sustained row on every started frame: skip the frame entirely and a
+    // winded player's rasp holds its last gain for as long as they sit in the
+    // pause menu, which is exactly the sound a paused game must not make.
+    // Routing silence instead drops the rasp, the hums and the proximity breath
+    // to zero and pulls the drone back to its black level, so a pause is quiet
+    // rather than frozen.
+    if (this.paused) return { started: false }
     const player = { x: this.player.pos.x, z: this.player.pos.z }
     const from = this.creaturePosition
     const distance = Math.hypot(beast.wrapDelta(from.x, player.x), beast.wrapDelta(from.z, player.z))
@@ -575,6 +672,20 @@ export class LongQuietGame {
       this.hammerHold = Math.max(0, this.hammerHold - dt * rules.PORTAL_RELEASE_DECAY)
     }
 
+    // §14.2's ring, read *after* the holds have been ticked so it shows this
+    // frame's progress rather than last frame's. It reads whichever hold is
+    // running, and the hammer pickup is the same verb on the same key for the
+    // same 1.2 s — so it gets the same ring, because a second shape for the same
+    // interaction would be new HUD geometry carrying no new meaning.
+    this._hold = portal
+      ? this.state.progress[portal.id] ?? 0
+      : hammer
+        ? hud.holdFraction(this.hammerHold)
+        : 0
+    for (const entry of this.streetView.portals) {
+      this._holdByPortal[entry.id] = hud.quantize(this.state.progress[entry.id] ?? 0, hud.STEPS.hold).toFixed(4)
+    }
+
     // §7.4: a swing is a press, and the hammer answers to the creature, not the
     // world. With nothing in reach it is simply noise, which is the point —
     // swinging at the dark is how you get found. The edge is *also* handed to
@@ -600,6 +711,10 @@ export class LongQuietGame {
     // the flag, not the transition: §6.1's telegraph -> stalk edge is fired by the
     // next `creatureStep`, so the pickup frame cannot skip a frame of the machine
     this._hammerToll = true
+    // §14.3: the awakening has a visual counterpart too, and it is this same
+    // sigil flash — one sigil, two tolls, so the player's eye learns where to
+    // look for "something rang".
+    this.hammerFlash = 1
     // §13's awakening toll is routed, not called: `routeAudio` gates it on this
     // edge *and* on the hammer not already being held, so "once per run" is
     // enforced twice — here, where the pickup happens, and in the table, where
@@ -709,6 +824,16 @@ export class LongQuietGame {
     }
     this.creature = { ...this.creature, banishCount: this.state.banishCount, tier: rules.portalsShut(this.state.portals) }
     this.creatureAwareness = step.awareness
+    // §6.4's readout, quantized on the way into the store. The vignette tightens
+    // on the grid in `hud.STEPS.awareness` rather than every frame, which is what
+    // makes it a repaint a few times a second instead of sixty.
+    this._awareness = hud.quantize(step.awareness, hud.STEPS.awareness)
+    // §6.4 plus §7.4: a banished or dormant creature is off the field, so the
+    // vignette it drives stops with it rather than following the player home
+    this._creaturePresent = this.creature.state !== 'dormant' && this.creature.state !== 'stagger'
+    // §14.3's counterpart to §7.4's banish toll and §7.2's awakening: the one
+    // sigil in the game that flashes, so a deaf player sees the swing land
+    if (step.swing && step.swing.result === 'banish') this.hammerFlash = 1
 
     if (step.to === 'stalk' && this.creature.state === 'stalk') this._walkCreature(dt, player)
     if (step.to === 'dormant' && step.from !== 'dormant') this.banishElapsed = 0
@@ -947,6 +1072,11 @@ export class LongQuietGame {
     this.dismissElapsed = beast.FADE_SECONDS.dismiss
     this.reemergeElapsed = beast.FADE_SECONDS.reemerge
     this.creatureView?.present(beast.creaturePose(null))
+    // §6.4: the creature the vignette was reading is gone, so the readout is too
+    this._awareness = 0
+    this._creaturePresent = false
+    // §14.2: a capture interrupts a hold, and the ring must not resume it
+    this._hold = 0
     this.addShake(0.9)
     this.player.enabled = false
     this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
@@ -999,34 +1129,164 @@ export class LongQuietGame {
   // the HUD mirror
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // §14.3 — pause, motion sensitivity, and the tells that need a clock
+  // -------------------------------------------------------------------------
+
   /**
-   * _syncHud — the slice of state the untouched v1 HUD happens to read.
+   * setPaused — §14.3's pause, and the one place the flag is written.
    *
-   * Slice 12 replaces all of this, and until it does there are two places where
-   * v2 and the v1 HUD disagree and the world has to be the one that bends:
+   * Two things happen here and neither of them is optional. Pointer lock is
+   * *released* on the way in, because a game that is paused and still swallowing
+   * mouse movement is a game the player cannot use the menu in; and the grace
+   * window is armed on the way out, because asking for the lock again takes a
+   * round trip that fires a second `pointerlockchange` on the way, which would
+   * otherwise pause the game the instant the player resumed it.
    *
-   *  - `candles` is the three shrine sigils, and v2 has no shrines. The three
-   *    portal sigils are the same three letters in the same order, so the HUD
-   *    lights them as portals are shut. It is written only when the set changes,
-   *    because a fresh object every frame would re-render React 60 times a
-   *    second to redraw three identical flames.
-   *  - `timeLeft` is the heartbeat line, and v2 has no countdown: the run ends
-   *    when you are caught, not when a bell rings. It is pinned full, so the line
-   *    sits still instead of reddening towards a deadline that does not exist.
+   * The held keys are dropped, and with them the pending swing, because a pause
+   * caught mid-hold would otherwise resume as a shutdown the player never
+   * finished, and one caught mid-click would resume as a banish. §8.2's whole
+   * argument is that a removal is something the player watches happen; inventing
+   * a removal they did not ask for is the same failure wearing a different hat.
+   *
+   * The swing is discarded through `releaseAllKeys` rather than through
+   * `consumeSwing`, and that is not a detail: `consumeSwing` is the door that
+   * *performs* a swing and fires the callback, so using it to throw one away
+   * would banish something on the frame the player opened a menu. Dropping the
+   * flag without taking the edge is the only version of this that is free.
+   */
+  setPaused(paused) {
+    const next = paused === true
+    if (next === this.paused) return false
+    this.paused = next
+    if (next) {
+      this.player.releaseAllKeys()
+      this._hold = 0
+      this._prompt = null
+      // `paused` first, so the lock-change this causes is a no-op
+      this._lockGraceUntil = this.animTime + LOCK_GRACE_SECONDS
+      if (typeof document !== 'undefined') document.exitPointerLock?.()
+    } else {
+      this._lockGraceUntil = this.animTime + LOCK_GRACE_SECONDS
+      this.player.requestLock()
+    }
+    this.store.set({ paused: next })
+    return true
+  }
+
+  /** Esc, and the pause card's RESUME. */
+  togglePause() {
+    return this.setPaused(!this.paused)
+  }
+
+  /**
+   * setReducedMotion — §14.3's motion-sensitivity toggle, from the pause menu.
+   *
+   * The *preference* is stored and the *resolved* value is applied, and the
+   * difference is the whole reason there are two fields: a player who has asked
+   * their operating system for reduced motion and then pressed the button in this
+   * game has expressed a preference this game is entitled to honour, and a
+   * second press puts them back where the OS had them. Resolving both in
+   * `hud.resolveReducedMotion` is what keeps the button's own label honest.
+   */
+  setReducedMotion(reduced) {
+    this.motionPreference = reduced === true
+    this._applyMotionPreference()
+    this.store.set({ motionPreference: this.motionPreference })
+  }
+
+  /**
+   * _applyMotionPreference — resolve, then push the result at everything that moves.
+   *
+   * The resolution itself is `hud.js`'s (it has to be, because the HUD needs the
+   * same answer to decide whether to paint a pulse), and the three consumers are
+   * the three rows of `motionFlags`: the head bob, the camera shake and the
+   * finale effects. The player is told through its own setter so that the camera
+   * updates on the same frame rather than on the next stride.
+   */
+  _applyMotionPreference() {
+    const system = this._motionQuery?.matches === true
+    this.reducedMotion = hud.resolveReducedMotion({ preference: this.motionPreference, system })
+    this._motion = hud.motionFlags(this.reducedMotion)
+    this.player?.setHeadBob(this._motion.headBob)
+    if (!this._motion.cameraShake) this.shake = 0
+    if (!this._motion.finaleEffects) this.finaleEffect = hud.finaleEffectInit()
+    this.store.set({ motionPreference: this.motionPreference, reducedMotionSystem: system })
+  }
+
+  /**
+   * _updateHudTells — the two §14.3 effects that need to be *ticked*.
+   *
+   * Everything else the HUD shows is state, read straight off the simulation.
+   * These two are decays: the banish/pickup sigil flash, which has to fall away
+   * on a clock, and the finale's screen-effect level, which §14.3 requires to be
+   * rate-limited. Both are pure functions of their own state in `hud.js`, so this
+   * method is the world's only job: own the clock, hand over `dt`, keep the
+   * result.
+   */
+  _updateHudTells(dt) {
+    const flash = hud.flashDecay(this.hammerFlash, dt, { reducedMotion: this.reducedMotion })
+    this.hammerFlash = flash.level
+    this._flashAmplitude = flash.amplitude
+    if (!this._motion.finaleEffects) return
+    this.finaleEffect = hud.finaleEffect(this.finaleEffect, dt, this.state.finale, {
+      reducedMotion: this.reducedMotion,
+    })
+  }
+
+  // -------------------------------------------------------------------------
+  // the HUD mirror
+  // -------------------------------------------------------------------------
+
+  /**
+   * _syncHud — the store write that is the only channel to React.
+   *
+   * The projection itself is `hud.js`'s, and so is the decision of *how often*
+   * this runs: every continuous value is quantized to the grid in `hud.STEPS`
+   * before it is written, because `createStore` skips notifying when every patched
+   * key is `===` and a raw awareness number would re-render the whole HUD sixty
+   * times a second to redraw three identical sigils.
+   *
+   * The `portals` map is the one object value, and a fresh object is never `===`
+   * to the old one — so it is written only when its *contents* move, which is
+   * what the key below tracks. That is v1's `_candleKey` trick generalised from
+   * "which shrines are lit" to "which sigils are out and how far the hold has
+   * got", and it is the reason the key is a value string and not a comparison of
+   * objects.
    */
   _syncHud() {
     // the phase comes from the store, not from the field `update` read at the top
     // of the frame: a phase that changes *during* the frame — the cross-fade
     // finishing, a win — would otherwise be written straight back over
     const phase = this.store.get().phase ?? this.phase
-    const patch = { phase, loop: this.state.loop, fade: this.fade, prompt: this._prompt }
-    if (this.store.get().timeLeft !== LOOP_SECONDS) patch.timeLeft = LOOP_SECONDS
-    const key = Object.keys(this.state.portals)
-      .filter((id) => this.state.portals[id])
-      .join('')
-    if (key !== this._candleKey) {
-      this._candleKey = key
-      patch.candles = Object.fromEntries(Object.keys(this.state.portals).map((id) => [id, this.state.portals[id]]))
+    const patch = {
+      phase,
+      loop: this.state.loop,
+      fade: this.fade,
+      prompt: this._prompt,
+      hammerHeld: this.state.hammerHeld === true,
+      // §14.3's flash travels as two numbers, because its two answers are two
+      // numbers: a slower decay (held in `hammerFlash`, the world clock's job) and
+      // a dimmer peak (held here). `hud.hammerMark` is where they meet.
+      hammerFlash: this.hammerFlash,
+      hammerFlashAmplitude: this._flashAmplitude,
+      hold: hud.quantize(this._hold, hud.STEPS.hold),
+      awareness: this._awareness,
+      breath: this.player.breath,
+      exhausted: this.player.exhausted === true,
+      // §6.4 plus slice 11's banish rule: a removed creature stops being a
+      // readout, so the vignette it drives has to stop with it
+      creaturePresent: this._creaturePresent,
+      finale: this.state.finale === true,
+      finaleLevel: this.finaleEffect.level,
+      paused: this.paused,
+      motionPreference: this.motionPreference,
+      reducedMotion: this.reducedMotion,
+    }
+    const key = hood.PORTAL_IDS.map((id) => `${this.state.portals[id] ? 1 : 0}${this._holdByPortal[id]}`).join('')
+    if (key !== this._sigilKey) {
+      this._sigilKey = key
+      patch.portals = { ...this.state.portals }
     }
     this.store.set(patch)
   }
@@ -1039,13 +1299,23 @@ export class LongQuietGame {
    * screen going black while the world quietly permutes itself, which reads as a
    * bug rather than as a death. The amplitude decays every frame and is applied
    * *after* `player.update`, so it never fights the controller for the camera.
-   * Slice 12's reduced-motion toggle suppresses this along with the head bob.
+   *
+   * §14.3's motion-sensitivity toggle gates it in *both* directions, and the
+   * inbound gate matters as much as the outbound one: a capture under reduced
+   * motion must not accumulate a shake that is then never applied, or turning
+   * the setting back off mid-run would release a punch the player was not there
+   * for.
    */
   addShake(amount) {
+    if (!this._motion.cameraShake) return
     this.shake = Math.min(1, this.shake + amount)
   }
 
   _applyShake(dt) {
+    if (!this._motion.cameraShake) {
+      this.shake = 0
+      return
+    }
     if (this.shake <= 0.0005) {
       this.shake = 0
       return
@@ -1107,6 +1377,14 @@ export class LongQuietGame {
     this.reemergeElapsed = beast.FADE_SECONDS.reemerge
     this.creatureView?.present(beast.creaturePose(null))
     this._prompt = null
+    // §14.3: the same two tells, wiped with everything else. The finale's level
+    // goes back to zero because §10.4's wipe is the one place a full reset is
+    // correct, and the level only ever ramps back up on a new run's own clock.
+    this.hammerFlash = 0
+    this.finaleEffect = hud.finaleEffectInit()
+    this._hold = 0
+    this._awareness = 0
+    this._creaturePresent = false
     for (const portal of this.streetView.portals) this.streetView.setPortalShut(portal.id, false)
     this.streetView.setHammerTaken(false)
     this.streetView.setHeadlights(false)
@@ -1131,7 +1409,7 @@ export class LongQuietGame {
    * one-shot interact would quietly turn a two-beat commitment into a tap.
    */
   tryInteract(dt = 1 / 60) {
-    if (this.phase !== PHASE.PLAYING) return false
+    if (this.phase !== PHASE.PLAYING || this.paused) return false
     this.player.pressKey('KeyE')
     this._updateVerbs(dt)
     this.player.releaseKey('KeyE')
@@ -1144,6 +1422,11 @@ export class LongQuietGame {
     cancelAnimationFrame(this.rafId)
     window.removeEventListener('keydown', this._onKeyDown)
     window.removeEventListener('resize', this._onWindowResize)
+    // optional calls: the headless world harness's DOM stub has no
+    // `removeEventListener` on `document`, and this teardown must not be the
+    // thing that changes *how* that harness fails
+    document.removeEventListener?.('pointerlockchange', this._onLockChange)
+    this._motionQuery?.removeEventListener?.('change', this._onMotionChange)
     this.canvas.removeEventListener('mousedown', this._onMouseDown)
     this._resizeObserver?.disconnect()
     this.player.dispose()

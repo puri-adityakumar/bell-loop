@@ -397,6 +397,171 @@ now `1 - distance / range`, and the comment above it says so.
   parameters reaching them are right. A listening pass is a Phase C capture concern
   (slice 16).
 
+## Slice 12 — HUD and accessibility (§14, GAMEDESIGN section 14 is the authority)
+
+Read-only council first (AGENTS.md step 3), then one writer. Both councils earned
+their keep immediately: the design council caught a lit/shut **inversion** and a
+redundant vignette owner, the engineering council caught three things that would
+have turned the gate red. Recorded because the next slice should assume the same
+review happened.
+
+### The structural decision — the HUD is a pure projection, and it is closed
+
+`src/ui/hud.js` takes the store's state and returns the finished values the DOM
+paints. No DOM, no Three, no clock, no globals, so `verify.mjs` imports it
+directly. v1's `hudSnapshot` was **deleted from `loop.js`** in the same move
+rather than left beside the new one — two projections would have survived until
+slice 16 deleted the file that owns the wrong one, which is the worst time to
+find out.
+
+The projection's key set is **written down and asserted** (`HUD_FIELDS`), and
+that set is the whole argument for §6.4's "no awareness bar", §7.3's undrawn
+breath and §14.1's "no distance readout": `awareness` is an *input* to the
+projection and never an output of it. It arrives, is squared into two visual
+amplitudes, and is gone. Adding a readout to this game now means adding a line to
+one exported array.
+
+### Design calls worth recording
+
+- **THE SIGIL POLARITY WAS INVERTED, AND THE PLAN DID NOT SAY SO.**
+  `state.portals[id] === true` means the portal is **shut** (§5.3); v1's
+  `candles[id] === true` meant the flame was **lit**. The v1 mirror lit its three
+  flames *from* the portal flags — correct for v1, exactly backwards for §14.1,
+  and it would have shipped a HUD that lit up as the player made progress. The
+  fix is `portalSigil(shut)`, asserted in **both** directions, and the council's
+  reason for catching it is the one to keep: the sigil function is a one-line
+  ternary over a boolean whose name is `shut`.
+- **THE SIGIL STATE IS THE FILL, AND NOTHING ELSE.** §14.3 asks for lit and
+  extinguished to be told apart in greyscale. The first draft gave each state its
+  own rim ink; the contrast check killed it — a near-white rim on mid-cyan is
+  1.65:1, i.e. a bright shape with no edge, which is a blob. The shipped version
+  shares **one outline ink across both states**, so `filled` is the only channel
+  carrying state at all, and the keyline still clears 3.56:1 against the lit body
+  so the solid shape keeps a visible edge. Lit `#3ad6d6` at 11.49:1, extinguished
+  `#1d6a66` at 3.23:1, lit:dark luminance ratio 4.67:1.
+- **§12.2's `#0b2b2b` IS NOT THE HUD INK.** At 1.36:1 on the shell background it
+  is a mark nobody can see. It stays the colour of the *world's* dead portal
+  light, which is what it was written for; the HUD's dark sigil is the same hue
+  lifted until it clears `SIGIL_MIN_CONTRAST`. Obeying §12.2 literally here would
+  have been a failure of §14.3, and the two sections do not actually conflict.
+- **THE OSCILLATION IS CSS; THE LEVEL IS REACT.** A 2.2 s breath that ran through
+  the store would be 132 re-renders. So every value in `hud.js` is a *level* in
+  `[0, 1]`, React paints it as a custom property, and the stylesheet animates it.
+  Two payoffs: a slow breath costs a handful of repaints, and §14.3's toggle can
+  stop it with one `animation: none` — a store flag cannot reach a running
+  keyframe, so the switch has to arrive as a **class**.
+- **THE BREATH PULSE IS FLOORED AT 0.45 Hz** (`BREATH_PULSE_FAST` = 2.2 s), two
+  orders of magnitude below the 3–30 Hz band that provokes photosensitive
+  seizures, and asserted as `< 0.8 Hz` for every input. The finale's ramp is
+  `FINALE_EFFECT_INTERVAL = 1.5 s` over six steps: nine seconds from nothing to
+  full, so a player reaches the exit *inside* one ramp rather than watching a dial.
+- **THE FINALITE SWAPS THE GRAIN ANIMATION, NOT JUST ITS LEVEL.** v1's
+  `grain-jitter 0.66s steps(3)` is a 4.5 Hz full-screen positional flicker. §14.3
+  says the grain is "retained but rate-limited during the finale", and the honest
+  reading is that a 4.5 Hz jitter cannot be *dimmed* into safety — it is replaced
+  with a 2.2 s one for the finale. The v1 baseline is retained outside it, as the
+  design says, and the reasoning is written down: it is a low-contrast
+  *positional* jitter rather than a luminance flash, which is why reduced motion
+  (`animation: none`) is the right answer to it and a lower opacity would not be.
+- **THE TWO TELLS SHARE ONE VIGNETTE, COMPOSED WITH A CAP.** §6.4's vignette and
+  §7.3's vignette are the same element. Two owners writing two inline styles on
+  one element is a fight; `vignetteTell` sums them and caps the awareness share by
+  whatever the breath floor has left, so the worst case is a dark screen and never
+  a layer past opaque — which is where two overlaid alphas start cancelling.
+- **PAUSE IS A FLAG, NOT A PHASE.** §10.5's reason applied to §14.3: a player who
+  pauses during a capture's black has not invented a phase, so `PHASE` still has
+  exactly four members (asserted) and `update()` returns *before* `animTime` moves.
+  A paused frame routes `{ started: false }` — the title screen's frame, and the
+  only moment in the game where nothing is playing — so a winded player's rasp
+  goes to zero instead of holding its last gain for as long as they read the menu.
+  Pointer-lock loss pauses one-way (it can never un-pause), with a 0.5 s grace
+  window so the pause's own lock release cannot re-pause the game.
+- **THE PAUSE CARD IS OVERLAY CHROME, NOT HUD.** §14.1's "no new text" is scoped
+  to the HUD: the sigils, the counter, the ring, the tells. A menu that cannot say
+  anything is not a menu, and §14.3 requires a *toggle*, which has to be a
+  control with a name. So the HUD gains no text at all — asserted by grepping its
+  JSX for text nodes and pinning the set to `{LOOP}` plus the `E` key-hint
+  constant — and the card is a sibling of the title and win overlays.
+- **THE v1 HEARTBEAT LINE AND THE FLAME SIGILS ARE GONE.** The heartbeat was a
+  *countdown* and v2 has no countdown (slice 09 pinned it full); §9.2 counts
+  captures in the counter's existing slot. Keeping either would have been keeping
+  a v1 promise this game does not make. The start screen's control hints were also
+  corrected: they said "light candles", which has been untrue since slice 04, and
+  now name §5.2's two verbs and Esc.
+
+### One real bug this slice found
+
+**THE PAUSE WAS GOING TO *PERFORM* A SWING INSTEAD OF DROPPING IT.** `setPaused`
+originally called `player.consumeSwing()` to clear a pending click. That is the
+door that *fires* the swing callback, so opening the pause menu on the frame a
+swing was queued would have banished something the player never aimed — and it is
+invisible in the harness, because the world never sets `onSwing`. Found by
+mutation testing, not by review: the explicit call was redundant with
+`releaseAllKeys()`, which drops the flag without taking the edge, and the correct
+fix was to **delete the call and assert its absence** rather than to add a test
+that could not see it.
+
+### Slice 12 — gate
+
+- **Gate:** lint clean (three pre-existing `verify-world.mjs` unused-import
+  warnings, one of them the `hud` import added for the parked block), **194/194**
+  pure checks (up from 158 — a new "HUD and accessibility (v2 slice 12)" section,
+  **36 checks**), `vite build` clean. `npm run check` exits 0.
+- **Three gate-rippers the engineering council caught before they landed**, all of
+  which would have failed `npm run check` and none of which is visible from the
+  code: (1) a second `this.audio?.update(` in `world.js` breaks the slice-11 audio
+  whitelist, which requires exactly one; (2) removing v1's `hudSnapshot` from
+  `loop.js` breaks `verify.mjs`'s named import as a **link-time SyntaxError**,
+  not a failed test; (3) a helper method whose name contains `_audioFrame(` breaks
+  the check that the frame is built in exactly one place, because the regex
+  matches inside `_pausedAudioFrame()`. The pause's audio is therefore handled
+  *inside* `_audioFrame()`, and the count is still 2.
+- **Nine world checks, validated in a scratch harness, 9/9 passing** — sigil state
+  through a capture and a wipe; the ring closing on exactly 1.0 with its tick
+  crossing on §5.2's frame and bleeding back off; pause freezing the creature, the
+  player, every clock and the held keys; pointer-lock loss pausing one-way; the
+  grace window; reduced motion suppressing bob, shake (both sides) and the finale
+  ramp and restoring all three; the mirror's repaint budget; the awareness tell
+  fed by the real meter and stopped by a banish. Parked in the same block comment
+  as slices 10 and 11, transcribed from that run. The scratch harness is not
+  committed.
+- **Mutation testing: 6 of 7 caught.** Caught: never re-locking into a pause, not
+  dropping held keys, a head bob that ignores the switch, an unquantized
+  awareness, a shake banked while suppressed, a finale ramp that ignores reduced
+  motion. The survivor is an **equivalent mutant** — dropping the `|| this.paused`
+  guard in `_onLockChange` changes nothing, because `setPaused(true)` on an
+  already-paused world is a no-op. The guard stays because it documents the
+  intent and the pure gate pins its source.
+- **The HUD was rendered and read, not just built.** No browser is available in
+  this container, so `Hud` and `PauseOverlay` were rendered to static markup through
+  `react-dom/server` in a throwaway Vite SSR bundle and the output inspected in
+  four states (opening, mid-hold past the tick, reduced motion while hunted, and
+  paused). That caught one real defect a static read had not: the grain layer was
+  carrying a `hud--still` class, which worked but was wrong BEM, and is now
+  `grain--still` on its own block. Confirmed in the markup: `A:dark/hollow B:lit/filled
+  C:lit/filled` for one portal shut, `stroke-dashoffset` 40.59 of 106.81 at 0.62,
+  `hud__ring-tick--passed` present, `--breath-amp: 0.000` under reduced motion,
+  and the pause card reading `PAUSED | RESUME | REDUCED MOTION ON | ESC`. The
+  scratch bundle is not committed.
+- **The world harness's failure is UNCHANGED** — `1/12 world checks passed`, exit
+  1, `SHRINE_IDS is not iterable`, identical to the slice 09/10/11 baselines. The
+  new DOM calls are guarded so the constructor cannot throw on the stub
+  (`typeof window.matchMedia === 'function'`, `document.removeEventListener?.()`),
+  and the file header now records that the slice-12 parked block was written
+  *with* a working harness, so slice 14 knows its nine checks are transcribed
+  from a run rather than from a sketch.
+- **Left for slice 13/16, deliberately:** the v1 title `THE BELL LOOP` and the win
+  card's `THE BELL STOPPED.` are still v1's; §10.4's win text is "THE NEIGHBORHOOD
+  WENT QUIET." and §0's working title is THE LONG QUIET, so the naming is a
+  slice-13/16 decision, not an accessibility one. `winChord` is still called
+  directly by `_win`, and the `searchExhausted`/`searchPosition` channels are
+  still hardcoded, both carried forward from slice 11.
+- **Known limit, stated rather than hidden:** the tells are levels, so their
+  *appearance* — whether 34%→13% reads as "boxed in" and whether a 2.6× grain
+  scale reads as "coarsening" — is a judgement only a screenshot can settle. Slice
+  16's twelve captures are where that gets decided, and the numbers are all
+  exported and asserted so moving one is a one-line change.
+
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
 - New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.
@@ -405,6 +570,6 @@ now `1 - distance / range`, and the comment above it says so.
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 11–16 in order (11 audio, 12 HUD, 13 finale, 14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slices 09 and 10 are landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`. Slice 14 should start from the parked world-check block at the bottom of `verify-world.mjs`.
+- Slices 13–16 in order (13 finale, 14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slices 09–12 are landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`. Slice 14 should start from the parked world-check block at the bottom of `verify-world.mjs` — 26 checks are waiting there, and the nine from slice 12 were written *with* a working harness, so the stub work is the only thing between that block and the gate.
 - Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.

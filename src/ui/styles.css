@@ -40,31 +40,78 @@
   pointer-events: none;
 }
 
-/* --- grain + vignette (loop 1: heavier film grain, tighter vignette) ------ */
+/* --- §14.3 post-processing: the two tells, on v1's own three layers ----------
+   These are the same three elements the game has always had, with the same class
+   names. What changed is where their levels come from: `hud.js` composes the
+   awareness and breath tells onto one vignette value, and React paints it as a
+   custom property. The oscillation is here rather than in the simulation, which
+   is what keeps a 2.2 s breath off the React render path entirely. */
+
+@property --pulse {
+  /* registered so it interpolates as a number: an unregistered custom property
+     animates as a token stream, which browsers handle inconsistently */
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
 
 .vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    radial-gradient(ellipse at 50% 50%, rgba(3, 4, 8, 0) 34%, rgba(2, 3, 6, 0.82) 100%);
+  /* §6.4: the clear radius shrinks as the creature's meter fills, so the world
+     the player can see narrows. The *level* is the shared tell value. */
+  background: radial-gradient(
+    ellipse at 50% 50%,
+    rgba(3, 4, 8, 0) var(--vignette-clear, 34%),
+    rgba(2, 3, 6, 0.94) 100%
+  );
+  /* §7.3: the breath rides on top of the level, and the amplitude is already
+     capped in `hud.vignetteTell` so the sum can never exceed opaque */
+  opacity: calc(var(--vignette, 0) + var(--pulse) * var(--breath-amp, 0));
+  animation: breath var(--breath-period, 4.4s) ease-in-out infinite;
+}
+
+@keyframes breath {
+  0%,
+  100% {
+    --pulse: 0;
+  }
+  38% {
+    --pulse: 1;
+  }
+  62% {
+    --pulse: 0.72;
+  }
 }
 
 .grain {
   position: absolute;
   inset: -40%;
   pointer-events: none;
-  opacity: 0.09;
+  /* §6.4: the grain *coarsens* with the meter — bigger tiles, fewer specks — so
+     the picture degrades rather than flickering */
+  opacity: var(--grain-opacity, 0.09);
+  background-size: calc(160px * var(--grain-scale, 1));
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   animation: grain-jitter 0.66s steps(3) infinite;
 }
 
-/* loop 1: cold cellar desaturation wash over the whole frame */
+/* §14.3's finale: the same grain, rate-limited by `hud.finaleEffect`, and on a
+   far slower jitter. v1's 0.66 s step is a 4.5 Hz positional flicker; the finale
+   drops to about 0.9 Hz and gains a little weight, so the screen degrades into
+   the run instead of buzzing through it. */
+.grain--finale {
+  animation: grain-jitter 2.2s steps(2) infinite;
+  opacity: calc(var(--grain-opacity, 0.09) + var(--finale, 0) * 0.1);
+}
+
+/* the cold desaturation wash v1 put over the whole frame, retained per §14.3 */
 .desat {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: rgba(24, 30, 44, 0.14);
+  background: rgba(24, 30, 44, calc(0.14 + var(--finale, 0) * 0.18));
   mix-blend-mode: saturation;
 }
 
@@ -81,6 +128,22 @@
   100% {
     transform: translate(0, 0);
   }
+}
+
+/* §14.3's motion switch, as a class. `animation: none` is the only thing that
+   reliably stops a running keyframe, and the store flag cannot reach one — so
+   the toggle's whole effect on the post layers is these four lines. The grain
+   keeps its level (the information) and loses its motion (the problem). */
+.grain--still,
+.hud--still {
+  animation: none !important;
+}
+
+/* the key hint's pulse and the sigil flash are the HUD's own motion, and they
+   stop with the rest */
+.hud--still .hud__prompt-key,
+.hud--still .sigil--flash {
+  animation: none !important;
 }
 
 /* --- HUD ----------------------------------------------------------------- */
@@ -126,135 +189,174 @@
   text-shadow: 0 0 18px rgba(216, 207, 174, 0.22);
 }
 
-.hud__candles {
+/* --- §14.1 sigils: three portals and a hammer -----------------------------
+   The row v1 used for its three flames, in the same slot, holding four marks
+   instead of three. A lit sigil is a *solid* body; an extinguished one is the
+   same outline with nothing inside it, which is §14.3's colour-blind
+   commitment as geometry rather than as a colour swap. */
+
+.hud__sigils {
   position: absolute;
   top: calc(3.2vh + 46px);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 14px;
+  align-items: flex-end;
+  gap: 11px;
 }
 
-/* loop 8: flame sigils — a wick with a flame that ignites when its shrine burns */
-.flame-sigil {
+/* the gap between the world's three objectives and the player's one instrument */
+.hud__sigil-divider {
+  width: 1px;
+  height: 13px;
+  margin: 0 3px 2px;
+  background: rgba(216, 207, 174, 0.18);
+}
+
+.sigil {
   position: relative;
+  display: inline-flex;
   width: 13px;
   height: 17px;
-  display: inline-block;
 }
 
-.flame-sigil__wick {
+.sigil__mark {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transition:
+    fill 0.7s ease,
+    stroke 0.7s ease,
+    filter 0.7s ease;
+}
+
+/* §7.2's awakening and §7.4's banish: the one sigil that flashes, so every
+   toll in the game has a visual counterpart. Drawn as a halo rather than a
+   brightness spike — a §14.3 player gets a slow fade, not a strobe. */
+.sigil--flash::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, currentColor 0%, transparent 70%);
+  opacity: calc(var(--flash, 0) * 0.5);
+  pointer-events: none;
+}
+
+.sigil--lit {
+  color: currentColor;
+}
+
+.sigil--flash {
+  animation: sigil-bloom 0.45s ease-out both;
+}
+
+@keyframes sigil-bloom {
+  0% {
+    filter: brightness(1);
+  }
+  18% {
+    filter: brightness(1.7);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
+/* --- §14.2 the radial hold ring -------------------------------------------
+   The only new HUD geometry in the game, drawn around v1's `E` prompt rather
+   than beside it, so the key and its progress occupy one mark on the screen. */
+
+.hud__prompt {
   position: absolute;
   left: 50%;
-  bottom: 0;
-  width: 2px;
-  height: 4px;
-  transform: translateX(-50%);
-  background: rgba(216, 207, 174, 0.35);
+  top: 55%;
+  transform: translate(-50%, -50%) scale(0.88);
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
 }
 
-.flame-sigil__flame,
-.flame-sigil__core {
+.hud__prompt--on {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.hud__ring {
   position: absolute;
-  left: 0;
-  bottom: 2px;
-  width: 13px;
-  height: 15px;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  transform: translate(-50%, -50%) rotate(-90deg);
   overflow: visible;
 }
 
-.flame-sigil__flame path {
-  fill: transparent;
-  stroke: rgba(216, 207, 174, 0.4);
-  stroke-width: 0.9;
+/* the unfilled track: the 0 of the 0 → 1 → 0, and the reason aborting a hold is
+   visibly free rather than merely allowed */
+.hud__ring-track {
+  fill: none;
+  stroke: rgba(216, 207, 174, 0.16);
+  stroke-width: 2;
+}
+
+.hud__ring-fill {
+  fill: none;
+  stroke: #3ad6d6;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(58, 214, 214, 0.55));
   transition:
-    fill 0.6s ease,
-    stroke 0.6s ease;
+    stroke 0.3s ease,
+    filter 0.3s ease;
 }
 
-.flame-sigil__core ellipse {
-  fill: transparent;
-  transition: fill 0.6s ease;
+/* §5.2's midpoint tick, and the moment the rule starts charging you for the
+   sound: the ring and the tick both go warm, so "past here it is loud" is a
+   colour change the player learns once. */
+.hud__ring-tick {
+  stroke: rgba(216, 207, 174, 0.55);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition:
+    stroke 0.2s ease,
+    stroke-width 0.2s ease;
 }
 
-.flame-sigil--lit .flame-sigil__flame path {
-  fill: rgba(255, 154, 60, 0.85);
-  stroke: rgba(255, 190, 110, 0.9);
-  filter: drop-shadow(0 0 5px rgba(255, 154, 60, 0.65));
-  animation: sigil-flicker 2.2s ease-in-out infinite;
-  transform-origin: 50% 95%;
+.hud__prompt--loud .hud__ring-fill {
+  stroke: #ffa54a;
+  filter: drop-shadow(0 0 6px rgba(255, 165, 74, 0.6));
 }
 
-.flame-sigil--lit .flame-sigil__core ellipse {
-  fill: rgba(255, 236, 180, 0.95);
+.hud__ring-tick--passed {
+  stroke: #ffa54a;
+  stroke-width: 2.2;
 }
 
-.flame-sigil--lit .flame-sigil__wick {
-  background: rgba(255, 190, 110, 0.8);
+.hud__prompt-key {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 3px;
+  border: 1px solid rgba(216, 207, 174, 0.6);
+  background: rgba(5, 6, 10, 0.42);
+  color: var(--text);
+  font: 15px/1 var(--serif);
+  animation: prompt-pulse 1.7s ease-in-out infinite;
 }
 
-@keyframes sigil-flicker {
+@keyframes prompt-pulse {
   0%,
   100% {
-    transform: scaleY(1) skewX(0deg);
+    opacity: 0.55;
   }
-  30% {
-    transform: scaleY(1.08) skewX(2deg);
-  }
-  55% {
-    transform: scaleY(0.94) skewX(-2.5deg);
-  }
-  80% {
-    transform: scaleY(1.04) skewX(1deg);
-  }
-}
-
-/* loop 8: the timer is a thin failing-heartbeat trace that retracts from the
-   right, reddens and begins to throb as the bell approaches */
-.hud__timer {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-}
-
-.hud__heartbeat {
-  display: block;
-  height: 100%;
-  width: 100%;
-  transform-origin: left center;
-  background: rgba(216, 207, 174, 0.06);
-  overflow: hidden;
-}
-
-.hud__heartbeat-svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.hud__timer--critical {
-  animation: heartbeat-throb 0.85s ease-in-out infinite;
-}
-
-@keyframes heartbeat-throb {
-  0%,
-  100% {
+  50% {
     opacity: 1;
-    transform: scaleY(1);
-  }
-  12% {
-    opacity: 1;
-    transform: scaleY(1.7);
-  }
-  30% {
-    opacity: 0.75;
-    transform: scaleY(1);
-  }
-  48% {
-    opacity: 1;
-    transform: scaleY(1.35);
   }
 }
 
@@ -476,6 +578,67 @@
   to {
     opacity: 1;
   }
+}
+
+/* --- the pause card (§14.3) ------------------------------------------------
+   Overlay chrome, not HUD: a sibling of the title and win cards in the same
+   shell. The veil is `backdrop-filter` rather than a flat fill so the frozen
+   street stays visible behind it — a pause that hides the world reads as a
+   loading screen, and the world being *there and still* is the reassurance. */
+
+.overlay--pause {
+  background: rgba(3, 4, 7, 0.62);
+  backdrop-filter: blur(3px) saturate(0.7);
+  gap: 2.4rem;
+  animation: overlay-in 0.25s ease both;
+}
+
+.pause-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: clamp(18px, 3.4vw, 34px);
+  letter-spacing: 0.62em;
+  text-indent: 0.62em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: 0 0 30px rgba(255, 165, 74, 0.12);
+}
+
+.pause-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+/* the toggle reads as a switch, not as a second action: it is dimmer, it is
+   wider, and it carries the pressed state in its own border */
+.brass-button--toggle {
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-indent: 0.28em;
+  color: rgba(216, 207, 174, 0.7);
+  background: transparent;
+  border-color: rgba(140, 122, 63, 0.35);
+}
+
+.brass-button--toggle[aria-pressed='true'] {
+  color: var(--text);
+  background: rgba(140, 122, 63, 0.2);
+  border-color: rgba(216, 207, 174, 0.75);
+}
+
+.pause-hint {
+  position: absolute;
+  bottom: 4.6vh;
+  left: 0;
+  right: 0;
+  margin: 0;
+  font: 10px/1 var(--serif);
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  color: rgba(216, 207, 174, 0.35);
 }
 
 .overlay--win {

@@ -123,6 +123,8 @@ export class PlayerController {
     this.travelled = 0 // metres since the last footstep
     this.bobPhase = 0
     this.speedRatio = 0
+    /** §14.3: 0 suppresses the head bob, 1 is v1's gait. Set by `setHeadBob`. */
+    this.bobScale = 1
 
     // --- v2 slice 08: breath (§7.3) and the two verbs (§5.2) ------------------
     // `breath` and `exhausted` are the same two fields rules.js carries in its
@@ -198,6 +200,24 @@ export class PlayerController {
 
   releaseKey(code) {
     this.keys.delete(code)
+  }
+
+  /**
+   * releaseAllKeys — drop every held key, edge and all.
+   *
+   * §14.3's pause needs this and the reason is specific rather than tidiness: a
+   * player who pauses while holding E is still holding E when the browser drops
+   * pointer lock, and if the set survived, the hold would resume by itself the
+   * moment they came back. §5.2's hold is a *commitment* — a commitment that
+   * re-arms itself because a menu was open is not a commitment.
+   *
+   * The pending swing is cleared too, for the same reason one frame earlier: a
+   * pause caught mid-click must not resume as a banish the player never aimed.
+   */
+  releaseAllKeys() {
+    this.keys.clear()
+    this.vel.set(0, 0)
+    this.swingRequested = false
   }
 
   /** A mouse button went down: DOM button index to the same pseudo-code space. */
@@ -484,13 +504,37 @@ export class PlayerController {
   }
 
   _applyCamera() {
-    const bob = Math.sin(this.bobPhase) * this.bobAmount * this.speedRatio
-    const sway = Math.cos(this.bobPhase * 0.5) * this.bobAmount * 0.4 * this.speedRatio
+    // §14.3's motion-sensitivity row reaches the head bob through one
+    // multiplier. `bobScale` is 0 or 1 and nothing else, and it multiplies both
+    // terms, so switching it off removes the bob and the sway together rather
+    // than leaving one of them running. `bobPhase` is deliberately NOT reset:
+    // the stride clock keeps advancing while the bob is suppressed, so turning
+    // motion back on resumes the gait where it actually is instead of snapping
+    // the camera to the bottom of a step it is not on.
+    const bob = Math.sin(this.bobPhase) * this.bobAmount * this.speedRatio * this.bobScale
+    const sway = Math.cos(this.bobPhase * 0.5) * this.bobAmount * 0.4 * this.speedRatio * this.bobScale
     const sin = Math.sin(this.yaw)
     const cos = Math.cos(this.yaw)
     // sway runs along the player's right-hand axis so it reads as a real step
     this.camera.position.set(this.pos.x + sway * cos, this.eyeHeight + bob, this.pos.z - sway * sin)
     this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ')
+  }
+
+  /**
+   * setHeadBob — §14.3's reduced-motion toggle, on the one thing that moves the
+   * camera when the player is only walking.
+   *
+   * A boolean rather than a scale, because the design says "reduced" and the
+   * plan says "suppresses" and the honest reading of a comfort setting is on or
+   * off: a player who cannot tolerate the bob wants none of it, and a player
+   * who can has no use for a fraction. It re-applies the camera immediately, so
+   * the change lands on the same frame the button was pressed rather than on
+   * the player's next footstep — a setting that waits for a stride to take
+   * effect feels broken.
+   */
+  setHeadBob(enabled) {
+    this.bobScale = enabled === false ? 0 : 1
+    this._applyCamera()
   }
 }
 
