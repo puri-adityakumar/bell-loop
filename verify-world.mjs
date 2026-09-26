@@ -1841,8 +1841,23 @@ const HIDE_RANGE = 34
 const HIDE_METER = beast.AWARENESS_CHASE_RELEASE + 0.05
 const HIDE_BREATH = 0.45
 const HIDE_MAX_SECONDS = 3
-/** Inside this the hammer is the answer, and standing still is how you swing it. */
-const FIGHT_RANGE = 26
+/**
+ * Inside this the hammer is the answer, and standing still is how you swing it.
+ *
+ * SLICE 15: 26 -> 45 -> 22, and the number is §11.1's own detection table rather
+ * than a feel. Two things have to be true at once and only one value is both. It has
+ * to be *inside* every range the creature can see the player at — 14, 17 and 20 m
+ * for the three pre-finale tiers — because a swing needs contact and a creature that
+ * has not noticed you does not come. And it has to be as *close* to that edge as it
+ * can be, because standing still to wait for a thing is on-field time: at 45 m the
+ * competent player spent a hundred and fifty seconds of the first third of a run
+ * standing in the road, which is a share of 0.92 before the ladder has bought a
+ * single second of quiet, and it left the late-run trend with eight thousandths of
+ * margin to prove itself on. 22 m is the edge of the table — the last metre before a
+ * tier-2 creature can see you — so the wait is as short as the rules allow and the
+ * hammer comes out the moment it has to.
+ */
+const FIGHT_RANGE = 22
 
 /** How close to a locked leg the policy re-plans, metres. */
 const LEG_ARRIVAL = 1.5
@@ -1911,14 +1926,9 @@ function dropKey(player, code) {
  * something else.
  */
 function nearestCopy(world, canonical) {
+  const image = hood.nearestImage(canonical, world.player.pos)
   const origin = world.streetView.origin
-  const here = world.player.pos
-  const localX = here.x - origin.x
-  const localZ = here.z - origin.z
-  return {
-    x: origin.x + canonical.x + hood.WORLD_EXTENT * Math.round((localX - canonical.x) / hood.WORLD_EXTENT),
-    z: origin.z + canonical.z + hood.WORLD_EXTENT * Math.round((localZ - canonical.z) / hood.WORLD_EXTENT),
-  }
+  return { x: image.x + origin.x, z: image.z + origin.z }
 }
 
 /** The objective the run is on: the hammer, then the three portals, then the car. */
@@ -1993,9 +2003,39 @@ function drive(world, plan, control) {
   // thing is close enough to hit, turns no lights on, and swings. That is the Act II
   // loop the design describes, and it is the difference between a competent player
   // who survives and one who *improves*.
-  const fighting = plan.fight && world.state.hammerHeld && creatureGap < FIGHT_RANGE
+  // §7.4's Act II loop, and the reason the hammer is a tool rather than a souvenir:
+  // a player holding it does not run from a chase, it stands its ground and lets the
+  // thing come inside `BANISH_RANGE`. A chasing creature walks at the player at the
+  // tier's speed, so the fight is something the creature *delivers*; and silence,
+  // which lets the meter decay out of the chase band, is the answer for a player who
+  // has no way to answer it. The hammer REPLACES the hiding rather than competing
+  // with it, and the gate is the hammer and not the distance: allowed to hide from
+  // 34 m while only willing to fight inside 26 m, the competent player hid the whole
+  // way in — the meter decayed, the chase released, the creature walked to a position
+  // the player had already left, and it closed to 26 m exactly never. Zero connected
+  // swings across eight full runs, so §7.4's ladder, the only thing in the game that
+  // makes it easier, never moved a rung and §11.3's first trend had no mechanism
+  // behind it at all.
+  //
+  // Standing still to fight is also the safe half of the bargain, and it is safe
+  // because of the state list rather than in spite of it: `CAPTURE_STATES` is CHASE
+  // and ENRAGED, so a creature that has lost the plot is standing in front of you
+  // unable to touch you, and a connected swing is a full removal. That is §6.1's
+  // promise and §7.4's, and it is the only reason the hammer is worth carrying.
+  //
+  // AND A HUNT IS THE DELIVERY MECHANISM, which is the second half of the same claim
+  // and the one the numbers forced. A creature in CHASE walks *at* the player at the
+  // tier's speed; a creature in STALK walks at where it last heard you, which is a
+  // point you have already left. So a player who runs from every chase never lets it
+  // arrive, and the whole of Act II measured that way is 88% on-field and 98 m away:
+  // presence without threat, the hammer never swung, §7.4's ladder frozen on its
+  // first rung and §11.3's first trend with nothing behind it. With the hammer in
+  // hand the player holds its ground instead, the chase delivers it, and the swing
+  // pays for the next minute of quiet.
+  const canFight = plan.fight && world.state.hammerHeld
+  const fighting = canFight && creatureGap < FIGHT_RANGE
   let hiding = false
-  if (plan.hide && !fighting && hunted && creatureGap < HIDE_RANGE && player.breath > HIDE_BREATH) {
+  if (plan.hide && !canFight && hunted && creatureGap < HIDE_RANGE && player.breath > HIDE_BREATH) {
     if (creature.awareness >= HIDE_METER) {
       control.hiding = true
       hiding = true
@@ -2064,9 +2104,26 @@ function drive(world, plan, control) {
   if (gap <= reach) holdKey(player, 'KeyE')
   else dropKey(player, 'KeyE')
 
-  // the sprint: to open a gap, in bursts, and never while hiding
+  // the sprint: to open a gap, in bursts, and never while hiding or fighting
+  //
+  // AND ONLY IN THE FINALE, which is the third and last piece of the Act II loop and
+  // the one the ladder depends on. §6.2's table is a sprint at 22 m, the loudest
+  // thing in the game, and §11.1 never grants the creature more than 5.2 — so
+  // sprinting from a chase buys 0.8 m/s of margin and a neighbourhood full of
+  // witnesses, forever, and the creature that was closing goes back to being a
+  // rumour. Measured that way, eight competent runs produced 0.0 banishes per
+  // encounter, 88% on-field and 98.8 m: the whole of Act II was presence without
+  // threat. A player carrying a bell-hammer does not do that. It keeps shutting
+  // portals, lets the thing come, and answers it — and §7.4's ladder, the only thing
+  // in the game that makes it easier, is what pays for the quiet it works in.
+  //
+  // §10.2 is the exception that proves the rule: a finale banish is a flat
+  // `ENRAGED_REEMERGENCE_SECONDS` and the ladder is ignored, so at the climax the
+  // only thing that beats 5.2 m/s is 6.0 and the car is the objective. Sprint there,
+  // swing only when it is already on top of you.
   const panicky = ON_FIELD.includes(creature.state) && creatureGap < 15
-  if (plan.sprint && !hiding && !fighting && player.breath > 0.15 && (hunted || panicky)) holdKey(player, 'ShiftLeft')
+  const runsFrom = plan.sprint && (world.state.finale === true || !canFight)
+  if (runsFrom && !hiding && !fighting && player.breath > 0.15 && (hunted || panicky)) holdKey(player, 'ShiftLeft')
   else dropKey(player, 'ShiftLeft')
 
   // §7.4's swing: a press, inside BANISH_RANGE, only against a state that can be
@@ -2512,8 +2569,21 @@ function actOneRuns() {
 
 /**
  * the finale, posed at its worst: §10.3's headlights have just come on, the
- * creature is thirty metres behind, and the player has no hammer — so the only
- * question §10.2 asks is the one about the gap between 5.2 and 6.0.
+ * creature is thirty metres behind, and the car is up to four blocks away.
+ *
+ * THE HAMMER IS IN HAND, and that changed what this experiment can answer. It used
+ * to be posed without one, on the reasoning that the only question §10.2 asks is the
+ * one about the gap between 5.2 and 6.0. But §10.2's own next bullet is "banish
+ * still works, but the ladder is ignored and re-emergence is a flat short delay. The
+ * hammer must stay relevant or Act II's whole skill ceiling evaporates at the
+ * climax", and a finale where the hammer has been taken off the table cannot fail if
+ * the hammer is what the finale is about. A connected swing there is 1.6 s of
+ * STAGGER plus `ENRAGED_REEMERGENCE_SECONDS` and a §8.3 placement 90 m away — three
+ * seconds of standing still for a block and a half of head start, which is a far
+ * better deal than any amount of sprinting, and precisely the intended answer.
+ *
+ * So the only variable left between the two runs is the one the design says the
+ * finale is about: the gait. One player runs, one walks, and both have the hammer.
  */
 function finaleRuns() {
   const runs = []
@@ -2521,10 +2591,12 @@ function finaleRuns() {
     for (const sprint of [false, true]) {
       const base = sprint ? COMPETENT : CARELESS
       runs.push(
-        playRun(seed, { ...base, skipHammer: true, label: `${base.label}-finale` }, {
+        playRun(seed, { ...base, label: `${base.label}-finale` }, {
           maxSeconds: 300,
           setup: (world) => {
             placePortals(world, hood.PORTAL_IDS.length)
+            world.state = { ...world.state, hammerHeld: true }
+            world.streetView.setHammerTaken(true)
             // the third portal is where the run actually ends, so the finale
             // starts there: the worst case for the walk to the car
             const anchor = world.objectives.portals[hood.PORTAL_IDS.length - 1].position
@@ -2536,6 +2608,7 @@ function finaleRuns() {
               z: world.player.pos.z - world.streetView.origin.z,
             }
             world.creaturePosition = { x: canonical.x - 28, z: canonical.z + 12 }
+            world._recentre()
           },
         }),
       )
@@ -2567,11 +2640,6 @@ function simulation() {
   return SIMULATION
 }
 
-/** Act II encounters only: the finale is one long pursuit, not a series of them. */
-function actTwoEncounters(runs) {
-  return runs.flatMap((run) => actTwoOf(run))
-}
-
 /**
  * §11.3's first quantity, per encounter: the fraction of the player's own seconds
  * spent with the creature in the world.
@@ -2589,6 +2657,50 @@ function actTwoOf(run) {
     const cycle = next ? next.start - encounter.start : Math.max(0, run.seconds - encounter.start)
     return { ...encounter, share: cycle > 0 ? encounter.onField / cycle : 1 }
   })
+}
+
+/**
+ * pooledThirds — §11.3's two trends, bucketed by how far through the run each
+ * encounter was, and pooled over every policy.
+ *
+ * The bucketing is *per run* and then pooled, and that order is the whole method:
+ * a run is a run, and "later in the run" is only comparable inside one. A single
+ * global bucket by encounter index would be comparing the first encounter of a
+ * lucky run with the ninth of an unlucky one and calling the difference a trend.
+ *
+ * `share` is the fraction of the encounter's own cycle spent with the creature in
+ * the world; `onField` is the raw exposure in seconds, which is §11.3's own wording
+ * ("expected seconds of creature-on-field per encounter → decreasing"); `pursuit` is
+ * the measured closing speed of the states that can end a run, which is §11.3's
+ * second quantity ("damage per encounter → increasing") as a number rather than as a
+ * word; and `banish` is the §7.4 rung the encounter began on, which is the *mechanism*
+ * trend 1 is supposed to run through. A trend that holds without the mechanism moving
+ * is a coincidence, so the checks below assert the mechanism too.
+ *
+ * @param {object[]} runs from `fullRuns`
+ * @returns {{third:number, count:number, share:number[], onField:number[],
+ *   cycle:number[], pursuit:number[], banish:number[], captures:number}[]}
+ */
+function pooledThirds(runs) {
+  const perThird = new Map()
+  for (const run of runs) {
+    const encounters = actTwoOf(run)
+    for (let i = 0; i < encounters.length; i += 1) {
+      const third = Math.min(2, Math.floor((i / Math.max(1, encounters.length)) * 3))
+      const bucket = perThird.get(third) ?? {
+        third, share: [], onField: [], cycle: [], pursuit: [], banish: [], captures: 0, count: 0,
+      }
+      bucket.count += 1
+      bucket.share.push(encounters[i].share)
+      bucket.onField.push(encounters[i].onField)
+      bucket.cycle.push(encounters[i].cycle)
+      bucket.pursuit.push(encounters[i].pursuit)
+      bucket.banish.push(encounters[i].banish)
+      bucket.captures += encounters[i].captured ? 1 : 0
+      perThird.set(third, bucket)
+    }
+  }
+  return [...perThird.values()].sort((a, b) => a.third - b.third)
 }
 
 function reportBalance(sim) {
@@ -2632,23 +2744,7 @@ function reportBalance(sim) {
   }
   line('')
   line('  §11.3 pooled into thirds of each run (every policy, Act II only)')
-  const perThird = new Map()
-  for (const run of sim.runs) {
-    const encounters = actTwoOf(run)
-    for (let i = 0; i < encounters.length; i += 1) {
-      const third = Math.min(2, Math.floor((i / Math.max(1, encounters.length)) * 3))
-      const bucket = perThird.get(third) ?? { third, share: [], onField: [], cycle: [], pursuit: [], banish: [], captures: 0, count: 0 }
-      bucket.count += 1
-      bucket.share.push(encounters[i].share)
-      bucket.onField.push(encounters[i].onField)
-      bucket.cycle.push(encounters[i].cycle)
-      bucket.pursuit.push(encounters[i].pursuit)
-      bucket.banish.push(encounters[i].banish)
-      bucket.captures += encounters[i].captured ? 1 : 0
-      perThird.set(third, bucket)
-    }
-  }
-  for (const bucket of [...perThird.values()].sort((a, b) => a.third - b.third)) {
+  for (const bucket of pooledThirds(sim.runs)) {
     line(
       `    third ${bucket.third + 1}  n=${String(bucket.count).padStart(3)}  share ${mean(bucket.share).toFixed(3)}  ` +
         `on-field ${mean(bucket.onField).toFixed(1)}s  cycle ${mean(bucket.cycle).toFixed(1)}s  ` +
@@ -2720,7 +2816,7 @@ function reportBalance(sim) {
     line(`    seed ${run.seed}  hammer at ${run.hammerAt === null ? 'NEVER' : `${run.hammerAt.toFixed(0)}s`}  captures ${run.captures}  states ${run.states.join(',')}`)
   }
   line('')
-  line('  the finale (§10.2): 30 m behind, no hammer, car up to four blocks away')
+  line('  the finale (§10.2): 30 m behind, hammer in hand, car up to four blocks away — gait is the only variable')
   for (const run of sim.finale) {
     line(`    ${run.plan.padEnd(15)} seed ${run.seed}  ${run.won ? 'WON ' : 'lost'}  captures ${run.captures}  finale ${run.finaleSeconds.toFixed(0)}s / ${run.seconds.toFixed(0)}s`)
   }
@@ -2733,8 +2829,186 @@ function reportBalance(sim) {
   line('')
 }
 
-check('TEMP balance report', () => {
-  simulation()
+check('§11.3 trend 1: the banish ladder buys quiet, so on-field time falls over a run', () => {
+  const sim = simulation()
+  const thirds = pooledThirds(sim.runs)
+  assert.equal(thirds.length, 3, 'every run contributed to all three thirds')
+  const shares = thirds.map((bucket) => mean(bucket.share))
+  const exposure = thirds.map((bucket) => mean(bucket.onField))
+  // §11.3's first trend, in §11.3's own words first: "expected seconds of
+  // creature-on-field per encounter → decreasing". The margin here is a factor of
+  // two and a half, not a rounding error, which is what makes it a gate.
+  assert.ok(
+    exposure[2] < exposure[0] * 0.6,
+    `on-field seconds did not fall over a run: ${exposure.map((v) => v.toFixed(1)).join(' -> ')}s`,
+  )
+  assert.ok(exposure[1] < exposure[0], 'and they fall monotonically, not on average')
+  assert.ok(exposure[2] < exposure[1], 'and they are still falling in the last third')
+  // and the same trend as a *share* of the encounter cycle, which is the stricter
+  // reading: the exposure has to fall faster than the cycle it is measured against,
+  // or the creature is simply spending longer over a shorter walk. It was RISING
+  // (0.830 / 0.888 / 0.908) for the whole of the previous tuning pass, and the two
+  // reasons are the two this slice fixed: §6.2's sound table was being read at zero
+  // metres, so the creature was permanently acquired, and the hammer was never in
+  // reach, so §7.4's ladder never bought a second of quiet.
+  assert.ok(
+    shares[2] < shares[1] && shares[1] < shares[0],
+    `on-field share did not fall monotonically: ${shares.map((v) => v.toFixed(3)).join(' -> ')}`,
+  )
+  assert.ok(
+    shares[2] < shares[0] * 0.95,
+    `and it did not fall by a margin worth gating: ${shares.map((v) => v.toFixed(3)).join(' -> ')}`,
+  )
+  // THE MECHANISM, and this is the assertion that actually pins §7.4 down. A trend
+  // that holds while the ladder sits still is a coincidence, so the rung the
+  // encounter *began* on has to climb. It used to read 0.00 in all three thirds: the
+  // competent policy swung, and the hammer connected zero times in eight full runs.
+  const rungs = thirds.map((bucket) => mean(bucket.banish))
+  assert.ok(
+    rungs[2] > rungs[0] + 0.5,
+    `§7.4's ladder did not climb over a run: ${rungs.map((v) => v.toFixed(2)).join(' -> ')}`,
+  )
+  assert.ok(rungs[1] > rungs[0] && rungs[2] > rungs[1], 'and it climbs monotonically')
+  // the ladder is the *only* thing that can buy this, so a run that never swings
+  // must show the exposure it would have had. The careless policy never swings.
+  const swings = sim.runs.filter((run) => run.banishes > 0)
+  const quiet = sim.runs.filter((run) => run.banishes === 0)
+  assert.ok(swings.length > 0, 'at least one run climbed the ladder at all')
+  assert.ok(quiet.length > 0, 'and at least one never touched it, or the comparison is empty')
+  const shareOf = (rows) => mean(rows.map((run) => mean(actTwoOf(run).map((e) => e.share))))
+  assert.ok(
+    shareOf(swings) < shareOf(quiet),
+    `banishing bought nothing: ${shareOf(swings).toFixed(3)} with a hammer vs ${shareOf(quiet).toFixed(3)} without`,
+  )
+})
+
+check('a competent player wins every seed, and only by playing well', () => {
+  const sim = simulation()
+  const competent = sim.runs.filter((run) => run.plan === 'competent')
+  assert.equal(competent.length, SIM_SEEDS.length, 'one run per seed')
+  for (const run of competent) {
+    assert.ok(run.won, `seed ${run.seed}: the competent player lost after ${run.seconds.toFixed(0)}s`)
+    assert.equal(run.portalsShut, hood.PORTAL_IDS.length, `seed ${run.seed}: and did not finish its portals`)
+    // and won *cleanly*: §9.1's promise is that a capture costs you where you were
+    // and nothing else, so a competent player who is never caught is a far stronger
+    // statement than one who is caught and walks on. This is the assertion that
+    // caught the seed-8 degeneracy: an ENRAGED creature stood inside the player for
+    // 508 s, inside BANISH_RANGE and outside CAPTURE_RADIUS's frame, and the run
+    // was lost rather than won.
+    assert.equal(run.captures, 0, `seed ${run.seed}: the competent player was caught ${run.captures} time(s)`)
+    assert.ok(run.banishes > 0, `seed ${run.seed}: won without ever swinging the hammer`)
+    assert.notEqual(run.hammerAt, null, `seed ${run.seed}: never found the hammer`)
+    assert.ok(run.actOneSeconds > 0, `seed ${run.seed}: no Act I to speak of`)
+    // and the closest the thing ever got is a number a hammer can answer, which is
+    // the difference between §7.4 being a tool and §7.4 being a decoration
+    assert.ok(run.closest <= beast.BANISH_RANGE * 4, `seed ${run.seed}: it never got near enough to swing (${run.closest.toFixed(1)}m)`)
+  }
+})
+
+check('§11.3 trend 2: the aggression ladder bites harder over the same run', () => {
+  const sim = simulation()
+  const thirds = pooledThirds(sim.runs)
+  const pursuit = thirds.map((bucket) => mean(bucket.pursuit))
+  // §11.3's second trend, "damage per encounter → increasing", measured as the
+  // speed at which the states that can end a run are actually closing. It is a
+  // measurement rather than a table read: metres a second, divided out of the same
+  // frames the player spent being hunted.
+  assert.ok(
+    pursuit[2] > pursuit[0] * 1.5,
+    `damage did not rise over a run: ${pursuit.map((v) => v.toFixed(2)).join(' -> ')} m/s`,
+  )
+  assert.ok(pursuit[1] > pursuit[0] && pursuit[2] > pursuit[1], 'and it rises monotonically')
+  // the top of the ramp is the ceiling §8.6 asks for, so the last third of a run has
+  // to be running near it rather than merely above the first. It is not *at* it,
+  // because this is a mean over every frame spent being pursued and a locked leg
+  // spends some of those turning a corner; 0.85 is the share of the ceiling a
+  // straight-line measure of a street-graph walk actually keeps.
+  assert.ok(
+    pursuit[2] >= beast.SPEED_CEILING * 0.85,
+    `the last third never neared the ramp's top speed: ${pursuit[2].toFixed(2)} against ${beast.SPEED_CEILING} m/s`,
+  )
+  // and the two axes are opposed rather than aligned, which is the whole of §7.4's
+  // "you are buying time, and the price is that the thing returns faster, sooner and
+  // more aware": the same encounters that got quieter got faster.
+  assert.ok(
+    mean(thirds[2].share) < mean(thirds[0].share),
+    'the last third of a run is both quieter and faster',
+  )
+})
+
+check('the finale is escapable only by sprinting (§10.2)', () => {
+  const sim = simulation()
+  const sprinting = sim.finale.filter((run) => run.plan === 'competent-finale')
+  const walking = sim.finale.filter((run) => run.plan === 'careless-finale')
+  assert.equal(sprinting.length, SIM_SEEDS.length, 'one run per seed')
+  assert.equal(walking.length, SIM_SEEDS.length, 'and one walker per seed')
+  // §10.2's premise is arithmetic: 5.2 m/s against a 3.6 m/s walk is 1.6 m/s of
+  // ground lost a second, from thirty metres back, which is nineteen seconds. A
+  // walker is therefore caught long before a car four blocks away, and the harness
+  // measures the capture rather than trusting the multiplication.
+  const caughtWalking = walking.filter((run) => run.captures > 0)
+  assert.ok(
+    caughtWalking.length > walking.length / 2,
+    `a walker was only caught in ${caughtWalking.length} of ${walking.length} seeds`,
+  )
+  for (const run of walking) {
+    assert.ok(run.finaleSeconds > 0, 'the finale pose actually posed a finale')
+    if (run.won) {
+      assert.ok(run.captures > 0, `seed ${run.seed}: a walker reached the car without ever being caught`)
+    }
+  }
+  // ...and the contrast, which is the claim "only by sprinting" actually makes. A
+  // runner is never caught: 6.0 against 5.2 is a gap that opens, and the hammer is
+  // there for the moment it closes — a connected swing in the finale is 1.6 s of
+  // STAGGER plus `ENRAGED_REEMERGENCE_SECONDS` and a §8.3 placement ninety metres
+  // away, which is three seconds of standing still for a block and a half of head
+  // start, and is the better deal than any amount of running.
+  //
+  // What is NOT claimed, because the measurement does not support it, is that a
+  // runner gets to the car sooner. It does not, reliably: the runner spends its
+  // time on the hammer and the walker spends its time being caught, and §9.1 says a
+  // capture costs you where you were and nothing else, so the two costs are drawn
+  // from the same budget. The finale is decided by captures, which is exactly what
+  // the assertion below is about, and the seconds are reported rather than gated.
+  for (const run of sprinting) {
+    assert.equal(run.captures, 0, `seed ${run.seed}: a runner was caught in the finale`)
+    assert.ok(run.won, `seed ${run.seed}: a runner failed to reach the car`)
+  }
+  assert.ok(
+    caughtWalking.length > sprinting.filter((run) => run.captures > 0).length,
+    `walking was caught in ${caughtWalking.length} seeds and running in 0, which is not a difference`,
+  )
+  // and the runner is the one that gets to keep going: never caught, and it reached
+  // the car in every seed, which the walker also manages — but only ever after
+  // paying for it. The design's finale is a survivable walk for a walker and a
+  // clean run for a sprinter, and §8.6's "running is loud" is why the first is not
+  // a victory.
+  for (const run of walking) {
+    assert.ok(run.won || run.captures > 0, `seed ${run.seed}: a walker neither won nor was caught`)
+  }
+})
+
+check('§8.1: the recklessly sprinting player cannot be caught before the hammer', () => {
+  const sim = simulation()
+  assert.equal(sim.actOne.length, SIM_SEEDS.length, 'one Act I per seed')
+  for (const run of sim.actOne) {
+    // §8.1's first rule: "Act I cannot kill you. TELEGRAPH has no capture path at
+    // all." The policy here is the worst one the harness can express — it sprints at
+    // the thing, into its face, for the whole of the pre-hammer phase — and it is
+    // measured by the world's own `_capture`, wrapped, rather than by the loop
+    // counter the reset takes a second to move.
+    assert.equal(run.captures, 0, `seed ${run.seed}: caught ${run.captures} time(s) before the hammer`)
+    assert.equal(run.captureEvents.length, 0, `seed ${run.seed}: the world decided on ${run.captureEvents.length} capture(s)`)
+    assert.notEqual(run.hammerAt, null, `seed ${run.seed}: the run never ended, so nothing was measured`)
+    // the sighting is the whole of Act I: the apparition is there to be seen and it
+    // cannot be anything else, so its presence is asserted too
+    for (const state of run.states) {
+      assert.ok(
+        ['telegraph', 'dormant'].includes(state),
+        `seed ${run.seed}: Act I put the creature in ${state}`,
+      )
+    }
+  }
 })
 
 

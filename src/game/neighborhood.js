@@ -229,6 +229,49 @@ export function worldPointOf(canonical) {
   return { x: canonical.x + CANONICAL_ORIGIN, z: canonical.z + CANONICAL_ORIGIN }
 }
 
+/**
+ * nearestImage — the image of a canonical point that a world point is closest to.
+ *
+ * `originFor` picks the copy of the MAP that the player is standing in, and
+ * `worldOf` adds that offset to whatever it is handed. That is the right answer for
+ * everything the world *places* — an anchor, a lot centre, a node — because those
+ * are canonical numbers in the canonical window and the offset lands them in the
+ * copy the player can see. It is the wrong answer for a thing that WALKS, and the
+ * balance simulation in `verify-world.mjs` is what found the difference: an ENRAGED
+ * creature in the finale of seed 8 spent 508 s inside `BANISH_RANGE` of the player
+ * and was never once banished and never once captured, and the reason was that its
+ * stored canonical coordinate had walked a whole period out of the map it was being
+ * drawn in. Every number the world derives from the pair — `CAPTURE_RADIUS`,
+ * `BANISH_RANGE`, the awareness meter's distance, §6.4's proximity breath — was
+ * reading a whole 448 m period of nothing, while the harness's own folded measure
+ * read 0.0 m. The figure stood inside the player and the game could not see it.
+ *
+ * The fold is `nearestImage`, and it is the same fold the harness routes with
+ * (`nearestCopy` in `verify-world.mjs` used to be its own copy of these two lines).
+ * `round` rather than `floor` so the two images of a point exactly half a period
+ * apart are chosen consistently, and the answer is idempotent: folding an already
+ * folded point is itself, so a caller can apply it every frame without the position
+ * drifting.
+ *
+ * The answer is a CANONICAL coordinate and may sit a whole period outside the
+ * canonical window. That is deliberate and harmless: `nodeId` and
+ * `nearestIntersection` fold, so every graph query is unaffected, and
+ * `streetView.worldOf` composes with this fold into the image nearest the player,
+ * which is the whole point — the picture and the AI have to be the same creature.
+ *
+ * @param {{x:number,z:number}} canonical
+ * @param {{x:number,z:number}} nearWorld a world position — the player's
+ * @returns {{x:number,z:number}} canonical, in the image nearest `nearWorld`
+ */
+export function nearestImage(canonical, nearWorld) {
+  const nearX = canonicalCoord(nearWorld.x)
+  const nearZ = canonicalCoord(nearWorld.z)
+  return {
+    x: canonical.x + WORLD_EXTENT * Math.round((nearX - canonical.x) / WORLD_EXTENT),
+    z: canonical.z + WORLD_EXTENT * Math.round((nearZ - canonical.z) / WORLD_EXTENT),
+  }
+}
+
 /** Folded world coordinate of road axis `index` (avenue x, or street z). */
 export function roadAxisToWorld(index) {
   return (wrap(index, GRID) - (GRID - 1) / 2) * BLOCK

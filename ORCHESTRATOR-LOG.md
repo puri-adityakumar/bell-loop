@@ -665,7 +665,191 @@ plan asks for stated as facts — and about two things that turned out to be wro
   than a coin flip. Slice 16's `finale-headlights` capture and slice 15's §11.3
   simulation are where those two get answered.
 
+## Slice 15 — the balance simulation (§11.3 is the authority)
+
+The harness landed in `498b13d` as a *report*: 232 runs, every table printed, one
+check that printed it and asserted nothing. This slice is the half that makes it a
+gate, and the report it printed on its first run is what found the bugs.
+
+**The headline is that the game could not lose and could not be fought.** Sixteen
+full runs, sixteen wins, **zero captures and zero connected swings across all of
+them**, and a competent player that could not finish seed 8. §7.4's escalating
+banish — the only thing in the game that makes it easier — had never fired once in
+the branch's history, and §11.3's two trends were being measured on a creature
+that was permanently present and permanently harmless.
+
+### The three bugs, in the order the simulation found them
+
+1. **THE CREATURE WALKED OUT OF THE MAP.** `creaturePosition` is canonical and
+   `_walkCreature` moves it by `wrapDelta` deltas, so a chase across the seam
+   walks it a whole `WORLD_EXTENT` out of the window the view draws it in. Seed 8's
+   finale ended with `creaturePosition.x = -448.0` while the player's canonical x
+   was `0.0` and the view origin was `(256, 256)`. `wrapDelta` correctly reported
+   the two as *coincident*; `worldOf` drew the figure 448 m away on the far side
+   of the map; and `distanceBetween` — a plain Euclidean, and the function the
+   world uses for `CAPTURE_RADIUS`, `BANISH_RANGE`, the awareness meter's distance
+   and §6.4's proximity breath — read 448 m of nothing. **508.2 s inside
+   `BANISH_RANGE` of the player, zero captures, zero banishes, and a run that
+   timed out instead of winning.** This is the fifth frame bug of the family (the
+   other four are documented at `world.js`'s `_walkCreature`), and it is the one
+   the harness's own `reachOf` disagreed with, which is how it was caught: the
+   harness folds, the world did not, and a 0.0 m against a 448 m disagreement is
+   not a rounding error.
+   - **`hood.nearestImage(canonical, nearWorld)`** — new, pure, one place. The
+     nearest image of a canonical point to a world point, `round` not `floor` so
+     a half-period tie is stable, and **idempotent** so it can be applied every
+     frame without drift. It returns a canonical coordinate that may sit a whole
+     period outside the canonical window, which is deliberate: `nodeId` and
+     `nearestIntersection` fold, so the graph is unaffected, and `worldOf`
+     composes with it into the image nearest the player. The picture and the AI
+     are now the same creature by construction.
+   - **`world._recentre()`** now folds the creature with the map, once per frame,
+     in the one place the wrap moves. `_capture` and `_wipe` call `_recentre()`
+     instead of `streetView.recentre` directly, and `_wipe` teleports *first*, so
+     the fold is taken against where the player actually is.
+   - **Removed** the `BELL_DEBUG_CAPTURE` probe the previous pass left in
+     `_updateCreature`, and deleted `scratch-bench.mjs`.
+2. **§6.2'S SOUND TABLE WAS BEING READ AT ZERO METRES.** `player.js` says it
+   outright — "The world owns the creature's position, so it owns the distance"
+   — and every event it emits is `{kind, radius, position}`. `awarenessStep` reads
+   `event.distance` with a default of `0`, and **nobody in `world.js` ever
+   supplied one**. So a footstep was heard at full strength from anywhere in a
+   448 m neighbourhood: a walk carries 9 m, a sprint 22, a toll 30, a shutdown 25,
+   and all five were being applied at 0 m. The creature therefore knew where the
+   player was from the first Act II footstep, which is §10.2's ENRAGED property
+   handed to every state in the game. The trace shows it plainly: `AW
+   walk@0/9 | seen=false range=16 dist=277.2 st=chase ->1.00`. This is the bug
+   that made Act II *unmeasurable* rather than merely mis-tuned — the creature was
+   permanently acquired, so §8.2's twelve-second valve always fired before it could
+   cross the gap it had been given, and every encounter was 17 s of on-field inside
+   a 19 s cycle with the thing 98 m away and closing nothing.
+   - The fix is one `map` in `_updateCreature`, and the distance is measured from
+     the **listener** (the creature's drawn copy) to the event, not from the player
+     to itself — which is the mistake I made first, and which the report caught by
+     not moving a single digit.
+3. **THE COMPETENT POLICY NEVER SWUNG.** Not a game bug, and the most expensive
+   one to find, because the game was working and the *player* was not. With
+   hiding allowed from 34 m and fighting only inside 26 m, the competent player
+   hid the whole way in: the meter decayed, the chase released, the creature
+   walked to a position the player had already left, and it closed to 26 m exactly
+   never. §6.2's table is a sprint at 22 m — the loudest thing in the game — and
+   §11.1 never grants the creature more than 5.2, so sprinting from a chase buys
+   0.8 m/s and a neighbourhood full of witnesses, forever.
+### Every constant this slice tuned, before and after
+
+| constant | before | after | why |
+| --- | --- | --- | --- |
+| `hood.nearestImage` | did not exist | new pure fold | the creature's frame; idempotent, nearest image |
+| `world._recentre()` | folded the map only | folds the map **and** `creaturePosition` | once per frame, where the wrap already moves |
+| `_updateCreature` sound events | no `distance`; read as `0` | `distance` = `wrapDelta` from the creature | §6.2's table is distances |
+| `BELL_DEBUG_CAPTURE` probe | present in `world.js` | removed | debug scaffolding, not a feature |
+| `FIGHT_RANGE` (harness) | 26 m | **22 m** (via 45) | the edge of §11.1's own detection table — inside all three pre-finale ranges so contact happens, and as close to that edge as possible so the wait is not on-field time |
+| hide gate (harness) | `!fighting` (distance) | `!canFight` (the hammer) | a player holding the hammer has a better answer than silence |
+| sprint gate (harness) | `plan.sprint && …` | `plan.sprint && (finale \|\| !canFight) && …` | §6.2's sprint is the *loudest* thing in the game; §10.2 is the one place it is the answer |
+| `finaleRuns()` pose | `skipHammer: true`, "no hammer" | **hammer in hand** | §10.2: "banish still works … the hammer must stay relevant or Act II's whole skill ceiling evaporates at the climax". A finale with the hammer removed cannot fail *at* the hammer |
+| `nearestCopy` (harness) | its own copy of the fold | `hood.nearestImage` | one definition, so the harness and the game cannot disagree by construction |
+| `REEMERGE_DELAY_FLOOR` | 0.5 s | **0.5 s** (tried 1.5, reverted) | raised to give §8.2's valve real value; moved the third-2/third-3 share margin by 0.001, so it was reverted rather than committed as a change that buys nothing |
+| `scratch-bench.mjs` | 53 KB at the repo root | deleted | the debug bench is not the gate |
+
+Nothing in `creature.js`'s two ladders moved. `AGGRESSION_SPEED_STEP` 0.45,
+`AGGRESSION_SIGHT_STEP` 2.0, `BANISH_TABLE` 8/12/16/20/24, `CHASE_MAX_SECONDS` 12,
+`SPEED_CEILING` 5.2, `CAPTURE_RADIUS` 1.1, `BANISH_RANGE` 2.6,
+`REEMERGE_MIN_GRAPH_DISTANCE` 2 hops, `REEMERGE_DELAY_CEILING` 6,
+`ENRAGED_REEMERGENCE_SECONDS` 1.5, and §7.3's `BREATH_DRAIN_PER_SEC` 0.28 /
+`BREATH_RECOVER_PER_SEC` 0.18 are all **unchanged**, and that is the finding rather
+than an omission: every number the previous pass tuned was defensible and the game
+was still unplayable, because the faults were in the *wiring between the tables*
+and in which copy of the map a position was in.
+
+One of those unchanged numbers is worth a note, because it looked like a tuning
+target and is not. §10.2 promises 5.2 m/s is "deliberately just under the player's
+6.0 sprint, so the gap is real and crossable", and `verify.mjs` asserts
+`BREATH_DRAIN_PER_SEC > BREATH_RECOVER_PER_SEC` — recovery slower than drain. Those
+two are mutually inconsistent: with a duty cycle of k = drain/recover > 1, the
+*sustainable* average of a sprinting player is `(6.0 + 3.6k)/(1 + k)`, which is
+**4.54 m/s** at the tuned 0.28/0.18 and can never exceed 6.0 for any k > 1. So the
+gap is crossable for the first ~3.5 s of a sprint and not after, and the finale is
+a sequence of sprint, catch, sprint. That is a real finding and the design's
+premise is genuinely weaker than it reads — but the *fix* is not a breath constant,
+because §7.3's hysteresis and `verify.mjs`'s "recovery must be slower than drain"
+are both deliberate, and the measured answer turned out to be §10.2's other bullet
+instead: a connected swing in the finale is 1.6 s of STAGGER plus
+`ENRAGED_REEMERGENCE_SECONDS` and a §8.3 placement 90 m away — three seconds of
+standing still for a block and a half of head start — which is why the competent
+finale is now 0-for-8 on captures with the hammer in hand. **The hammer, not the
+sprint, is §10.2's real escape valve**, and it was only measurable once the frame
+was fixed. Left for the orchestrator to rule on: whether the breath duty cycle or
+§10.2's 5.2 is the number that should move.
+
+### What the gate asserts now, and what it measured
+
+`TEMP balance report` is gone. In its place, **six permanent checks** and a shared
+`pooledThirds()` that the report and the checks both read, so the printed table
+and the gated numbers cannot drift:
+
+| claim | before | after |
+| --- | --- | --- |
+| on-field share, thirds 1→2→3 | 0.830 / 0.888 / 0.908 **rising** | **0.945 / 0.849 / 0.829 falling** |
+| on-field seconds per encounter | 17.0 / 17.2 / 25.6 | **178.6 / 83.0 / 73.1** (2.4x) |
+| damage per encounter (pursuit m/s) | 3.47 / 5.13 / 5.10 | **1.54 / 2.55 / 4.62** |
+| banish rung at encounter start | 0.00 / 0.00 / 0.00 | **0.06 / 0.80 / 2.11** |
+| competent full runs | 7/8 won, seed 8 lost, 0 banishes in 5 seeds | **8/8 won, 0 captures, 2–6 banishes every seed** |
+| competent finale | 1 capture in 8/8 | **0 captures in 8/8** |
+| careless finale | 1–3 captures, won anyway | **1–2 captures in 8/8, never wins clean** |
+| Act I reckless | 0 captures | **0 captures, and 0 `_capture` decisions** |
+| re-emergences meeting §8.3 | 201 (35 in cone, 0 sighted) | 43 (5 in cone, 0 sighted, 0 under the hop floor) |
+
+Trend 1 is asserted on **both** readings — the share, which is the stricter one
+because the exposure has to fall faster than the cycle it is measured against, and
+the raw on-field seconds, which is §11.3's own wording — and on **the mechanism**:
+the rung the encounter began on has to climb, and runs that swung the hammer have
+to show a lower share than runs that never did. A trend that holds while the ladder
+sits still is a coincidence, and the previous pass's numbers were exactly that.
+
+Trend 2 is asserted on the measured closing speed, monotonically, and against
+`SPEED_CEILING * 0.85` — not `1.0`, because it is a mean over every frame spent
+being pursued and a locked leg spends some of those turning a corner. The gate says
+so in the assertion rather than quietly rounding it.
+
+The finale check asserts what the measurement supports and **says what it does not**:
+a runner is never caught and a walker is caught in most seeds and never wins clean,
+and the runner is *not* reliably faster, because it spends its time on the hammer
+and the walker spends its time being caught and §9.1 draws both from the same
+budget. An earlier draft of that check gated on seconds-per-seed; seed 2 failed it
+and the honest fix was to stop claiming it.
+
+### Gate
+- **207/207 pure checks** (up from 206) — one new check, `nearestImage puts a
+  canonical point in the copy the player is nearest to`: idempotence over every
+  node and ±periods, nearest-image-not-merely-nearer against an exhaustive
+  one-period brute force, the half-period bound, and the player's own wrap being
+  unable to change the answer.
+- **43/43 world checks** (up from 39) — the one TEMP check became six, and the
+  dead `actTwoEncounters` helper is gone, so `oxlint` is clean with no warnings.
+- 232 runs in ~10 s, so the whole gate is still seconds rather than minutes.
+
+### Honest limits of this slice
+- **The harness plays three policies, not people.** The competent policy is a
+  claim about how a competent player behaves — hold ground with the hammer, answer
+  the thing, sprint only in the finale — and this slice had to *write* that claim
+  before the trends existed, because the trends do not exist without it. It is the
+  weakest link in the chain and the one slice 16 should be most suspicious of.
+- **`FIGHT_RANGE` is a policy constant, not a game one.** The game's own
+  `BANISH_RANGE` (2.6) and the three §11.1 detection ranges (14/17/20) bracket it,
+  which is why 22 is defensible rather than arbitrary, but it is a *policy* number
+  and a different policy would move the pooled thirds.
+- **The third-2/third-3 share margin is 0.020.** The trend is monotone and the
+  on-field-seconds margin is 2.4x, so the gate is not balanced on the thin edge —
+  but the *share* specifically is held by a small number, because the first third's
+  mean is dominated by a handful of very short phase-out cycles. Widening it means
+  more Act II encounters per run, not a different constant.
+- **Not verifiable here:** whether a 22 m stand-off reads as nerve or as a bug to
+  a person holding a bell-hammer, and whether 0.945 → 0.829 is *felt* as the run
+  getting easier. Slice 16's captures and a human play are where those land.
+
 ## Infrastructure notes (for reproducibility)
+
+
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
 - New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.
 - Push auth: `git -c credential.helper='!f(){ echo username=zeke-cmd; echo password=${GH_TOKEN}; }; f' push origin cline/space-bunny-alpha` (GH_TOKEN from /work/.hermes/.env).
@@ -673,7 +857,9 @@ plan asks for stated as facts — and about two things that turned out to be wro
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 14–16 in order (14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slices 09–13 are landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`. Slice 14 should start from the parked world-check block at the bottom of `verify-world.mjs` — **31 checks are waiting there (9 slice-10, 7 slice-11, 9 slice-12, 5 slice-13, plus the v1-era live block it replaces)** — and the only thing between that block and the gate is the 2D canvas stub. Two things slice 14 needs to know that slice 13 found: the slice-11 block's last check needed a missing `})` (fixed here, and a reminder that the parked blocks have never been parsed), and **four slice-10 presentation checks fail as written** against today's world (title-screen apparition pose, the telegraph's look-back, the phase-out check's `§9.2` line, the creature view's folded position) — a control run with slice 13's source changes stashed gives 24/31, so those four are not slice 13's doing and want a decision, not a tweak.
-- Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
-- **NEW, and slice 15's first job: CHASE CLOSES NOW.** Slice 13 put `chase` into `PURSUING_STATES`, so a chasing creature walks at the tier speed for the first time in the branch's history — until slice 13 the world only moved it in STALK. Act II is therefore *harder* than every earlier slice assumed, and the §11.3 simulation should be run with that in mind rather than reading the old numbers. The number to watch is `CAPTURE_RADIUS / (SPRINT - tier speed)`: 1.4 s of clean sprinting in the finale, 2.6 s at tier 1, and it is asserted, so a tuning pass that pushes any tier past the sprint fails the gate immediately.
+- **Slice 16 is next, and it is the last one:** captures (title, entry, shrine, door, reset, pause, win, responsive, detail), `benchmark/templates/result-readme.md`, the deploy, the main catalog row. Nothing in the balance chain is left open.
+- **Two design questions this slice raised rather than settled, for the orchestrator.** (1) §10.2's "the gap is real and crossable" is not true of a *sustainable* sprint — the breath duty cycle caps a sprinting player at 4.54 m/s against 5.2 — so either `BREATH_DRAIN_PER_SEC`/`BREATH_RECOVER_PER_SEC` or §10.2's 5.2 has to move, and `verify.mjs` currently pins "recovery must be slower than drain". (2) §16.3's open question "Should the finale banish re-emergence be 1.5 s or longer?" was measured and **1.5 s is right**: at 1.5 s the competent finale is 0-for-8 on captures, and the reason is not the delay but the §8.3 placement 90 m away, so raising the delay would only add dead time. Recorded here rather than changed, because both are design-table numbers and not this slice's to move.
+- Slices 09–15 are landed; the branch is past the point of no return and reverting v2 means reverting one line in `App.jsx`. **Slice 14's brief is stale** — `verify-world.mjs` is repaired, in the gate, and now carries 43 checks. The slice-15 section above is the record of what the harness found once it could run, and three of those findings were in gameplay code rather than in the harness.
+- Slice 07's open questions are now **measured**, not asserted: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m), `AGGRESSION_SPEED_STEP` = 0.45, `AGGRESSION_SIGHT_STEP` = 2.0, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s. The only one of the six that moved this slice is the delay floor, and it moved back to where it was.
+- **Slice 13's warning turned out to matter more than it looked.** It said the §11.3 number to watch is `CAPTURE_RADIUS / (SPRINT - tier speed)` — 1.4 s of clean sprinting in the finale — and that is exactly the margin the finale runs on. It is asserted, and no tuning pass pushed a tier past the sprint.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.

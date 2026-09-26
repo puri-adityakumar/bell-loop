@@ -2791,6 +2791,77 @@ test('in a wrapping world, far means nothing (the wrap the pathing rests on)', (
   assert.ok(closest > 4 * beast.detectionRange(2, 0), '§8.3: never inside a detection range, even the last one')
 })
 
+test('nearestImage puts a canonical point in the copy the player is nearest to', () => {
+  // THE SIXTH FRAME BUG, and the one the balance simulation found by refusing to
+  // believe its own numbers. `creaturePosition` is canonical and the walk moves it
+  // by folded deltas, so a chase across the seam walks the creature clean out of the
+  // window it is drawn in: one whole 448 m period from the copy the player is
+  // standing in, with `wrapDelta` correctly reporting the two as coincident and
+  // `worldOf` drawing the figure 448 m away on the far side of the map. Every
+  // distance the world derives from the pair then reads a period of nothing —
+  // `CAPTURE_RADIUS`, `BANISH_RANGE`, the awareness meter, §6.4's breath — which is
+  // how an ENRAGED creature spent 508 s standing inside a player that the game could
+  // not see. This is the fold that fixes it, and it is pure, so it is pinned here.
+  const EXTENT = hood.WORLD_EXTENT
+  for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+    const node = hood.streetNodeToWorld(id)
+    // a point already in the window, with the player standing on it, is itself
+    const onIt = hood.nearestImage(node, node)
+    assert.ok(
+      Math.hypot(beast.wrapDelta(onIt.x, node.x), beast.wrapDelta(onIt.z, node.z)) < 1e-9,
+      `node ${id} moved when the player was standing on it`,
+    )
+    // IDEMPOTENT, which is what makes it safe to apply every frame: folding an
+    // already folded point is itself, so the position cannot drift.
+    for (const periods of [-2, -1, 1, 3]) {
+      const away = hood.nearestImage(
+        { x: node.x + EXTENT * periods, z: node.z - EXTENT * periods },
+        node,
+      )
+      assert.ok(
+        Math.hypot(beast.wrapDelta(away.x, node.x), beast.wrapDelta(away.z, node.z)) < 1e-9,
+        `node ${id}, ${periods} periods out, did not fold onto the player`,
+      )
+    }
+  }
+  // and it is the NEAREST image, not merely a nearer one: the fold may put the
+  // point outside the canonical window, and the answer must be the image at most a
+  // half period away in both axes — which is the property `worldOf` then inherits,
+  // because the view's origin is a whole-period shift of the player's own.
+  for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+    const node = hood.streetNodeToWorld(id)
+    for (const target of [0, 17, 64, 200, -150, 300]) {
+      const player = { x: node.x + target, z: node.z - target * 0.5 }
+      const image = hood.nearestImage({ x: node.x + EXTENT * 2, z: node.z - EXTENT * 3 }, player)
+      const got = Math.hypot(beast.wrapDelta(image.x, player.x), beast.wrapDelta(image.z, player.z))
+      let best = Infinity
+      for (const periods of [-1, 0, 1]) {
+        const candidate = { x: node.x + EXTENT * periods, z: node.z }
+        best = Math.min(
+          best,
+          Math.hypot(beast.wrapDelta(candidate.x, player.x), beast.wrapDelta(candidate.z, player.z)),
+        )
+      }
+      assert.ok(got <= best + 1e-9, `node ${id} at ${target} m: ${got.toFixed(1)} m away, and ${best.toFixed(1)} m was available`)
+      assert.ok(got <= hood.WORLD_HALF + 1e-9, `node ${id} at ${target} m: ${got.toFixed(1)} m is over a half period away`)
+    }
+  }
+  // the player's own wrap cannot change the answer, because `canonicalCoord` is a
+  // function of the position alone: a player two periods east folds to the same place
+  const node = hood.streetNodeToWorld(5)
+  const base = hood.nearestImage({ x: node.x + EXTENT, z: node.z }, node)
+  for (const periods of [-3, -1, 1, 4]) {
+    const moved = hood.nearestImage(
+      { x: node.x + EXTENT, z: node.z },
+      { x: node.x + EXTENT * periods, z: node.z },
+    )
+    assert.ok(
+      Math.hypot(beast.wrapDelta(moved.x, base.x), beast.wrapDelta(moved.z, base.z)) < 1e-9,
+      `the player moving ${periods} periods changed which copy the creature is in`,
+    )
+  }
+})
+
 test('the creature walks streets, and the graph never asks it to walk a diagonal', () => {
   // §6.1 routes along the streets, so every edge has to BE a street: two adjacent
   // nodes share an axis, and the run between them sits on a road centreline. This

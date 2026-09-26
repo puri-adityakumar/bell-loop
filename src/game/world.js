@@ -666,9 +666,32 @@ export class LongQuietGame {
    * boundary, which is every 448 m of walking. This is the only place the wrap
    * moves, and the reason the player never has to: their coordinates run
    * monotonically and the world slides behind them instead.
+   *
+   * THE CREATURE IS PART OF THE WORLD, AND IT WALKS
+   * -----------------------------------------------
+   * The creature is folded here too, and this is the fifth and last of the frame
+   * bugs the balance simulation found — the four in `_walkCreature` and the one on
+   * the distance above were all about which copy of the map a *number* was in, and
+   * this one is about a *position* leaving the map entirely. `creaturePosition` is
+   * canonical and the walk moves it by folded deltas, so a chase that crosses the
+   * seam walks the creature straight out of the window it is being drawn in: in the
+   * finale of seed 8 it ended up a whole 448 m period from the copy the player was
+   * standing in, which put the drawn figure 448 m away on the far side of the map
+   * while `wrapDelta` correctly said it was touching. The consequence was a
+   * creature that stood inside the player for 508 s and could neither be captured
+   * (the radius test read a period of nothing) nor be banished (the hammer's reach
+   * read the same), and a competent run that could not win.
+   *
+   * Folding it here, once per frame, in the same place the map itself is folded, is
+   * what makes `creaturePosition` mean one thing: "the image of the creature that
+   * the player is nearest to". Everything downstream is then a plain Euclidean
+   * distance between two things that are genuinely next to each other — the capture
+   * test, `BANISH_RANGE`, the awareness meter, §6.4's breath, the sight cone and the
+   * figure on screen — and the harness can measure the same pair the same way.
    */
   _recentre() {
     this.streetView.recentre(this.player.pos.x, this.player.pos.z)
+    this.creaturePosition = hood.nearestImage(this.creaturePosition, this.player.pos)
   }
 
   // -------------------------------------------------------------------------
@@ -879,7 +902,41 @@ export class LongQuietGame {
 
     // §6.2: whatever the player queued, plus whatever the world queued
     for (const event of this.player.drainSounds()) this.soundEvents.push(event)
-    const sounds = this.soundEvents
+    // AND THE DISTANCE, which is the sixth and worst of the frame bugs, and the one
+    // that made Act II unmeasurable rather than merely mis-tuned.
+    //
+    // `player.js` says it plainly: "The world owns the creature's position, so it
+    // owns the distance and the awareness integration; this file only says what
+    // happened and how far it carries." Every event is therefore `{kind, radius,
+    // position}` and no more, and `awarenessStep` reads `event.distance` with a
+    // default of 0 — so a footstep was heard at FULL STRENGTH from anywhere in a
+    // 448 m neighbourhood. §6.2's whole table is distances: a walk carries 9 m, a
+    // sprint 22, a toll 30, a shutdown 25, and every one of them was being applied
+    // at 0 m. The creature therefore knew where the player was at all times, from
+    // the first Act II footstep, which is §10.2's ENRAGED property handed to every
+    // state in the game.
+    //
+    // It is invisible in code review because `awarenessStep`'s default is defensible
+    // in isolation and every pure test passes a distance explicitly. It is visible
+    // the moment anyone plays: the balance simulation logged a chase beginning at
+    // 279 m, an awareness meter at 1.00 with the creature two hundred metres off, and
+    // 88% of Act II spent with the thing on the field and unable to reach anyone.
+    // §8.2's twelve-second valve fired before the creature could cross the gap it was
+    // given, so the run was 17 seconds of on-field per 19-second cycle and no
+    // contact ever — which is why the hammer was never swung and §7.4's ladder never
+    // moved a rung. Sound acquires; it does not acquire across four blocks.
+    //
+    // The fold is the one below, not `distanceBetween`: the same seam, the same
+    // reason, and `wrapDelta` is the module's own definition of proximity. The
+    // listener is the creature, not the player — `soundStrength` is "how loud an
+    // event is at `distance`", and the event is the player's footstep, so the
+    // distance that prices it is the creature's.
+    const sounds = this.soundEvents.map((event) => ({
+      ...event,
+      distance: event.position
+        ? Math.hypot(beast.wrapDelta(event.position.x, drawn.x), beast.wrapDelta(event.position.z, drawn.z))
+        : Infinity,
+    }))
     this.soundEvents = []
 
     const removed = this.creature.state === 'dormant' || this.creature.state === 'stagger'
@@ -966,9 +1023,6 @@ export class LongQuietGame {
     }
     if (step.phaseOut) this._beginDismissal()
     else if (step.to === 'dormant' && step.from === 'stagger') this._beginDismissal()
-    if (process.env.BELL_DEBUG_CAPTURE && distance < 2 && beast.CAPTURE_STATES.includes(this.creature.state)) {
-      console.log('PROBE seed' + this.seed, 'loop' + this.state.loop, this.creature.state, distance.toFixed(2), 'captured=' + step.captured, 'swing=' + this._swingPending, 'pos', this.creaturePosition.x.toFixed(1), this.creaturePosition.z.toFixed(1), 'player', player.x.toFixed(1), player.z.toFixed(1))
-    }
     if (step.captured) this._capture()
   }
 
@@ -1351,7 +1405,9 @@ export class LongQuietGame {
     this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
     // the streets do not move and the objectives do not move; the dressing does
     this.streetView.applyLoop(this.state.loop)
-    this.streetView.recentre(SPAWN.position.x, SPAWN.position.z)
+    // the whole world folds at once, creature included: see `_recentre`, and the
+    // frame bug that made a finale capture invisible to the game that decided it
+    this._recentre()
     this.resetElapsed = 0
     this.fade = 1
     this.store.set({ phase: PHASE.RESET, fade: 1 })
@@ -1717,9 +1773,12 @@ export class LongQuietGame {
     // beacon already on and the backrooms beat with it.
     this.streetView.setHeadlights(false)
     this.streetView.applyLoop(1)
-    this.streetView.recentre(SPAWN.position.x, SPAWN.position.z)
-    this._refreshColliders()
+    // teleport first, then fold: the creature's image is chosen against the player,
+    // so a recentre taken before the player is at the spawn would fold it against
+    // where the player used to be standing
     this.player.teleport(SPAWN.position.x, SPAWN.position.z, SPAWN_YAW)
+    this._recentre()
+    this._refreshColliders()
     this.player.enabled = false
     this._applyDusk(0)
     this.resetElapsed = 0
