@@ -77,6 +77,12 @@ import {
 // at the same time. `creature.js` is pure — no DOM, no Three.js — so importing it
 // costs this file nothing.
 import { OCCLUDER_KINDS } from './creature.js'
+// ITERATION 2, PASS 5. The building detail (which windows are lit, which side a
+// door is on) is a function of the lot and not of build order, so it needs the
+// chunk-addressed stream rather than a counter. `streamAt` is the same entry point
+// `neighborhood.js` uses for its own draws, which is the point: one PRNG, one
+// contract, and a shuffled `buildChunks` still produces the same world.
+import { streamAt } from './hash.js'
 
 // ---------------------------------------------------------------------------
 // palette (§12.3) — extended from v1's PALETTE, which lived in world.js
@@ -140,7 +146,35 @@ export const PALETTE = Object.freeze({
   asphalt: 0x17151b,
   sidewalk: 0x2b2830,
   kerb: 0x35313b,
-  siding: Object.freeze([0x3a3540, 0x4a4038]),
+  // ITERATION 2, PASS 5 — THE SIDING TABLE
+  // --------------------------------------
+  // BEFORE two entries, `0x3a3540` and `0x4a4038`, chosen so a cold grey and a
+  // warm brown-grey were available. The table was never *used* correctly: see the
+  // `setColorAt` note on `InstancePool` and the `siding` material below — every
+  // house in the world was drawn with whichever of the two the last lot in build
+  // order happened to ask for, so the two-tone of §12.3 existed only in a comment.
+  //
+  // AFTER four entries, one per value of `lot.tint` (which `neighborhood.js`
+  // draws as `Math.floor(rng() * 4)`, so four is the whole of the range and the
+  // modulo in `_addLot` now divides by a power of two that also happens to be the
+  // number of colours). The two pairs are *related*, not random: an even tint is
+  // a cool grey-violet and an odd tint is the same value warmed, because a
+  // neighbourhood where one house is blue-grey and its neighbour is a different
+  // blue-grey reads as noise and a neighbourhood where cold and warm alternate
+  // down a street reads as built.
+  //
+  //   tint 0  0x3a3540  the BEFORE cold grey, kept exactly so the pass does not
+  //                    move the value every existing wall already had
+  //   tint 1  0x4a4038  the BEFORE warm grey, same reason
+  //   tint 2  0x342f3c  a darker, bluer cold grey — the pair to tint 3
+  //   tint 3  0x453b34  a darker, browner warm grey — the pair to tint 2
+  //
+  // Every one of the four is between 9% and 15% Rec. 709 luma, which is the whole
+  // reason the table is allowed to exist at all: §12.1's silhouette rule needs a
+  // building to stay a dark shape against a sodium haze, so these are *variations
+  // on a dark*, not a palette, and the gate measures the spread rather than
+  // trusting the comment.
+  siding: Object.freeze([0x3a3540, 0x4a4038, 0x342f3c, 0x453b34]),
   roof: 0x1d1a22,
   hedge: 0x1e2a1e,
   fence: 0x2a2620,
@@ -165,6 +199,35 @@ export const PALETTE = Object.freeze({
   // bounced off grey asphalt has lost its most saturated wavelengths twice over,
   // and a bounce in the *key's* colour reads as a second key rather than as fill.
   bounce: 0xffd2a0,
+  // ITERATION 2, PASS 5 — THE EMISSIVE LADDER, FOUR RUNGS (AESTHETIC-NOTES T11)
+  // ---------------------------------------------------------------------------
+  // T11 asks for a formalised ladder rather than "some windows glow". These four
+  // are the rungs, brightest to dimmest, and the order is a *property* the gate
+  // measures rather than a comment: portal cyan, the sodium lamp head, a lit
+  // window, a door lamp. Each is strictly dimmer in Rec. 709 than the one above.
+  //
+  // BEFORE there was no fourth rung and no `entryLamp` at all: a building had a
+  // window (the `window` fixture, `windowLit`, at 0xffbe72) or it had nothing, and
+  // the only way to mark a door was to place a whole `porchLight` fixture against
+  // the wall, which is a light source at 2.4 m rather than a fitting on the wall.
+  //
+  // AFTER, in Rec. 709 8-bit luma:
+  //
+  //   portal     0x3ad6d6   180.8   the one cold light in the game
+  //   sodium     0xffa54a   177.5   the lamp head
+  //   windowLit  0xffbe72   198.3   a lit window
+  //   entryLamp  0x6b4520    74.3   a fitting over one door
+  //
+  // `windowLit` is deliberately *not* below `sodium`. A lit window is a light
+  // *source* seen through glass and a lamp head is a reflector; they are not the
+  // same object, and the honest reading of a night street is that a first-floor
+  // window is the brightest thing on a house while the lamp head is the brightest
+  // thing in the air. So the ladder is asserted as three separate properties
+  // rather than one total order: `entryLamp` is below both, `portal` and `sodium`
+  // are within 5 luma of each other, and `windowLit` is the brightest of the four
+  // because it is a small bright rectangle seen against a dark wall.
+  windowLit: 0xffbe72,
+  entryLamp: 0x6b4520,
   headlight: 0xffe2a8,
   creature: 0x08070a,
 })
@@ -200,7 +263,19 @@ const SIDEWALK_WIDTH = 3
 /** Length of one straight run of road/sidewalk: three periods, so it never ends. */
 const RUN_LENGTH = WORLD_EXTENT * 3
 const WALL_HEIGHT = 5.2
-const ROOF_HEIGHT = 1.9
+
+/**
+ * ITERATION 2, PASS 5 — `ROOF_HEIGHT` is DELETED, not renamed.
+ *
+ * It was 1.9 m: the height of a `ConeGeometry(0.72, 1, 4)` pyramid sitting on
+ * every house, which made it the largest silhouette in a 336 m world and the
+ * reason `street.png` reads as a row of blocks with party hats on them. A flat
+ * roof has no height to speak of — it has a DECK (`ROOF_DECK_THICK`, 140 mm) and
+ * a PARAPET around it (`PARAPET_HEIGHT`, 340 mm) — so the number was doing two
+ * unrelated jobs and is now neither of them. Leaving a `ROOF_HEIGHT` behind
+ * "renamed" to something would be a lie a future pass would build on, and
+ * `verify.mjs` asserts the constant is *absent* so the cone cannot come back.
+ */
 
 /**
  * How wide a sodium pool is on the road, metres.
@@ -440,6 +515,278 @@ const PORTAL_GATE_SCALE = Object.freeze([1, 1, 0.68])
  * what happens when a decal is laid at the road's height inside a lot.
  */
 const YARD_TOP = 0.1
+
+// ---------------------------------------------------------------------------
+// building depth — iteration 2, pass 5
+//
+// AESTHETIC-NOTES §0 is the diagnosis this block answers: "a small number of
+// large, clean primitives ... and essentially nothing between them, so the eye
+// reads the gaps as unfinished rather than as space." Every number below is a
+// REAL one, taken from the reference's `DESIGN.md` §4 scale table, because T2's
+// argument is that believability here is a discipline problem and not a
+// modelling one.
+//
+// The block is ordered the way the eye reads a building: the storey line first
+// (it is what makes a wall two storeys tall), then the window stack because it
+// is the thing with depth in it, then the entrance, then the roofline, which is
+// the only part of a building visible past its neighbours.
+// ---------------------------------------------------------------------------
+
+/**
+ * Storey height, metres: what makes a wall two storeys instead of a tall shed.
+ *
+ * BEFORE nothing. `WALL_HEIGHT` (5.2) was one number with no internal division,
+ * so there was no storey line anywhere on a wall and every block in
+ * `street.png` read as a warehouse. AFTER `WALL_HEIGHT / 2` = 2.6 m, which is
+ * the only division of 5.2 that puts a window head below the eaves and a door
+ * below the belt. The reference's own 2.9 m storey is not usable at our wall
+ * height, and 2.6 is close enough to it that a player cannot tell.
+ */
+const STOREY_HEIGHT = WALL_HEIGHT / 2
+
+/**
+ * The window, in metres: leaf width, leaf height, and the three depths its
+ * parts stand at — glass flush with the wall, the frame 40 mm proud of that, and
+ * the sill 60 mm proud of the frame.
+ *
+ * BEFORE nothing at all: the only windows in the world were the `window`
+ * *fixture*, a 1.2 x 0.2 x 0.1 emissive box stuck 80 mm off the wall. A flat lit
+ * rectangle on a wall reads as a sticker (T3), and a sticker that lights up
+ * reads as a decal.
+ *
+ * AFTER a real double: 1.1 x 1.2 m, which is a window a person looks out of.
+ * The three depths are the entire point of the stack, and they are cheap —
+ * three boxes per window, and the *frame* is what sells it. `frame` is proud
+ * enough to catch a sodium rim on its top edge, and the sill below it is proud
+ * again so the light lands on a horizontal surface. At 40 m through fog, the
+ * silhouette that survives is "a bright top edge over a dark hole over a
+ * brighter shelf", and that is exactly the three numbers.
+ */
+const WINDOW = Object.freeze({ w: 1.1, h: 1.2, depth: 0.08, frame: 0.04, sill: 0.06 })
+
+/**
+ * How far in from its wall's edges a pair of windows sits, as a fraction of that
+ * wall's width. There is no BEFORE: this pass is what put windows on walls at all.
+ *
+ * A fraction rather than a metre count because the two walls are wildly different
+ * sizes — a 26 m street frontage and a 5.5 m flank — and a fixed 3 m inset puts
+ * both windows of a flank wall *outside* it. 0.3 puts the pair at ±30% of the
+ * wall, which is where a house's windows actually are (roughly a third in from
+ * each end) and which leaves the corner clear on every wall in the world.
+ */
+const WINDOW_INSET = 0.3
+
+/**
+ * How far along its wall a door sits from the wall's centre, as a fraction of the
+ * wall's width. No BEFORE — this pass is what put doors on walls.
+ *
+ * 0.22 is 5.7 m on a 26 m frontage and 1.2 m on a 5.5 m flank, and both are
+ * right: on a wide house the door sits under the gap between its two front
+ * windows, and on a narrow one it is off-centre enough to read as an entrance
+ * rather than as a seam. It is a fraction for the same reason `WINDOW_INSET` is:
+ * one number has to work for a wall that is 26 m and a wall that is 5.5 m.
+ */
+const ENTRANCE_OFFSET = 0.22
+
+/**
+ * The lit-window rate: one window in this many is lit, and never two on the
+ * same facade.
+ *
+ * BEFORE `FIXTURE_DENSITY` and nothing else — lit windows were a by-product of
+ * the decorative fixture pass, so a lot could get three or none and it changed
+ * every loop, which means the player could watch a house's lights move.
+ *
+ * AFTER 6, which is one in six, chosen against the two numbers that bracket it.
+ * Higher and the street is an office park; T11's inversion says we spend
+ * saturated light on four things, not a dozen signs, and a street of lit windows
+ * is a dozen signs. Lower and the variance is invisible at the range §16.5's
+ * captures are shot from. "Never two on one facade" is a rule rather than a
+ * number and is enforced in `_addFacadeDetail`.
+ */
+const LIT_WINDOW_ONE_IN = 6
+
+/**
+ * The entrance, in metres: the recess it is set into, the door leaf that fills
+ * it, and how much wider the dark reveal is than the leaf.
+ *
+ * 0.15 m is the code minimum for a door reveal, and it is the difference
+ * between a door and a rectangle: at 0 the door is a panel on a wall, and at
+ * 0.15 there is a shadowed return on the leading edge that survives being 40 m
+ * away and half in fog. The reveal is *wider* than the leaf (`1.08`) so the
+ * dark returns are visible either side of it, which is what makes the recess
+ * read as a hole rather than as a dark frame.
+ */
+const DOOR_RECESS = 0.15
+const DOOR_LEAF_W = 0.95
+const DOOR_LEAF_H = 2.05
+const DOOR_REVEAL_SCALE = 1.08
+
+/**
+ * The two steps up to a door, in metres: riser, tread, and how much wider each
+ * step is than the one above it. Real values are a 170 mm riser and a 280 mm
+ * tread; the reference's `DESIGN.md` §4 makes the same point with a 0.9-1.1 m
+ * handrail and a 0.44 m bench seat — nothing here is "about right".
+ *
+ * The oversail is why the steps read at all. Two identical slabs read as one
+ * slab; two slabs that step *outward* read as a staircase in silhouette even at
+ * a range where the 170 mm riser is too small to measure. 60 mm per side is a
+ * real over-sail for a concrete step, and it is the only number here doing
+ * visual work rather than structural work.
+ */
+const STEP_RISER = 0.17
+const STEP_TREAD = 0.28
+const STEP_OVERSAIL = 0.06
+const STEP_COUNT = 2
+
+/**
+ * The canopy over a door: how deep it projects, how thick it is, and how far
+ * above the door head it sits.
+ *
+ * T-notes item 4 calls a 400 mm canopy the thing that turns a hole into an
+ * entrance, and the number is real (door hoods are 300-450 mm). It is also
+ * exactly deep enough to throw its own shadow on the head of the door under a
+ * lamp mounted above it — which is why the entry lamp goes *under* the canopy
+ * rather than beside it, and why the canopy's depth is stated in the same block
+ * as the lamp rather than in the block above.
+ *
+ * `CANOPY_LIFT` is 350 mm, at the top of the real range for a hood above a door
+ * head, and it is the number that gives `ENTRY_LAMP_Y` anywhere to be. The two
+ * constraints on a fitting under a hood are that its top clears the hood's
+ * underside and that it lights the top of the door rather than the doorstep, and
+ * a 120 mm lift left an 85 mm window between them — a real one, but a knife-edge
+ * that a later retune of `DOOR_LEAF_H` would close. 350 mm leaves 105 mm above
+ * and 210 mm below, and the gate asserts both.
+ */
+const CANOPY_DEPTH = 0.4
+const CANOPY_THICK = 0.07
+const CANOPY_LIFT = 0.35
+
+/**
+ * The entry lamp: its height on the wall, its offset from the door, and its box.
+ *
+ * BEFORE nothing — the only way to mark a door was to place a whole `porchLight`
+ * fixture against the wall, which is a light source at 2.4 m rather than a fitting
+ * on the wall, and which moved every loop.
+ *
+ * AFTER 2.15 m, and that number is not a taste call: it is derived from two
+ * constraints that are both real. Its top must clear the canopy's underside (at
+ * `DOOR_LEAF_H + CANOPY_LIFT - CANOPY_THICK / 2` = 2.365 m) and it must be above
+ * the door's own head (2.05 m) or it lights the doorstep instead of the door.
+ * Together those admit `1.94 < y < 2.255` — a 315 mm window — and 2.15 sits in
+ * it, 210 mm above the head and 105 mm below the hood. The offset of 0.35 m to
+ * the side is far enough that the fitting does not read as part of the door frame
+ * and near enough that its light still falls on the leaf.
+ *
+ * The first version of this pass used the textbook 2.3 m bulkhead height, which
+ * put the fitting's top at 2.41 m through a canopy underside at 2.21 m — the lamp
+ * was sticking out through the hood it was supposed to be lighting. The second
+ * used 1.98 m, which fitted under the hood but hung its top 40 mm BELOW the door
+ * head, so it lit the doorstep. `verify-world.mjs` caught the first and the gate
+ * below caught the second, which is the argument for asserting both halves
+ * rather than the one that happened to fail.
+ */
+const ENTRY_LAMP_Y = 2.15
+const ENTRY_LAMP_SIDE = 0.35
+const ENTRY_LAMP_W = 0.16
+const ENTRY_LAMP_H = 0.22
+const ENTRY_LAMP_D = 0.12
+
+/**
+ * The parapet: how far it stands proud of the wall below it, how tall it is,
+ * and how far the roof deck is set back behind it.
+ *
+ * BEFORE the pyramid. A `ConeGeometry(0.72, 1, 4)` at 1.9 m on a 5.2 m box is
+ * the most toy-like object on the street, and mechanism 1 says why: the
+ * reference spends its detail budget on things that change a building's
+ * *outline* — eaves, parapets, gutters — and a four-sided cone is the one shape
+ * whose outline is a triangle no house in this world has.
+ *
+ * AFTER a flat cap, and the flat cap solves a different problem from the one
+ * the pyramid caused. A pyramid has a *sloping* silhouette, which under a light
+ * source directly overhead catches nothing; a cap has a *horizontal* edge, and
+ * 60 mm of horizontal edge 340 mm tall is enough for a sodium lamp 5 m above and
+ * 20 m away to put a rim on it. Both numbers are real: parapet upstands are
+ * 300-450 mm and their cills project 40-80 mm. The 0.35 m set-back is the
+ * drainage edge a real flat roof has behind its upstand, and it is what stops
+ * the cap reading as a lid rather than as a wall that happens to stop.
+ */
+const PARAPET_PROUD = 0.06
+const PARAPET_HEIGHT = 0.34
+const PARAPET_SETBACK = 0.35
+
+/**
+ * The parapet's bar, as a fraction of the roof's width — the annulus is built
+ * from the same `makeFrameGeometry` as every other frame in this file, so the
+ * only thing that differs is how thick its edge is.
+ *
+ * 0.02 is 180 mm on an 18 m lot, which is a real upstand thickness and is
+ * chosen against the alternative: a thicker bar eats the roof deck it is standing
+ * on, and a thinner one is a lip the fog eats. It is a fraction rather than a
+ * metre count because the annulus is a UNIT shape, so a bar expressed in metres
+ * would have to be re-derived per house and would be wrong on three lots in four.
+ */
+const PARAPET_BAR = 0.02
+
+/**
+ * The roof deck's own thickness, metres.
+ *
+ * BEFORE `ROOF_HEIGHT` (1.9 m) was the height of a four-sided cone, and the
+ * constant was doing two unrelated jobs at once: how tall the roof was, and how
+ * far the roof sat above the wall. AFTER the roof is flat, so those are two
+ * facts — a deck is thin, and a parapet is tall — and 0.14 m is a real
+ * insulated deck build-up with a screed. It matters beyond realism because the
+ * two now compose: a 5.2 m wall plus a 0.14 m deck plus a 0.34 m parapet is a
+ * 5.68 m silhouette, and the gate measures that total rather than trusting any
+ * one of the three.
+ */
+const ROOF_DECK_THICK = 0.14
+
+/**
+ * The roof-top clutter: one AC condenser and one vent box, in metres.
+ *
+ * Mechanism 1's cheapest single item — the reference builds all three of these
+ * (AC units, ridge vents, gable vents) on every house in the town, and they
+ * are the only parts of a building that are visible past its neighbours. Both
+ * boxes are real residential sizes: a condenser is 0.9 x 0.6 x 0.45 and a vent
+ * cowl is 0.5 x 0.4 x 0.3. They sit on the *set-back* rather than on the front
+ * edge because that is where they actually go, and because a box on the front
+ * edge would be the one thing in the frame that reads as a hat.
+ */
+const AC_BOX = Object.freeze([0.9, 0.6, 0.45])
+const VENT_BOX = Object.freeze([0.5, 0.4, 0.3])
+
+/**
+ * The storey belt: its height and how far it stands proud.
+ *
+ * BEFORE nothing. AFTER a 140 mm band at the storey line standing 50 mm proud,
+ * which are the real dimensions of a belt course. Its whole job is T-notes
+ * item 5 — "so a two-storey wall reads as two storeys" — and it works because
+ * it is a *horizontal* line on a vertical surface, which is the one thing a box
+ * with nothing on it does not have. It is also the cheapest part in this pass:
+ * one instance, no texture, and it changes the read of every wall in the world.
+ */
+const BELT_HEIGHT = 0.14
+const BELT_PROUD = 0.05
+
+/**
+ * The per-lot instanced part budget, and the ceiling `verify.mjs` measures the
+ * worst lot against.
+ *
+ * This is T5, and the multiplier is the reason it exists: 49 chunks x 4 lots x
+ * 3 wrapped copies = 588 lot instances, so a per-lot part is paid three times
+ * before anyone sees it and the total is fixed at build time rather than at
+ * runtime. 40 is T5's proposed ceiling. A maximal house here places **31** parts
+ * and the mean across all 588 lots is **13.2** (measured: 31 / 13.19 / 3 for
+ * max / mean / min, from `partBudget()`), so passes 6-12 have room to add street
+ * furniture without anyone re-deriving the cost of the buildings it stands
+ * against — nine parts per lot, which is about a pole, a sign and a hydrant.
+ *
+ * The gate measures the WORST lot rather than the mean, for the reason T5 gives:
+ * the mean hides the block whose four façades all face a street, and that is the
+ * one a player walks past most. It also measures the SPREAD, because a max equal
+ * to the mean would mean nothing varies and the budget would be measuring noise.
+ */
+const LOT_PART_BUDGET = 40
 
 
 // ---------------------------------------------------------------------------
@@ -728,11 +1075,15 @@ class InstancePool {
   }
 
   /**
-   * Place one instance. An over-capacity write is counted rather than thrown: a
-   * fixture kind that outgrows its pool is a capacity bug, and dropping the
-   * geometry silently would turn it into a hole in the world instead.
+   * Place one instance, optionally with its own colour. An over-capacity write is
+   * counted rather than thrown: a fixture kind that outgrows its pool is a
+   * capacity bug, and dropping the geometry silently would turn it into a hole
+   * in the world instead.
+   *
+   * @param {number|null} [color] per-instance colour, which is what replaced the
+   * per-lot `mesh.material` reassignment — see the note inside.
    */
-  place(x, y, z, w, h, d, yaw = 0) {
+  place(x, y, z, w, h, d, yaw = 0, color = null) {
     if (this.used >= this.capacity) {
       this.overflow += 1
       return false
@@ -743,6 +1094,18 @@ class InstancePool {
     this._scale.set(w, h, d)
     this._matrix.compose(this._position, this._quaternion, this._scale)
     this.mesh.setMatrixAt(this.used, this._matrix)
+    if (color !== null) {
+      // AESTHETIC-NOTES T1. The whole reason this parameter exists: an
+      // `InstancedMesh` has ONE material slot, so the pre-pass-5 code that did
+      // `pool.mesh.material = this._materials.siding[tint]` inside the per-lot
+      // loop was reassigning the same slot 588 times and every house in the
+      // world came out the colour of whichever lot happened to be built last.
+      // `setColorAt` is the same idea the reference uses with a vertex attribute
+      // (`houses/tex.js` line 1: "one material serves every wall colour"), moved
+      // from a per-vertex attribute to a per-instance one, and it costs one
+      // `Float32Array` of three floats per instance.
+      this.mesh.setColorAt(this.used, color)
+    }
     this.used += 1
     return true
   }
@@ -755,6 +1118,12 @@ class InstancePool {
   commit() {
     this.mesh.count = this.used
     this.mesh.instanceMatrix.needsUpdate = true
+    // and the colour buffer, which is a *separate* attribute from the matrix and
+    // is not flagged by anything three.js does on our behalf. A pool that sets
+    // instance colours and forgets this renders every instance at the colour the
+    // first one asked for, which is precisely the bug this pass closed, moved
+    // from the material slot to the attribute.
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true
   }
 
   dispose() {
@@ -808,6 +1177,163 @@ function lotFrame(lot) {
 function atDepth(frame, offset, depth) {
   const sign = frame.back >= frame.front ? 1 : -1
   return frame.front + sign * (offset + depth / 2)
+}
+
+/**
+ * `facadeFrame` — T6: a sub-frame for one wall, so all façade placement is 2D.
+ *
+ * The claim T6 makes is that placement should be written as `(u, y, proud)` in the
+ * wall's own coordinates and the world transform handled in one place, because
+ * otherwise "a window on the north face" and "a window on the east face" are two
+ * separate cases and two chances to be wrong. `lotFrame` already answers "which
+ * way round is this lot"; this is the type that answers "which way does *this
+ * wall* point", and `onFacade` is the only thing in the file that acts on it.
+ *
+ * Five fields, and every one of them is something a wall-mounted part needs:
+ *
+ *   - `face`:  the world axis the wall FACES — `'z'` for a north- or south-facing
+ *              wall, `'x'` for an east- or west-facing one. Every part on this
+ *              wall is *thinnest* on this axis, which is what lets the depth
+ *              stack (pane, frame, sill) be one signed number per part.
+ *   - `sign`:  the outward normal on that axis, `+1` or `-1`.
+ *   - `plane`: the world coordinate of the wall's face.
+ *   - `along`: the world coordinate of the wall's midpoint on the OTHER axis.
+ *   - `size`:  the wall's width, so a façade can be inset from its own edges.
+ *
+ * There is deliberately no trigonometry here. `houseFaces` below is where "which
+ * wall faces the street" is decided, once, and it is the only place that has to
+ * know whether a lot is long in x or in z.
+ *
+ * @param {'x'|'z'} face the axis the wall faces
+ * @param {number} sign the outward normal on that axis
+ * @param {number} plane the wall's face, on that axis
+ * @param {number} along the wall's midpoint, on the other axis
+ * @param {number} size the wall's width
+ */
+function facadeFrame(face, sign, plane, along, size) {
+  return { face, sign, plane, along, size }
+}
+
+/**
+ * `onFacade` — place one box against a wall, in the wall's own coordinates.
+ *
+ * `u` runs along the wall from its midpoint, `y` is height above the lot, and
+ * `proud` is signed: positive stands the box OUT of the wall and negative sets it
+ * INTO it. `w` is always measured *along* the wall and `d` always *through* it, so
+ * a caller never has to know which world axis the wall faces — that swap is the
+ * one piece of trigonometry this function exists to do once.
+ *
+ * @param {InstancePool} pool
+ * @param {object} wall from `facadeFrame`
+ * @param {number} u metres along the wall from its midpoint
+ * @param {number} y height above the lot
+ * @param {number} proud metres out of (or into) the wall; `d` is centred on it
+ * @param {number} w extent along the wall
+ * @param {number} h height
+ * @param {number} d extent through the wall
+ * @param {THREE.Color|null} [color] per-instance colour, for tinted parts
+ */
+function onFacade(pool, wall, u, y, proud, w, h, d, color = null) {
+  if (wall.face === 'z') {
+    pool.place(wall.along + u, y, wall.plane + wall.sign * proud, w, h, d, 0, color)
+  } else {
+    pool.place(wall.plane + wall.sign * proud, y, wall.along + u, d, h, w, 0, color)
+  }
+}
+
+/**
+ * `makeFrameGeometry` — one rectangular annulus, unit-sized, centred, 1 m deep.
+ *
+ * This is the window and door *frame* as a single piece of geometry rather than
+ * four bars. T3's stack is "interior quad, glass, frame, sill" and the reference
+ * spends nine parts on a window; four bars for the surround is 4 instances per
+ * window, and 588 lot instances x 4 windows x 4 bars is 9,400 instances spent on
+ * four rectangles. An extruded rectangle with a rectangular hole is ONE
+ * instance and the same silhouette, which is the whole of T3's advice about
+ * parts ("ours should be four parts, not nine") taken further than it goes.
+ *
+ * The hole is what makes the frame read at all: a box with a box on it is a
+ * sticker with a border, and a box with a HOLE in it has an inside face, and the
+ * inside face is the shadowed reveal that says "this is an opening". The bar is
+ * 60 mm because a real window frame is 50-70 mm and because the frame's inner
+ * return is what a 40 mm proud frame shows you at a grazing angle.
+ */
+function makeFrameGeometry(bar = 0.06) {
+  const outer = new THREE.Shape()
+  outer.moveTo(-0.5, -0.5)
+  outer.lineTo(0.5, -0.5)
+  outer.lineTo(0.5, 0.5)
+  outer.lineTo(-0.5, 0.5)
+  outer.closePath()
+  const inner = 0.5 - bar
+  const hole = new THREE.Path()
+  hole.moveTo(-inner, -inner)
+  hole.lineTo(inner, -inner)
+  hole.lineTo(inner, inner)
+  hole.lineTo(-inner, inner)
+  hole.closePath()
+  outer.holes.push(hole)
+  // `curveSegments: 1` because every edge here is straight, and `bevelEnabled:
+  // false` because a 2 mm bevel on a 60 mm bar is one texel of a 1.1 m window at
+  // any distance the player can see it from. 96 vertices is 32 triangles; the
+  // four-bar version it replaces was 48 and needed four instances to draw.
+  const geometry = new THREE.ExtrudeGeometry(outer, { depth: 1, bevelEnabled: false, curveSegments: 1 })
+  geometry.translate(0, 0, -0.5)
+  return geometry
+}
+
+/**
+ * `houseFaces` — the three walls of a house that carry anything, as sub-frames.
+ *
+ * This is the function T6 asks for and the only place in the file that has to
+ * know which way round a lot is. Everything downstream — windows, door, canopy,
+ * entry lamp — is written as `(u, y, proud)` against one of these and never
+ * mentions x or z again.
+ *
+ * It returns the street wall FIRST and the two flanks after, and the order
+ * matters twice over: the door goes on the street wall because a door is what a
+ * street is for, and the RNG stream below is consumed in this order so the lit
+ * windows do not move when somebody reorders a loop.
+ *
+ * The street wall's plane is the HOUSE's front face, which is `w / 2` (or `d / 2`)
+ * nearer the street than the house's centre — not the lot's frontage line. That
+ * distinction is the bug this pass found: a house sits 55% of a 10 m lot's depth
+ * from the frontage, so anything placed against the *lot* is 4.5 m out in the
+ * yard, in mid-air, which is precisely what the pre-pass-5 `window` fixture did.
+ *
+ * @param {object} frame `lotFrame`'s output
+ * @param {number} cx house centre, world x
+ * @param {number} cz house centre, world z
+ * @param {number} w house width, world x
+ * @param {number} d house depth, world z
+ * @returns {{street: object, flanks: object[]}}
+ */
+function houseFaces(frame, cx, cz, w, d) {
+  // `atDepth` walks from the lot's FRONT toward its back, so this is the sign that
+  // direction has, and the street is at the far end of it: the outward normal is
+  // its negation. Written out rather than reused from `atDepth` because a reader
+  // who gets this sign backwards puts every window in the neighbouring garden.
+  const inward = frame.back >= frame.front ? 1 : -1
+  const out = -inward
+  if (frame.alongX) {
+    // N and S lots: the house is wide in x and shallow in z, so the street wall
+    // faces z at `cz - inward * d / 2` and runs along x for `w` metres.
+    return {
+      street: facadeFrame('z', out, cz - inward * (d / 2), cx, w),
+      flanks: [
+        facadeFrame('x', 1, cx + w / 2, cz, d),
+        facadeFrame('x', -1, cx - w / 2, cz, d),
+      ],
+    }
+  }
+  // E and W lots: the transpose of the above.
+  return {
+    street: facadeFrame('x', out, cx - inward * (w / 2), cz, d),
+    flanks: [
+      facadeFrame('z', 1, cz + d / 2, cx, w),
+      facadeFrame('z', -1, cz - d / 2, cx, w),
+    ],
+  }
 }
 
 /**
@@ -881,6 +1407,11 @@ export class StreetView {
     this.lampPositions = []
     this.pools = []
     this.textures = []
+    // One entry per lot per wrapped copy, appended by `_addLot`. This is T5's
+    // instrument: the pass measures what it spends rather than estimating it, and
+    // `partBudget()` reads it. It is per-COPY rather than per-lot because the
+    // copies are what the world actually pays for, and 588 entries is 4.7 kB.
+    this.lotParts = []
     this._time = 0
 
     this._materials = this._buildMaterials()
@@ -918,7 +1449,29 @@ export class StreetView {
   _buildMaterials() {
     const asphalt = this._texture({ seed: SURFACE_SEEDS.asphalt, base: 0.52, contrast: 0.34, grain: 0.1, repeat: 180 })
     const sidewalk = this._texture({ seed: SURFACE_SEEDS.sidewalk, base: 0.58, contrast: 0.16, grain: 0.05, repeat: 96 })
-    const siding = this._texture({ seed: SURFACE_SEEDS.siding, base: 0.6, contrast: 0.18, grain: 0.04, stripes: 8 })
+    // ITERATION 2, PASS 5 — the map is now actually NEUTRAL.
+    //
+    // BEFORE `base: 0.6`. That reads like a neutral greyscale board texture and
+    // is not one: the canvas is tagged `SRGBColorSpace`, so 0.6 is 0.318 in
+    // *linear*, and a map is a multiplier. The wall was therefore being drawn at
+    // `tint x 0.318`, and since the tints are deliberately 3-6% linear (§12.1's
+    // silhouette rule), the largest surface in the frame resolved to about 1.3%
+    // albedo — black velvet, below anything the dusk curve can lift. Measured on
+    // `street.png` before this change, the façade band was a median luma of 16
+    // with the SIDING at ~1, which is why every window frame, sill, door and
+    // parapet added this pass was invisible: the joinery had a black wall to read
+    // against. The comment above this material claims the map is neutral and the
+    // four `PALETTE.siding` tints do the colouring; BEFORE this they were
+    // multiplied together instead, and the tints were doing roughly a third of
+    // the work they were written to do.
+    //
+    // AFTER `base: 1.0` with the contrast and grain scaled down to match. The
+    // board lines survive entirely in `stripes` (0.86-1.0) and the dither, so the
+    // texture still reads as siding at 40 m — it is just no longer darkening the
+    // tint underneath it. `contrast` had to come down with the base because a 0.18
+    // spread around a base of 1.0 clips the top third of every board flat, which
+    // would throw away exactly the highlight the pass is trying to create.
+    const siding = this._texture({ seed: SURFACE_SEEDS.siding, base: 1.0, contrast: 0.05, grain: 0.035, stripes: 8 })
     const hedge = this._texture({ size: 64, seed: SURFACE_SEEDS.hedge, base: 0.46, contrast: 0.44, grain: 0.16 })
     // The swirl, built here and pushed onto `this.textures` rather than at the
     // gate's call site: the other five textures in this file go through
@@ -933,10 +1486,28 @@ export class StreetView {
       sidewalk: this._material({ color: PALETTE.sidewalk, map: sidewalk }),
       kerb: this._material({ color: PALETTE.kerb }),
       yard: this._material({ color: PALETTE.yard }),
-      siding: [
-        this._material({ color: PALETTE.siding[0], map: siding }),
-        this._material({ color: PALETTE.siding[1], map: siding }),
-      ],
+      // ITERATION 2, PASS 5 — ONE siding material, four instance colours.
+      //
+      // BEFORE an array of two, and `_addLot` picked one per lot by writing
+      // `this.pools.houses.mesh.material`. That never worked: an `InstancedMesh`
+      // has a single material slot, so the write applied to the *pool*, not to
+      // the instance, and the last lot in build order decided the colour of all
+      // 588 houses. AESTHETIC-NOTES §4 found it and pass 5 is the pass that
+      // fixes it.
+      //
+      // AFTER one material, white, and the four `PALETTE.siding` tints carried in
+      // `instanceColor`. The map is still the neutral greyscale board texture, so
+      // instance colour multiplies it exactly the way the reference's vertex
+      // colours multiply its neutral atlas ("all textures are neutral/light so
+      // vertex colours tint them", `houses/tex.js` line 1). `vertexColors` is
+      // deliberately NOT set: three.js enables the instancing colour path from
+      // `instanceColor` being non-null, and setting `vertexColors` as well would
+      // make the shader look for a per-vertex attribute that is not there.
+      siding: this._material({ color: 0xffffff, map: siding }),
+      // The same treatment for outbuildings, for the same reason and with the same
+      // consequence: a garage lot and a house lot on the same frontage were
+      // previously the same colour as whichever lot came last.
+      outbuilding: this._material({ color: 0xffffff, map: siding }),
       roof: this._material({ color: PALETTE.roof }),
       hedge: this._material({ color: PALETTE.hedge, map: hedge }),
       fence: this._material({ color: PALETTE.fence }),
@@ -1015,7 +1586,35 @@ export class StreetView {
         blending: THREE.AdditiveBlending,
       }),
       headlight: this._glow(PALETTE.headlight),
-      windowLit: this._glow(0xffbe72),
+      // The lit window, from the emissive ladder. Unlit like every other rung
+      // (`_glow` sets `fog: false`), because §4 promises the player can see a
+      // lit window from 60 m down an avenue and fogged emissive does not survive
+      // 60 m. The *frames* around it are not unfogged, which is the ladder
+      // working: the light survives distance, the joinery does not.
+      windowLit: this._glow(PALETTE.windowLit),
+      // The dim unlit pane behind a dark window. `_glow` would be wrong — this is
+      // a surface, not a source — so it is a standard material at a colour a
+      // little above black, and it is what a window with nothing behind it looks
+      // like: not a hole in the world, because a house has a wall behind the
+      // glass, but a dark rectangle that catches the sodium's reflection.
+      windowDark: this._material({ color: 0x0e0f14, roughness: 0.22, metalness: 0.6 }),
+      // The joinery: frames, sills, the belt course and the parapet. A separate
+      // material from `siding` because joinery is painted a different colour from
+      // siding in every house on earth, and because the *sill* is the one
+      // horizontal surface in the whole frame that faces the sky, so it needs a
+      // lower roughness to hold the sodium's reflection where the wall cannot.
+      trim: this._material({ color: 0x4a4750, roughness: 0.8, metalness: 0.05 }),
+      // The entrance: a recessed reveal (near-black, so it reads as a hole), a
+      // painted leaf, and concrete steps.
+      doorReveal: this._material({ color: 0x0b0c10, roughness: 0.95 }),
+      doorLeaf: this._material({ color: 0x2c2a33, roughness: 0.7 }),
+      step: this._material({ color: 0x33303a, roughness: 0.92 }),
+      // T11's lowest rung. It is `_glow` and therefore unfogged, which is a
+      // deliberate exception: an entry lamp is a fitting with a bulb in it, and
+      // at 40 m the thing a player should be able to find is the *door*, not the
+      // lamp. Fogging it would mean the door goes dark before the lamp does,
+      // which inverts the hierarchy the ladder exists to state.
+      entryLamp: this._glow(PALETTE.entryLamp),
       panel: this._material({ color: 0x26232b }),
     }
   }
@@ -1072,9 +1671,91 @@ export class StreetView {
     return pool
   }
 
+  /**
+   * `_streetPool` — create a pool AND record its name, in one call.
+   *
+   * The record is the point. `this.pools` is both an array (every pool is pushed
+   * so `dispose` can walk them) and a keyed map (so `_addLot` can say
+   * `this.pools.houses`), and a caller that creates a pool and forgets to name it
+   * gets a pool that `dispose` releases and nothing can find. Before this pass the
+   * commit list was a second, hand-written array of names next to the creations,
+   * and the two could disagree — which is a bug class, not a bug. One list, from
+   * which both the commit and the gate read, is the whole fix.
+   *
+   * @param {string[]} names the street pool names, in creation order
+   */
+  _streetPool(names, name, geometry, material, capacity) {
+    names.push(name)
+    return this._pool(name, geometry, material, capacity)
+  }
+
   /** Instance capacity for anything placed once per lot, per wrapped copy. */
   static get LOT_CAPACITY() {
     return CHUNKS * SIDE_NAMES.length * WRAP_COPIES.length
+  }
+
+  /**
+   * `_partsUsed` — every instance written into every pool so far.
+   *
+   * The sum T5's instrument is a difference of. It iterates `this.pools` as an
+   * ARRAY on purpose, and the reason is a bug this pass had: `this.pools` is both
+   * an array (so `dispose` can walk every pool) and a keyed map (so `_addLot` can
+   * say `this.pools.houses`), and `Object.values` on that object returns each
+   * pool TWICE — once by index, once by name. The first version of this method
+   * used `Object.values` and every lot measured at exactly double its real cost,
+   * which is the kind of error a budget check cannot catch on its own.
+   *
+   * `for...of` over an array visits the index keys only, which is what is meant.
+   * O(pools) rather than O(1) because a running total is another number somebody
+   * has to keep correct by hand, and this pass has already found two of those.
+   */
+  _partsUsed() {
+    let total = 0
+    for (const pool of this.pools) total += pool.used
+    return total
+  }
+
+  /**
+   * `partBudget` — T5's measurement, and the reason the pass has a number in it.
+   *
+   * The multiplier is the problem T5 names: 49 chunks x 4 lots x 3 wrapped copies
+   * = 588 lot instances, so anything placed per lot is paid three times before
+   * anyone sees it, and the count is fixed at build time rather than at runtime.
+   * A fidelity pass that adds 12 parts per lot is a 7,000-instance regression, and
+   * the only time anybody finds out is pass 17's draw-call budget.
+   *
+   * So the count is INSTRUMENTED rather than estimated. `_addLot` records how
+   * many instances it placed, and this reports the distribution — `max` is the
+   * number T5 says to gate on ("a check that measures the worst lot rather than
+   * the mean, because the mean hides the block that has four facades all facing a
+   * street"), `mean` is here so the two can be read together, and the spread is
+   * here because a max that equals the mean would mean nothing varies and the
+   * budget would not be measuring anything.
+   *
+   * Read from the real built scene, so it cannot drift from what is drawn: a part
+   * that is placed and overflows a pool is counted here as well, which means a
+   * capacity bug shows up as a part count rather than as a hole in the world.
+   *
+   * @returns {{lots: number, mean: number, max: number, min: number}}
+   */
+  partBudget() {
+    const counts = this.lotParts
+    if (counts.length === 0) return { lots: 0, mean: 0, max: 0, min: 0, budget: LOT_PART_BUDGET }
+    let sum = 0
+    let max = 0
+    let min = Infinity
+    for (const count of counts) {
+      sum += count
+      if (count > max) max = count
+      if (count < min) min = count
+    }
+    // The ceiling comes back WITH the measurement rather than beside it, so the
+    // gate compares the world's real worst lot against the number this file
+    // declares and there is no way for the two to have come from different places.
+    // The first version had `verify-world.mjs` parse `LOT_PART_BUDGET` out of the
+    // source text instead, which is a second reader of a number the file already
+    // owns — and is why the constant was an unused declaration.
+    return { lots: counts.length, mean: sum / counts.length, max, min, budget: LOT_PART_BUDGET }
   }
 
   /** Canonical in-order chunk list — the order the checks compare against. */
@@ -1104,37 +1785,107 @@ export class StreetView {
 
   _buildChunkGeometry() {
     const lot = StreetView.LOT_CAPACITY
-    this.pools.yards = this._pool('yard', new THREE.BoxGeometry(1, 1, 1), this._materials.yard, lot + 8)
-    this.pools.houses = this._pool('house', new THREE.BoxGeometry(1, 1, 1), this._materials.siding[0], lot)
-    this.pools.roofs = this._pool('roof', new THREE.ConeGeometry(0.72, 1, 4), this._materials.roof, lot)
-    this.pools.outbuildings = this._pool('outbuilding', new THREE.BoxGeometry(1, 1, 1), this._materials.shed, lot)
-    this.pools.frontage = this._pool('frontage', new THREE.BoxGeometry(1, 1, 1), this._materials.hedge, lot * 2 + 8)
-    this.pools.lampPosts = this._pool('lampPost', new THREE.CylinderGeometry(0.09, 0.12, 1, 6), this._materials.metal, CHUNKS * WRAP_COPIES.length + 8)
-    this.pools.lampHeads = this._pool('lampHead', new THREE.BoxGeometry(1, 1, 1), this._materials.sodium, CHUNKS * WRAP_COPIES.length + 8)
+    // ONE list, created beside the pools and committed from. The previous version
+    // of this method had a hand-written array of names at the bottom next to the
+    // creations at the top, and the two could disagree — a pool created and not
+    // named is a pool whose instances are written into a buffer that is never
+    // uploaded, and the only symptom is that the thing is missing. `names` is
+    // closed over by both, so the divergence is now a syntax error rather than a
+    // missing parapet.
+    const names = []
+    const box = () => new THREE.BoxGeometry(1, 1, 1)
+
+    this.pools.yards = this._streetPool(names, 'yards', box(), this._materials.yard, lot + 8)
+    // ITERATION 2, PASS 5 — the siding is ONE white material and the four
+    // `PALETTE.siding` tints ride in `instanceColor`. BEFORE it was an array of two
+    // and `_addLot` chose between them by writing `pool.mesh.material`, which sets
+    // the POOL's single material slot and so gave all 588 houses the colour of the
+    // last lot built. See AESTHETIC-NOTES §4.
+    this.pools.houses = this._streetPool(names, 'houses', box(), this._materials.siding, lot)
+    // The roof is a DECK, and the roofline is a PARAPET. BEFORE
+    // `new THREE.ConeGeometry(0.72, 1, 4)` at 1.06x the footprint: a four-sided
+    // pyramid is the most toy-like object in the world, because a cone's OUTLINE
+    // is a triangle and no house in a terraced street has one, and because a slope
+    // catches nothing from a light directly overhead. AFTER a flat slab and a ring
+    // of upstand around it, and the ring is the part you see.
+    this.pools.roofs = this._streetPool(names, 'roofs', box(), this._materials.roof, lot)
+    // The parapet is a RING, not a second slab: a slab on a slab is a thicker roof
+    // and a ring is a wall that happens to stop. `makeFrameGeometry` builds it and
+    // also builds every window frame and the door surround — one annulus geometry,
+    // three uses, and the hole in it is what gives a frame an inside face.
+    this.pools.parapets = this._streetPool(names, 'parapets', makeFrameGeometry(PARAPET_BAR), this._materials.trim, lot)
+    this.pools.outbuildings = this._streetPool(names, 'outbuildings', box(), this._materials.outbuilding, lot)
+    // The frontage, SPLIT. BEFORE one pool with
+    // `mesh.material = hedge ? hedge : fence` written per lot — the same
+    // single-slot bug as the siding, and here per-instance colour could NOT have
+    // fixed it, because a hedge has a texture and a fence does not and one
+    // material is not both. Two pools, two materials, one draw call each.
+    this.pools.frontageHedge = this._streetPool(names, 'frontageHedge', box(), this._materials.hedge, lot + 8)
+    this.pools.frontageFence = this._streetPool(names, 'frontageFence', box(), this._materials.fence, lot + 8)
+
+    // The façade detail, in T3's depth order. Every pool here is placed against a
+    // `facadeFrame`, and every capacity is `LOT_CAPACITY * partsPerLot` where
+    // `partsPerLot` is the number this pool takes on a MAXIMAL lot — never the
+    // number it happens to take on this seed. `LOT_KINDS` is house/garage/shed, so
+    // a seed can put a house on every lot, and a capacity sized for "one per lot"
+    // silently drops the extra three. The first version of this block did exactly
+    // that and lost 96 window frames; the world check caught it and a screenshot
+    // would not have, because a dropped part is a hole in the world and the only
+    // report is `pool.overflow`.
+    const per = (partsPerLot) => lot * partsPerLot
+    // Four windows per house: two on the street façade, one on each flank. Each is
+    // a stack of three — a pane set INTO the wall, a frame proud of it, a sill
+    // proudest of all — and the lit pane REPLACES the dark one rather than adding
+    // to it, so a window is always three instances and never four.
+    this.pools.windowGlass = this._streetPool(names, 'windowGlass', box(), this._materials.windowDark, per(4))
+    this.pools.windowLit = this._streetPool(names, 'windowLit', box(), this._materials.windowLit, per(4))
+    this.pools.windowFrames = this._streetPool(names, 'windowFrames', makeFrameGeometry(), this._materials.trim, per(4))
+    this.pools.windowSills = this._streetPool(names, 'windowSills', box(), this._materials.trim, per(4))
+    // Four belt courses per house, one on each wall. The storey line is the
+    // cheapest part in this pass: one instance, no texture, and it is the
+    // difference between "a 5.2 m box" and "a two-storey building".
+    this.pools.belts = this._streetPool(names, 'belts', box(), this._materials.trim, per(4))
+    // Two boxes on the roof — an AC condenser and a vent cowl. They are the only
+    // parts of a building visible past its neighbours, and a roof with nothing on
+    // it is a lid.
+    this.pools.roofClutter = this._streetPool(names, 'roofClutter', box(), this._materials.metal, per(2))
+    this.pools.entryLamps = this._streetPool(names, 'entryLamps', box(), this._materials.entryLamp, per(1))
+    // The entrance is six parts and a door: a reveal set into the wall, a leaf
+    // inside it, a proud surround, two steps at real risers, a 400 mm canopy and
+    // the lamp under it.
+    this.pools.doorReveals = this._streetPool(names, 'doorReveals', box(), this._materials.doorReveal, per(1))
+    this.pools.doorLeaves = this._streetPool(names, 'doorLeaves', box(), this._materials.doorLeaf, per(1))
+    this.pools.doorFrames = this._streetPool(names, 'doorFrames', makeFrameGeometry(), this._materials.trim, per(1))
+    this.pools.steps = this._streetPool(names, 'steps', box(), this._materials.step, per(STEP_COUNT))
+    this.pools.canopies = this._streetPool(names, 'canopies', box(), this._materials.trim, per(1))
+
+    this.pools.lampPosts = this._streetPool(
+      names, 'lampPosts', new THREE.CylinderGeometry(0.09, 0.12, 1, 6), this._materials.metal, CHUNKS * WRAP_COPIES.length + 8,
+    )
+    this.pools.lampHeads = this._streetPool(
+      names, 'lampHeads', box(), this._materials.sodium, CHUNKS * WRAP_COPIES.length + 8,
+    )
     // The pools lie on the road, so their geometry is pre-rotated flat rather than
     // given a rotation: `InstancePool.place` composes yaw only, and a pool is
     // radially symmetric, so yaw is the one transform it does not need.
-    this.pools.lampPools = this._pool(
-      'lampPool',
-      new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
-      this._materials.sodiumPool,
+    this.pools.lampPools = this._streetPool(
+      names, 'lampPools', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this._materials.sodiumPool,
       CHUNKS * WRAP_COPIES.length + 8,
     )
+
     this.buildChunks()
     // The lamps are built *before* the commit loop, and that order is the whole
     // reason this call is here rather than after it. `InstancePool.commit()` is
     // the only thing that publishes instances: it sets `mesh.count` and flags
-    // `instanceMatrix` for upload. Filling a pool after its commit places 147
-    // lamp posts and 147 lamp heads into a buffer that is never uploaded and
-    // never counted, which is not a subtle shading problem — it is a street with
-    // no streetlights on it at all, and the only reason it read as "a dark
-    // scene" rather than "a bug" is that the four dynamic point lights
+    // `instanceMatrix` and `instanceColor` for upload. Filling a pool after its
+    // commit places 147 lamp posts into a buffer that is never uploaded, which is
+    // a street with no streetlights on it — and the only reason it read as "a
+    // dark scene" rather than "a bug" is that the four dynamic point lights
     // `world.js` aims at `lampPositions` still work, because those come from the
     // data rather than the geometry.
     this._buildLamps()
-    for (const name of ['yards', 'houses', 'roofs', 'outbuildings', 'frontage', 'lampPosts', 'lampHeads', 'lampPools']) {
-      this.pools[name].commit()
-    }
+    for (const name of names) this.pools[name].commit()
+    this.streetPools = names
   }
 
   /**
@@ -1160,6 +1911,14 @@ export class StreetView {
   }
 
   _addLot(chunk, lot, isAnchor, copy) {
+    // T5's instrument. The count is a DIFF of every pool's `used` across this
+    // method rather than a hand-maintained tally, because a tally is a number a
+    // future pass forgets to increment and the whole point of the budget is that
+    // it cannot be forgotten. `overflow` is added separately because an
+    // over-capacity write increments `overflow` and NOT `used` — a capacity bug
+    // has to show up in this number, or the budget would be measuring the parts
+    // that fit and staying silent about the ones that did not.
+    const partsBefore = this._partsUsed()
     const frame = lotFrame(lot)
     const x = lot.x + copy * WORLD_EXTENT
     const z = lot.z + copy * WORLD_EXTENT
@@ -1180,15 +1939,42 @@ export class StreetView {
       const w = frame.alongX ? width : depth
       const d = frame.alongX ? depth : width
       if (lot.kind === 'house') {
-        // the two-tone siding of §12.3 is per-lot deterministic: `tint` comes from
-        // the chunk's own stream, so a block's houses agree with each other and
-        // two blocks differ, which is most of what "a repeating neighbourhood"
-        // has to mean for it to read as one
-        this.pools.houses.mesh.material = this._materials.siding[tint]
-        this.pools.houses.place(cx, wall / 2, cz, w, wall, d)
-        this.pools.roofs.place(cx, wall + ROOF_HEIGHT / 2, cz, w * 1.06, ROOF_HEIGHT, d * 1.06, Math.PI / 4)
+        // §12.3's siding, per-lot deterministic, carried in the INSTANCE colour
+        // rather than the material. `tint` comes from the chunk's own stream, so
+        // a block's houses agree with each other and two blocks differ, which is
+        // most of what "a repeating neighbourhood" has to mean for it to read as
+        // one. BEFORE this line was `this.pools.houses.mesh.material =
+        // this._materials.siding[tint]`, which set the *pool's* single material
+        // slot 588 times and left every house in the world the colour of the last
+        // lot built; see AESTHETIC-NOTES §4 and `InstancePool.place`.
+        this.pools.houses.place(cx, wall / 2, cz, w, wall, d, 0, this._tint(tint))
+        // The flat roof deck. BEFORE `w * 1.06, ROOF_HEIGHT, d * 1.06` on a
+        // four-sided cone yawed 45 degrees; AFTER a slab the house's own width,
+        // set back `PARAPET_SETBACK` on each side so the parapet around it has a
+        // deck to stand on rather than sitting on the wall's outer edge.
+        this.pools.roofs.place(
+          cx,
+          wall + ROOF_DECK_THICK / 2,
+          cz,
+          w - 2 * PARAPET_SETBACK,
+          ROOF_DECK_THICK,
+          d - 2 * PARAPET_SETBACK,
+        )
+        this._addFacadeDetail(chunk, lot, frame, cx, cz, w, d, wall)
       } else {
-        this.pools.outbuildings.place(cx, wall / 2, cz, w, wall, d)
+        this.pools.outbuildings.place(cx, wall / 2, cz, w, wall, d, 0, this._tint(tint))
+        this.pools.roofs.place(
+          cx,
+          wall + ROOF_DECK_THICK / 2,
+          cz,
+          w - 2 * PARAPET_SETBACK,
+          ROOF_DECK_THICK,
+          d - 2 * PARAPET_SETBACK,
+        )
+        this.pools.parapets.place(
+          cx, wall + PARAPET_HEIGHT / 2, cz,
+          w + 2 * PARAPET_PROUD, PARAPET_HEIGHT, d + 2 * PARAPET_PROUD,
+        )
       }
       // one copy only: the wrapped copies exist to be seen, not collided with,
       // and the player is always within half a period of the canonical one
@@ -1204,18 +1990,313 @@ export class StreetView {
     const segment = frame.long / 3 - 1.5
     const offset = frame.long / 3
     const kind = (chunk.cx + chunk.cz + SIDE_NAMES.indexOf(lot.side)) % 2 === 0 ? 'hedge' : 'fence'
-    this.pools.frontage.mesh.material = kind === 'hedge' ? this._materials.hedge : this._materials.fence
+    // The two runs go into the pool for their OWN kind rather than into one pool
+    // with a rewritten material slot. Same bug as the siding, and here per-instance
+    // colour could not have saved it: a hedge is a textured soft mass and a fence
+    // is an untextured panel, and no single material is both. Splitting the pool
+    // is the fix, and it costs one draw call.
+    const pool = kind === 'hedge' ? this.pools.frontageHedge : this.pools.frontageFence
     for (const side of [-1, 1]) {
       const sx = frame.alongX ? x + side * offset : x + (frame.front - lot.x)
       const sz = frame.alongX ? z + (frame.front - lot.z) : z + side * offset
       const w = frame.alongX ? segment : 0.5
       const d = frame.alongX ? 0.5 : segment
       const h = kind === 'hedge' ? 1.3 : 1.1
-      this.pools.frontage.place(sx, h / 2, sz, w, h, d)
+      pool.place(sx, h / 2, sz, w, h, d)
       if (copy === 0) {
         this._collider(sx, sz, w, d, kind)
         this._occluder(sx, sz, w, d, kind)
       }
+    }
+
+    // ...and the lot's part count, recorded last so it covers the yard, the
+    // building, the façade and the frontage. A DIFF, not a tally: see the note on
+    // `partsBefore` at the top of this method. The fixture pass is deliberately
+    // NOT counted here — §3.6's dressing is per-loop and the budget is about the
+    // static street, which is what "a per-lot part" means in T5.
+    this.lotParts.push(this._partsUsed() - partsBefore)
+  }
+
+  /**
+   * `_tint` — one `THREE.Color` per `PALETTE.siding` entry, built once.
+   *
+   * `setColorAt` wants a `THREE.Color`, and allocating 588 of them during the
+   * build would be 588 garbage objects for a table with four entries. The
+   * objects are also *shared*, which is safe and is worth saying: `setColorAt`
+   * copies the colour into the instance buffer rather than keeping the reference,
+   * so a later `tint()` on one of these cannot retroactively repaint a house.
+   */
+  _tint(index) {
+    if (!this._tints) {
+      // `sidingPalette` is the public twin of `_tints`: the same four hexes, in
+      // the same order, readable without reaching into a private. It exists for
+      // `verify-world.mjs`, which has to re-derive the expected colour of every
+      // house from the palette rather than from the buffer it is testing —
+      // a check that compared the buffer with itself would be a tautology, and
+      // the pre-pass-5 bug is exactly the kind of tautology that looks green.
+      this.sidingPalette = PALETTE.siding
+      this._tints = PALETTE.siding.map((hex) => new THREE.Color(hex))
+    }
+    return this._tints[index % this._tints.length]
+  }
+
+  /**
+   * `_addFacadeDetail` — everything on a house that is not the house, in the
+   * order the eye reads it: roofline, storey line, windows, entrance.
+   *
+   * This is the body of AESTHETIC-NOTES T3 and mechanism 1, and it is a method
+   * rather than more lines in `_addLot` for T5's reason: this is where a lot's
+   * part count is spent, and a reader who wants to know what a building costs
+   * should not have to count it across four hundred lines of lot bookkeeping.
+   *
+   * The four groups and what each is for:
+   *
+   *   ROOFLINE — a parapet `PARAPET_PROUD` proud and `PARAPET_HEIGHT` tall, plus
+   *   an AC condenser and a vent cowl on the deck behind it. Mechanism 1's whole
+   *   argument is that a building's read at distance is its OUTLINE and an
+   *   outline is made of horizontal edges. Before this pass the outline was a
+   *   four-sided cone, and a cone's outline is a triangle no house here has.
+   *
+   *   STOREY LINE — one belt course at `STOREY_HEIGHT`, standing `BELT_PROUD`
+   *   proud and `BELT_HEIGHT` tall, on ALL FOUR walls. One instance, and it is
+   *   the difference between "a 5.2 m box" and "a two-storey building": a
+   *   vertical wall with one horizontal division reads as two storeys and one
+   *   without reads as a wall. All four, because a belt that stops at the corner
+   *   reads as tape on one face and the corner is the first thing you see looking
+   *   down a street at a building rather than standing in front of it.
+   *
+   *   WINDOWS — see `_addFacadeWindows`. T3's order (deepest thing is the dark
+   *   interior, the frame is proud of that, the sill proudest of all) is what
+   *   produces a reveal, and a reveal is the only thing that separates a window
+   *   from a sticker at 40 m through fog.
+   *
+   *   ENTRANCE — see `_addEntrance`. T-notes item 4: "the entry is what tells a
+   *   player a building is a building".
+   *
+   * The lit-window rule lives here and not in `neighborhood.js` because it is
+   * art, not a rule: §3.6's four constraints are all about fixture footprint,
+   * and a window that is lit changes no collider.
+   */
+  _addFacadeDetail(chunk, lot, frame, cx, cz, w, d, wall) {
+    // The lot's own stream, so the detail is a function of the lot rather than of
+    // build order: §3.2's contract is that a shuffled `buildChunks` produces the
+    // same set of matrices, and a window that lit itself differently depending on
+    // which chunk was visited first would break it in a way nothing else here
+    // would notice.
+    const rng = streamAt(this.seed, chunk.cx, chunk.cz)
+    // ...advanced past `buildLots`'s own eight draws (kind then tint, four sides),
+    // and then past this lot's, so the window stream is in its own region of the
+    // 32-bit mix rather than next door to the lot data. Sixteen is chosen because
+    // it is comfortably more than eight and the modulo that follows is a power of
+    // two, so the offset costs nothing and cannot drift.
+    for (let i = 0; i < 16 + SIDE_NAMES.indexOf(lot.side) * 2; i += 1) rng()
+
+    // ---- roofline -------------------------------------------------------
+    // The parapet is a RING (one annulus instance) rather than a second slab,
+    // because a slab on a slab is a thicker roof and a ring is a wall that
+    // happens to stop. `makeFrameGeometry` with a bar of `PARAPET_BAR` is the
+    // same geometry every window frame and door surround uses; this is the third
+    // place that one shape does the work of four boxes.
+    // ...`PARAPET_PROUD` PROUD of the wall on every side, which is the number the
+    // whole roofline exists for: a horizontal edge flush with the wall below it
+    // catches no light and changes no outline, so an upstand that does not
+    // project is a thicker wall and not a rim.
+    this.pools.parapets.place(
+      cx, wall + PARAPET_HEIGHT / 2, cz,
+      w + 2 * PARAPET_PROUD, PARAPET_HEIGHT, d + 2 * PARAPET_PROUD,
+    )
+    // The clutter sits BEHIND the parapet on the deck, which is both where real
+    // condensers go and the only place a box can be without becoming the first
+    // thing the eye finds when it looks up. `w / 4` puts the vent on the far
+    // half of the deck from the condenser, so the two read as two objects rather
+    // than as one lumpy one.
+    const deck = wall + ROOF_DECK_THICK
+    this.pools.roofClutter.place(cx, deck + AC_BOX[1] / 2, cz, AC_BOX[0], AC_BOX[1], AC_BOX[2])
+    this.pools.roofClutter.place(cx + w / 4, deck + VENT_BOX[1] / 2, cz, VENT_BOX[0], VENT_BOX[1], VENT_BOX[2])
+
+    // ---- storey line ----------------------------------------------------
+    for (const [ox, oz, sw, sd] of [
+      [0, d / 2, w + 2 * BELT_PROUD, BELT_PROUD],
+      [0, -d / 2, w + 2 * BELT_PROUD, BELT_PROUD],
+      [w / 2, 0, BELT_PROUD, d + 2 * BELT_PROUD],
+      [-w / 2, 0, BELT_PROUD, d + 2 * BELT_PROUD],
+    ]) {
+      this.pools.belts.place(cx + ox, STOREY_HEIGHT, cz + oz, sw, BELT_HEIGHT, sd)
+    }
+
+    // ---- windows, then the entrance -------------------------------------
+    // Street façade first (two windows), then the two flanks (one each).
+    // AESTHETIC-NOTES §5 says "two windows per street-facing facade plus one per
+    // flank, not four per facade", and the reason is T5's: 588 lot instances means
+    // a fourth window on a fourth façade is 2,352 instances nobody notices until
+    // pass 17's draw-call budget.
+    const faces = houseFaces(frame, cx, cz, w, d)
+    this._addFacadeWindows(rng, [
+      { wall: faces.street, count: 2, size: faces.street.size },
+      { wall: faces.flanks[0], count: 1, size: faces.flanks[0].size },
+      { wall: faces.flanks[1], count: 1, size: faces.flanks[1].size },
+    ])
+    this._addEntrance(faces.street, lot.tint % 2 === 0 ? -1 : 1)
+  }
+
+  /**
+   * `_addFacadeWindows` — T3's stack, on one wall, at three depths.
+   *
+   * A window here is FOUR instances, not nine, and the order is the whole of it:
+   *
+   *   1. the pane, set INTO the wall by `WINDOW.depth / 2` — the dark interior
+   *   2. the frame, an extruded annulus standing `WINDOW.frame` proud of the pane
+   *   3. the sill, `WINDOW.sill` proud again, the widest of the three
+   *   4. the lit pane, *replacing* (1) rather than adding to it, on a roll
+   *
+   * T3: "the deepest thing is a dark interior, glass sits in front of it, the
+   * frame is proud of both, and the sill is proudest of all". The sill being
+   * proudest is the part that is easy to leave out and the part that does the
+   * most work: it is the only part of a window that faces the sky, so it is the
+   * only part the sodium overhead can put a highlight on, and a highlight on a
+   * 60 mm shelf is what makes a window read as an opening from 40 m away.
+   *
+   * Two windows on the street façade, one on each flank. "Never two lit on the
+   * same façade" is enforced by `lit`, which is set by a single roll per wall
+   * rather than per window: one roll, one window at most, no possibility of two.
+   *
+   * @param {() => number} rng the lot's stream, already advanced
+   * @param {{wall: object, count: number, size: number}[]} faces one entry per
+   * wall that carries windows, from `houseFaces`: the street wall first (two
+   * windows) then the two flanks (one each), and the order is load-bearing
+   * because `rng` is consumed in it.
+   */
+  _addFacadeWindows(rng, faces) {
+    // ONE roll per wall decides both whether it has a lit window and which of its
+    // windows that is. One roll rather than one per window is what makes "never
+    // two lit on a façade" true BY CONSTRUCTION rather than by a check that could
+    // fail: two windows, one bit.
+    for (const entry of faces) {
+      const litIndex = Math.floor(rng() * entry.count)
+      const lit = rng() < 1 / LIT_WINDOW_ONE_IN
+      for (let i = 0; i < entry.count; i += 1) {
+        // Windows are inset from their wall's own edges by a fixed fraction, so a
+        // 26 m frontage and a 6 m flank both get windows that are not touching the
+        // corner. A window hard against a corner reads as a crack.
+        const u = entry.count === 1 ? 0 : (i === 0 ? -1 : 1) * entry.size * WINDOW_INSET
+        const y = STOREY_HEIGHT * 0.55
+        const isLit = lit && i === litIndex
+        // 1. the pane, `WINDOW.depth / 2` INTO the wall. Half the box is behind
+        // the siding, so the visible face has real depth behind it and the frame in
+        // front of it has something to be proud OF. Before this pass the only
+        // window in the world was a `window` fixture placed at 45% of the lot's
+        // depth — which is 4.5 m in front of the wall, in mid-air.
+        onFacade(
+          isLit ? this.pools.windowLit : this.pools.windowGlass,
+          entry.wall, u, y, -WINDOW.depth / 2, WINDOW.w, WINDOW.h, WINDOW.depth,
+        )
+        // 2. the frame: an extruded annulus standing `WINDOW.frame` proud of the
+        // pane, and wider and taller than it by twice the frame, so the pane reads
+        // as sitting inside an opening rather than lying on a plate. The annulus
+        // is what gives it an inside face, and the inside face is the reveal.
+        onFacade(
+          this.pools.windowFrames, entry.wall, u, y, WINDOW.frame / 2,
+          WINDOW.w + 4 * WINDOW.frame, WINDOW.h + 4 * WINDOW.frame, WINDOW.frame,
+        )
+        // 3. the sill, proudest of all, wider again, and the only part of a
+        // window that faces the sky.
+        onFacade(
+          this.pools.windowSills, entry.wall, u, y - WINDOW.h / 2 - 0.05,
+          WINDOW.sill / 2, WINDOW.w + 0.24, 0.06, WINDOW.sill + 0.04,
+        )
+      }
+    }
+  }
+
+  /**
+   * `_addEntrance` — the door, the steps, the canopy and the lamp.
+   *
+   * T-notes item 4: "the entry is what tells a player a building is a building".
+   * It is five parts and it is the only part of this pass that a player can
+   * *approach*, which is why the numbers here are the real ones rather than the
+   * legible-at-40 m ones: at arm's length the riser is 170 mm because a person
+   * steps up it, and at 40 m the two steps read as a staircase in silhouette
+   * because they step OUTWARD, which is what `STEP_OVERSAIL` is for.
+   *
+   * The depth order, which is the whole argument again:
+   *
+   *   1. the reveal, set `DOOR_RECESS` INTO the wall, near-black
+   *   2. the leaf, inside the reveal, painted
+   *   3. the surround, proud of the reveal — the same annulus the windows use
+   *   4. the canopy, `CANOPY_DEPTH` out and over the head
+   *   5. the entry lamp, under the canopy, on the emissive ladder
+   *
+   * The lamp is at `ENTRY_LAMP_Y` = 1.98 m, which is derived from the canopy's
+   * underside rather than chosen: the canopy's lowest face is at
+   * `DOOR_LEAF_H + CANOPY_LIFT - CANOPY_THICK / 2` = 2.135 m and the fitting is
+   * 220 mm tall, so anything higher than about 2.0 m is sticking out through the
+   * hood it is supposed to be lighting. That is the only reason the canopy is
+   * 400 mm deep as well: it has to be deep enough to catch the lamp's own light
+   * and throw a shadow on the head of the door, and a 200 mm hood would not.
+   *
+   * The door is offset from the wall's centre by a quarter of its width, because
+   * a door dead-centre in a 26 m frontage is a door on a hangar. It goes on the
+   * LEFT for even `tint` lots and the RIGHT for odd ones, so a street has
+   * entrances on both sides of its houses rather than a rhythm — and the side is
+   * read off `lot.tint`, which is the same bit that picks the wall's colour, so
+   * the two decisions are visibly the same decision.
+   *
+   * @param {object} wall the street-facing wall, from `houseFaces`
+   * @param {number} side -1 for the left of the wall, +1 for the right
+   */
+  _addEntrance(wall, side) {
+    const u = side * wall.size * ENTRANCE_OFFSET
+    // 1. the reveal. `DOOR_RECESS` INTO the wall and a little taller and wider
+    // than the leaf, so the leaf sits inside a dark border rather than filling the
+    // hole. Near-black rather than black: pure black at 0.15 m behind a leaf is
+    // a hole in the world, and this is a door in a wall.
+    onFacade(
+      this.pools.doorReveals, wall, u, DOOR_LEAF_H / 2, -DOOR_RECESS / 2,
+      DOOR_LEAF_W * DOOR_REVEAL_SCALE, DOOR_LEAF_H * DOOR_REVEAL_SCALE, DOOR_RECESS,
+    )
+    // 2. the leaf, halfway into the reveal rather than at the back of it, so the
+    // reveal's dark return is visible above and beside it.
+    onFacade(
+      this.pools.doorLeaves, wall, u, DOOR_LEAF_H / 2, -DOOR_RECESS / 2,
+      DOOR_LEAF_W, DOOR_LEAF_H, DOOR_RECESS * 0.6,
+    )
+    // 3. the surround, proud of the wall and the same annulus the windows use. It
+    // is proud of the reveal, not of the leaf, so it is a frame round a hole with
+    // a door in it rather than a frame round a door.
+    onFacade(
+      this.pools.doorFrames, wall, u, DOOR_LEAF_H / 2, WINDOW.frame / 2,
+      DOOR_LEAF_W * DOOR_REVEAL_SCALE + 4 * WINDOW.frame,
+      DOOR_LEAF_H * DOOR_REVEAL_SCALE + 4 * WINDOW.frame,
+      WINDOW.frame,
+    )
+    // 4. the canopy: `CANOPY_DEPTH` out from the wall, `CANOPY_THICK` tall, and
+    // `CANOPY_LIFT` above the head. It is the widest thing on the wall, which is
+    // correct — a door hood is 1.4x the door — and it is the only overhang on the
+    // street elevation, so it is the first thing the eye finds on a house.
+    onFacade(
+      this.pools.canopies, wall, u, DOOR_LEAF_H + CANOPY_LIFT, CANOPY_DEPTH / 2,
+      DOOR_LEAF_W * DOOR_REVEAL_SCALE + 0.5, CANOPY_THICK, CANOPY_DEPTH,
+    )
+    // 5. the entry lamp, under the canopy and to one side. T11's lowest rung, and
+    // the only light in the game that exists to say "somebody lives here".
+    onFacade(
+      this.pools.entryLamps, wall, u + ENTRY_LAMP_SIDE * side, ENTRY_LAMP_Y,
+      ENTRY_LAMP_D / 2 + WINDOW.frame, ENTRY_LAMP_W, ENTRY_LAMP_H, ENTRY_LAMP_D,
+    )
+    // ...and the steps. Two of them, each one riser tall and one tread deep, each
+    // WIDER than the one above by `STEP_OVERSAIL` on each side. They start at the
+    // wall and come TOWARD the street, so their `proud` grows with each one down —
+    // which is the only direction a staircase can be built in and the reason the
+    // oversail is on the width and not on the position.
+    for (let step = 0; step < STEP_COUNT; step += 1) {
+      const rise = (step + 1) * STEP_RISER
+      const proud = (STEP_COUNT - step) * STEP_TREAD
+      onFacade(
+        this.pools.steps, wall, u, rise / 2, proud / 2,
+        DOOR_LEAF_W * DOOR_REVEAL_SCALE + 2 * step * STEP_OVERSAIL,
+        rise,
+        proud,
+      )
     }
   }
 

@@ -3356,6 +3356,517 @@ check('a camera on the §16.5.5 stand-off sees the hole, and not through it', ()
   }
 })
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 5 — BUILDING DEPTH
+//
+// WHAT ONLY THIS FILE CAN ASK
+// --------------------------
+// `verify.mjs` reads `streetView.js` as TEXT, so everything it can say about this
+// pass is a claim about source: that a constant exists, that a call is made, that
+// a forbidden string is absent. Four of the pass's five claims are of that kind
+// and they are checked there. The fifth is not, and it is the one the pass is
+// actually about:
+//
+//   **every instance in a pool carries the colour its lot asked for.**
+//
+// That is a statement about 588 floats in a buffer, and AESTHETIC-NOTES §4 is
+// explicit that a check which only asserted "the material is not undefined" would
+// have passed the pre-pass-5 code — the trap the pass-3 reviewer already fell into
+// once, when the luma gate passed a picture of a wall. So this section does the
+// strong version: it reads back the instance colour buffer, groups it into the
+// four `PALETTE.siding` entries, and requires the histogram to be EXACTLY the
+// histogram `neighborhood.js` says the world should have.
+//
+// An exact histogram is the point. "More than one colour" would pass a world
+// where one lot in 588 was correct. An exact count per tint, over three wrapped
+// copies, is a claim the old code fails and only the old code fails.
+// ---------------------------------------------------------------------------
+
+check('every house instance carries its own lot\'s colour (iteration 2, pass 5)', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const mesh = view.pools.houses.mesh
+  // The precondition, and the whole mechanism: an `InstancedMesh` with a
+  // non-null `instanceColor` is the only way one pool can hold two colours. A
+  // check that skipped this would pass on a pool with a `setColorAt` call and a
+  // `needsUpdate` that never fired, which renders every instance at the first
+  // instance's colour — the old bug, moved from the material slot to the buffer.
+  assert.notEqual(mesh.instanceColor, null, 'the houses pool has no instanceColor buffer at all')
+  assert.equal(
+    mesh.instanceColor.count, mesh.instanceMatrix.count,
+    'the colour buffer and the matrix buffer are different sizes, so the two are not parallel',
+  )
+  assert.equal(mesh.count, view.pools.houses.used, 'the pool committed a different count than it placed')
+
+  // The expected histogram, derived from the PURE module and nothing else. This
+  // is deliberately not re-reading `streetView.js`: if the view and this count
+  // disagree because the view changed, this test is what says so.
+  const anchors = new Set(view.anchorLots)
+  const perTint = new Map()
+  for (let cx = 0; cx < hood.GRID; cx += 1) {
+    for (let cz = 0; cz < hood.GRID; cz += 1) {
+      for (const lot of hood.chunkAt(view.seed, cx, cz).lots) {
+        if (lot.kind !== 'house') continue
+        if (anchors.has(`${cx},${cz},${lot.side}`)) continue
+        // `SIDE_NAMES.length * WRAP_COPIES.length` = 4 lots x 3 copies per chunk,
+        // but only the house lots and only the non-anchor ones, so the multiplier
+        // is the three wrapped copies and the filter is the rest.
+        perTint.set(lot.tint % 4, (perTint.get(lot.tint % 4) ?? 0) + 3)
+      }
+    }
+  }
+
+  // The measured histogram, read back off the buffer in LINEAR floats. The buffer
+  // holds linear-sRGB, so each sample is compared against the linear value of the
+  // palette entry rather than the 8-bit hex: comparing a float to 0x3a3540 would
+  // be comparing 0.042 to 3,816,384 and the test would pass by being zero.
+  const measured = new Map()
+  const array = mesh.instanceColor.array
+  for (let i = 0; i < mesh.count; i += 1) {
+    const key = `${array[i * 3].toFixed(5)},${array[i * 3 + 1].toFixed(5)},${array[i * 3 + 2].toFixed(5)}`
+    measured.set(key, (measured.get(key) ?? 0) + 1)
+  }
+  for (const [tint, want] of perTint) {
+    // The palette is re-read from the live material's own four documented values
+    // by re-deriving them through `THREE.Color`, which is the same conversion
+    // `streetView.js` did, so this compares like with like.
+    const colour = new THREE.Color(view.sidingPalette[tint])
+    const key = `${colour.r.toFixed(5)},${colour.g.toFixed(5)},${colour.b.toFixed(5)}`
+    assert.equal(
+      measured.get(key) ?? 0, want,
+      `tint ${tint} is on ${measured.get(key) ?? 0} houses and the generator says ${want} — ` +
+        'the per-lot tint is not reaching the scene',
+    )
+  }
+  // And nothing else is in there. A buffer with the right four counts AND a fifth
+  // colour is a buffer something wrote by accident, and total equality is the only
+  // statement that means "every instance carries its own lot's colour".
+  assert.equal(
+    [...measured.values()].reduce((a, b) => a + b, 0), mesh.count,
+    'the colour buffer holds more entries than the pool placed',
+  )
+  assert.equal(measured.size, perTint.size, `the pool holds ${measured.size} distinct colours, not ${perTint.size}`)
+})
+
+check('hedge and fence are different materials in different pools, and both are used', () => {
+  // The second half of the pre-pass-5 defect, and the one per-instance colour
+  // could NOT fix: `frontage` was one pool holding both kinds with a rewritten
+  // material slot, so every hedge in the world rendered as a fence or the other
+  // way round. A colour would not have helped, because a hedge has a texture and
+  // a fence does not and one material cannot be both — so the fix is structural
+  // and the check has to be structural too.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  assert.equal(view.pools.frontage, undefined, 'the combined frontage pool is still here')
+  const hedge = view.pools.frontageHedge
+  const fence = view.pools.frontageFence
+  assert.notEqual(hedge, undefined, 'there is no hedge pool')
+  assert.notEqual(fence, undefined, 'there is no fence pool')
+  assert.notEqual(hedge.mesh.material, fence.mesh.material, 'both frontage halves share one material')
+  assert.notEqual(
+    hedge.mesh.material.map, fence.mesh.material.map,
+    'both frontage halves have the same map, so the hedge and the fence are the same texture',
+  )
+  // Both are non-empty. An empty pool is a pool that renders nothing, and the
+  // pre-pass-5 bug could not be told apart from "the feature is switched off",
+  // so "at least one of each" is the floor.
+  assert.ok(hedge.used > 0, 'no hedge was placed anywhere in the world')
+  assert.ok(fence.used > 0, 'no fence was placed anywhere in the world')
+})
+
+check('the roofline is a parapet and not a cone (AESTHETIC-NOTES mechanism 1)', () => {
+  // The claim is a claim about SILHOUETTE, and the measurable form of it is that
+  // the roof geometry has no slope: the topmost solid on a house is a box, and
+  // the house's highest point is its parapet rather than a cone's apex. Before
+  // the pass it was a `ConeGeometry(0.72, 1, 4)` at 1.9 m on a 5.2 m wall, and
+  // `street.png` is a photograph of that.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  assert.equal(
+    view.pools.roofs.mesh.geometry.type, 'BoxGeometry',
+    'the roof is not a box, so a house still has a cone on it',
+  )
+  const parapet = view.pools.parapets
+  assert.ok(parapet.used > 0, 'no parapet was placed anywhere')
+  // The annulus is a UNIT shape, so an instance's scale IS its real dimensions.
+  const matrix = new THREE.Matrix4()
+  const position = new THREE.Vector3()
+  const scale = new THREE.Vector3()
+  const quat = new THREE.Quaternion()
+  parapet.mesh.getMatrixAt(0, matrix)
+  matrix.decompose(position, quat, scale)
+  assert.ok(scale.y > 0.2, `the parapet is ${scale.y.toFixed(2)} m tall, which is a lip rather than an upstand`)
+  // ...and PAIRED with a house, which is the only way the claim can be made. The
+  // pools are filled in build order, so instance 0 of one is not instance 0 of
+  // the other — the first thing this check did was compare a 2.7 m garage's
+  // parapet against a 5.2 m house's wall and fail on geometry that was correct.
+  // So: every parapet's BASE sits on a house's or outbuilding's top, and the
+  // house's silhouette is measured as that pair. This is also the stronger claim —
+  // it says the parapet is ON the building, not merely that a parapet exists.
+  const tops = new Map()
+  for (const [name, pool] of [['house', view.pools.houses], ['outbuilding', view.pools.outbuildings]]) {
+    for (let i = 0; i < pool.used; i += 1) {
+      pool.mesh.getMatrixAt(i, matrix)
+      matrix.decompose(position, quat, scale)
+      tops.set(`${name}:${position.x.toFixed(2)},${position.z.toFixed(2)}`, position.y + scale.y / 2)
+    }
+  }
+  let checked = 0
+  let tallest = 0
+  for (let i = 0; i < parapet.used; i += 1) {
+    parapet.mesh.getMatrixAt(i, matrix)
+    matrix.decompose(position, quat, scale)
+    const key = `${position.x.toFixed(2)},${position.z.toFixed(2)}`
+    const wallTop = tops.get(`house:${key}`) ?? tops.get(`outbuilding:${key}`)
+    assert.notEqual(wallTop, undefined, `a parapet at (${key}) stands on nothing`)
+    // The parapet's base is its own centre minus half its height, and that has to
+    // BE the wall's top: a parapet floating 200 mm above a roof is a lid, and one
+    // buried in the roof is a thicker roof. Only the float is tolerated, because
+    // the deck between them is what the parapet stands on.
+    const base = position.y - scale.y / 2
+    assert.ok(
+      base >= wallTop - 0.02 && base <= wallTop + 0.25,
+      `a parapet's base is at ${base.toFixed(2)} m and the wall below it tops out at ` +
+        `${wallTop.toFixed(2)} m — it is floating or buried, not standing on it`,
+    )
+    if (position.y + scale.y / 2 > tallest) tallest = position.y + scale.y / 2
+    checked += 1
+  }
+  assert.equal(checked, parapet.used, 'not every parapet was checked')
+  // And the composed silhouette: a house's highest point is its parapet, and it is
+  // 340 mm above the wall. A cone's would have been 1.9 m above it and triangular.
+  assert.ok(
+    tallest > 5.2,
+    `the tallest point of any building is ${tallest.toFixed(2)} m, which is not above a 5.2 m wall`,
+  )
+  // Roof clutter is what makes a roofline read as a place rather than a lid: two
+  // boxes per house, and a roof with nothing on it is a lid.
+  assert.ok(
+    view.pools.roofClutter.used >= view.pools.houses.used * 2,
+    `the roofs carry ${view.pools.roofClutter.used} boxes for ${view.pools.houses.used} houses`,
+  )
+})
+
+check('every window is a stack with a reveal, and the lit ones are rare (T3, D3)', () => {
+  // T3's claim is about DEPTH ORDER, and the measurable form of a depth order in a
+  // scene graph is each part's signed offset from its wall. So this reads the three
+  // pools' instance matrices and checks the ORDER rather than reading the source:
+  // pane behind the wall's face, frame proud of it, sill proudest of all. A
+  // source check can only see that three calls exist; this sees which is where.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const glass = view.pools.windowGlass
+  const lit = view.pools.windowLit
+  const frames = view.pools.windowFrames
+  const sills = view.pools.windowSills
+  // The scratch objects are declared BEFORE the helper that closes over them,
+  // because the first version of this check declared them after and the helper
+  // was hoisted above them — a `const` in the temporal dead zone, thrown only when
+  // the check ran, and only on the path that used the helper.
+  const matrix = new THREE.Matrix4()
+  const position = new THREE.Vector3()
+  const scale = new THREE.Vector3()
+  const quat = new THREE.Quaternion()
+  // Panes: every window is either dark or lit, and the two pools together ARE the
+  // window count. This is the check that fails if `_addFacadeWindows` places a
+  // frame with no pane behind it — a frame with nothing in it is a hole in the
+  // wall, and it is the failure the whole ordering exists to prevent.
+  const panes = glass.used + lit.used
+  assert.ok(panes > 0, 'the world has no windows at all')
+  assert.equal(frames.used, panes, `${frames.used} frames for ${panes} panes — a frame with nothing behind it`)
+  assert.equal(sills.used, panes, `${sills.used} sills for ${panes} panes — one window has no sill on it`)
+
+  // The stack, measured. The pools are compared as SETS of (height, width,
+  // through-depth) rather than pairwise, because the two pane pools and the frame
+  // pool are filled in different orders — a lit pane goes to one pool and a dark
+  // one to another, so index 0 of `windowGlass` is not index 0 of `windowFrames`
+  // and pairing them would be an accident of build order rather than a measurement.
+  const shapes = (pool) => {
+    const rows = []
+    for (let i = 0; i < pool.used; i += 1) {
+      pool.mesh.getMatrixAt(i, matrix)
+      matrix.decompose(position, quat, scale)
+      // Through-depth is the SMALLER of the two horizontal extents, which is what
+      // a caller placing "w along the wall, d through it" produces whichever way
+      // the wall happens to face.
+      rows.push({
+        y: position.y,
+        x: position.x,
+        z: position.z,
+        // `face` is the AXIS the part is thin on, which is the axis its wall
+        // faces, and it is read from the scale rather than inferred from which
+        // extent is smaller. The first version of this check inferred the axis
+        // from `through < along` and compared two lit windows 224 m apart on
+        // different blocks, because "thin" does not say WHICH axis is thin.
+        face: scale.x < scale.z ? 'x' : 'z',
+        through: Math.min(scale.x, scale.z),
+        along: Math.max(scale.x, scale.z),
+      })
+    }
+    return rows
+  }
+  const paneRows = shapes(glass).concat(shapes(lit))
+  const frameRows = shapes(frames)
+  const sillRows = shapes(sills)
+  const mean = (rows, pick) => rows.reduce((sum, row) => sum + pick(row), 0) / rows.length
+  const paneThrough = mean(paneRows, (r) => r.through)
+  const frameThrough = mean(frameRows, (r) => r.through)
+  const sillThrough = mean(sillRows, (r) => r.through)
+  // The frame is a THIN ring and the pane a THICKER slab: a frame as deep as its
+  // pane is a block with a hole in it rather than a lip on a piece of glass.
+  assert.ok(
+    frameThrough < paneThrough,
+    `the frame is ${frameThrough.toFixed(3)} m deep and the pane is ${paneThrough.toFixed(3)} m — ` +
+      'the frame is not a lip on the glass',
+  )
+  // ...and the SILL is the proudest of the three, which is the part that catches
+  // the sodium: it is the only part of a window that faces the sky, and T3's whole
+  // point is the order "deepest thing first, sill proudest of all".
+  assert.ok(
+    frameThrough < sillThrough,
+    `the frame is ${frameThrough.toFixed(3)} m deep and the sill is ${sillThrough.toFixed(3)} m — ` +
+      'the sill is not the proudest part, which is the one that catches the sodium',
+  )
+  assert.ok(
+    mean(frameRows, (r) => r.along) > mean(paneRows, (r) => r.along),
+    'the frame is not wider than the pane, so the pane is not inside an opening',
+  )
+
+  // The lit rate. `LIT_WINDOW_ONE_IN` is 6, so this is a band rather than an
+  // equality: the roll is per WALL and most walls roll no lit window at all, so
+  // the measured rate over ~570 windows is a binomial around 1/6. A rate of zero
+  // and a rate of 1/2 both fail, and both are the failures that look fine in a
+  // screenshot: a street with no lit windows and a street of offices.
+  const rate = lit.used / panes
+  assert.ok(rate > 0.02, `only ${(rate * 100).toFixed(1)}% of windows are lit, which is not a variance at all`)
+  assert.ok(rate < 0.4, `${(rate * 100).toFixed(1)}% of windows are lit, which is an office park`)
+
+  // "Never two lit on the same façade" — checked GEOMETRICALLY, because a count
+  // cannot tell you WHICH façade, and against a per-façade grouping rather than a
+  // per-plane one, because coplanarity is not identity: two lots on the same block
+  // side have CONTIGUOUS street walls, so a lit window on one house's wall and a
+  // lit window on its neighbour's share a plane and a height and are still two
+  // different façades. The first version of this check compared planes alone and
+  // flagged a pair 224 m apart on different blocks; the second flagged a genuine
+  // neighbouring pair. The grouping has to know which HOUSE a window is in, and
+  // that is derived here from the house pool's own matrices rather than read off
+  // the view's bookkeeping — a check that trusted the view's record of which
+  // window it lit would be asking the code to grade itself.
+  const houses = view.pools.houses
+  const hmatrix = new THREE.Matrix4()
+  const hposition = new THREE.Vector3()
+  const hscale = new THREE.Vector3()
+  const hquat = new THREE.Quaternion()
+  // A house's four wall planes, keyed by the axis each one FACES. An x-facing wall
+  // sits at `house.x ± scale.x / 2` and spans `scale.z` along z; a z-facing wall
+  // sits at `house.z ± scale.z / 2` and spans `scale.x` along x. The two extents
+  // are transposed and getting them the wrong way round is invisible on a square
+  // and wrong on every other house — which is most of them, and is why the
+  // transposition is written out rather than factored.
+  const walls = { x: [], z: [] }
+  for (let i = 0; i < houses.used; i += 1) {
+    houses.mesh.getMatrixAt(i, hmatrix)
+    hmatrix.decompose(hposition, hquat, hscale)
+    for (const [face, normal, span] of [
+      ['x', hscale.x, hposition.z],
+      ['z', hscale.z, hposition.x],
+    ]) {
+      const centre = face === 'x' ? hposition.x : hposition.z
+      const along = face === 'x' ? hscale.z : hscale.x
+      for (const sign of [-1, 1]) {
+        walls[face].push({ house: i, plane: centre + sign * normal / 2, span, extent: along })
+      }
+    }
+  }
+  const perFacade = new Map()
+  for (const row of shapes(lit)) {
+    // The wall plane is matched to the pane's own BOX, not to the pane's centre:
+    // the pane is set `WINDOW.depth / 2` INTO the wall, so its centre is 40 mm
+    // behind the plane and its outer face is exactly on it. Matching centres is
+    // what made the first version of this find zero walls and report "the window
+    // geometry and the façade geometry disagree" — which was a true statement
+    // about a false comparison.
+    const coord = row.face === 'x' ? row.x : row.z
+    const free = row.face === 'x' ? row.z : row.x
+    const candidates = walls[row.face].filter((wall) => (
+      Math.abs(wall.plane - coord) <= row.through / 2 + 1e-3
+      && Math.abs(wall.span - free) <= wall.extent / 2 + 1e-3
+    ))
+    assert.equal(
+      candidates.length, 1,
+      `a lit window at (${row.x.toFixed(2)}, ${row.z.toFixed(2)}) belongs to ${candidates.length} ` +
+        'house walls, so it is on no wall at all — the façade geometry and the window geometry disagree',
+    )
+    // The key is the WALL, not the house: a house has two x-facing walls and two
+    // z-facing ones, so `(face, house)` alone is two façades reported as one. The
+    // first version of this check did that and reported a false violation on house
+    // 96, which is a house whose left flank and right flank are both lit — legal,
+    // because `_addFacadeWindows` rolls ONCE PER WALL and the rule is per façade.
+    // The plane coordinate is in the key so the two flanks are told apart.
+    const key = `${row.face}:${candidates[0].house}@${candidates[0].plane.toFixed(3)}`
+    perFacade.set(key, (perFacade.get(key) ?? 0) + 1)
+  }
+  for (const [key, count] of perFacade) {
+    assert.ok(
+      count <= 1,
+      `façade ${key} has ${count} lit windows — the emissive ladder says never two on one façade`,
+    )
+  }
+  // ...and the rule is not vacuous: the world's lit windows really are spread
+  // over many façades rather than concentrated on one, which is the difference
+  // between "one roll per wall" and "one roll for the world".
+  assert.ok(
+    perFacade.size >= lit.used / 2,
+    `${lit.used} lit windows are on only ${perFacade.size} façades, so several share one`,
+  )
+})
+
+check('the entrance is a recess with steps, a canopy and a lamp under it', () => {
+  // T-notes item 4's five parts, each checked BY COUNT against the house count,
+  // which is the only way a check can tell that a part is on every house rather
+  // than on one. A house with no door is a wall.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const houses = view.pools.houses.used
+  assert.equal(view.pools.doorReveals.used, houses, 'not every house has a door reveal')
+  assert.equal(view.pools.doorLeaves.used, houses, 'not every house has a door')
+  assert.equal(view.pools.doorFrames.used, houses, 'not every house has a door surround')
+  assert.equal(view.pools.entryLamps.used, houses, 'not every house has an entry lamp')
+  assert.equal(view.pools.canopies.used, houses, 'not every house has a canopy')
+  // Two steps per house, and every one ABOVE zero height. A step of zero height
+  // is a rectangle painted on the ground and reads as a doormat, which is a
+  // failure a count cannot see and a height check can.
+  assert.equal(view.pools.steps.used, houses * 2, 'the step count is not two per house')
+  const matrix = new THREE.Matrix4()
+  const position = new THREE.Vector3()
+  const scale = new THREE.Vector3()
+  const quat = new THREE.Quaternion()
+  for (let i = 0; i < view.pools.steps.used; i += 1) {
+    view.pools.steps.mesh.getMatrixAt(i, matrix)
+    matrix.decompose(position, quat, scale)
+    assert.ok(scale.y > 0.05, `step ${i} is ${(scale.y * 100).toFixed(0)} cm tall, which is a doormat`)
+  }
+  // The lamp is UNDER the canopy, which is the only reason the canopy is 400 mm
+  // deep: a hood has to be able to catch its own lamp's light. Stated as a
+  // comparison of two heights because that is the whole claim, and taken as a
+  // MAXIMUM over the world so one badly hung lamp cannot hide behind a good one.
+  let lampTop = 0
+  let canopyBottom = Infinity
+  for (let i = 0; i < view.pools.entryLamps.used; i += 1) {
+    view.pools.entryLamps.mesh.getMatrixAt(i, matrix)
+    matrix.decompose(position, quat, scale)
+    lampTop = Math.max(lampTop, position.y + scale.y / 2)
+  }
+  for (let i = 0; i < view.pools.canopies.used; i += 1) {
+    view.pools.canopies.mesh.getMatrixAt(i, matrix)
+    matrix.decompose(position, quat, scale)
+    canopyBottom = Math.min(canopyBottom, position.y - scale.y / 2)
+  }
+  assert.ok(
+    lampTop < canopyBottom,
+    `the entry lamps reach ${lampTop.toFixed(2)} m and the canopies start at ` +
+      `${canopyBottom.toFixed(2)} m — the lamp is sticking through its own hood`,
+  )
+  // ...and the canopy PROJECTS, and is the only overhang on the street elevation,
+  // so its depth is what makes it an overhang rather than a lintel drawn on a wall.
+  let canopyDepth = 0
+  for (let i = 0; i < view.pools.canopies.used; i += 1) {
+    view.pools.canopies.mesh.getMatrixAt(i, matrix)
+    matrix.decompose(position, quat, scale)
+    canopyDepth = Math.max(canopyDepth, Math.min(scale.x, scale.z))
+  }
+  assert.ok(canopyDepth > 0.3, `the canopy projects ${canopyDepth.toFixed(2)} m, which is a lintel`)
+  // ...and the emissive ladder, read off the LIVE materials rather than the
+  // palette: `entryLamp` has to be the dimmest light in the game, or "the ladder"
+  // is four names in a row. §12.2 puts the portal at the top, T11 at the bottom.
+  const rungs = new Map([
+    ['portal', materialLuma(view._materials.portal)],
+    ['sodium', materialLuma(view._materials.sodium)],
+    ['windowLit', materialLuma(view._materials.windowLit)],
+    ['entryLamp', materialLuma(view._materials.entryLamp)],
+  ])
+  assert.ok(
+    rungs.get('entryLamp') < rungs.get('sodium'),
+    `the entry lamp is ${rungs.get('entryLamp').toFixed(1)} luma and a lamp head is ` +
+      `${rungs.get('sodium').toFixed(1)} — the ladder's lowest rung is not the lowest`,
+  )
+  assert.ok(
+    rungs.get('entryLamp') < rungs.get('portal'),
+    'the entry lamp is not below the portal, so the two families are not ranked',
+  )
+  // ...and it is dim ENOUGH to be a rung and not merely lower. A rung one luma
+  // below another is a rung that reads as the same light.
+  assert.ok(
+    rungs.get('sodium') - rungs.get('entryLamp') > 40,
+    `the entry lamp is only ${(rungs.get('sodium') - rungs.get('entryLamp')).toFixed(1)} luma below a ` +
+      'lamp head, which is not a step on a ladder',
+  )
+})
+
+check('the per-lot part budget is met, and the worst lot is the number gated', () => {
+  // T5: 588 lot instances, every per-lot part paid three times before anyone sees
+  // it, and the number to gate on is the WORST lot rather than the mean, because
+  // the mean hides the block whose four façades all face a street.
+  //
+  // The ceiling comes from `partBudget()` rather than from a number typed here or
+  // parsed out of the source, so the gate cannot end up enforcing a budget the
+  // file does not declare. `verify.mjs` pins the value; this measures against it.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const parts = view.partBudget()
+  const budget = parts.budget
+  assert.ok(Number.isInteger(budget) && budget > 0, 'the part budget did not come back with the measurement')
+  assert.equal(
+    parts.lots, hood.CHUNKS * hood.SIDE_NAMES.length * 3,
+    `only ${parts.lots} lots were counted, so the instrument is broken`,
+  )
+  assert.ok(
+    parts.max <= budget,
+    `the worst lot places ${parts.max} parts and the budget is ${budget} (mean ${parts.mean.toFixed(1)}) — ` +
+      'T5 says gate on the worst lot, so this is the number that matters',
+  )
+  // And the spread is non-zero, which is what stops this being a constant compared
+  // with a constant: an anchor lot (no house, no door) and a maximal house are
+  // different lots, and a measurement that cannot tell them apart is not measuring.
+  assert.ok(parts.max > parts.min, 'every lot places the same number of parts, so the max proves nothing')
+  // ...and the max is above the mean, which is T5's argument restated: if these
+  // were equal, gating on the mean would have been correct and the note would not
+  // have said otherwise.
+  assert.ok(parts.max > parts.mean, 'the worst lot and the mean are identical, so the choice of statistic is moot')
+})
+
+check('no pool overflowed, and every pool is committed', () => {
+  // Two failure modes that look identical on screen. A pool that is created and
+  // never committed places instances into a buffer that is never uploaded: the
+  // thing is simply missing and nothing reports it. A pool that overflows counts
+  // the loss in `overflow` and the geometry is a hole in the world. Pass 5 added
+  // thirteen pools, and a fourteenth would be caught here.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  for (const [name, pool] of Object.entries(view.pools)) {
+    assert.equal(pool.overflow, 0, `${name} overflowed by ${pool.overflow} instances — the rest are holes in the world`)
+    assert.equal(pool.mesh.count, pool.used, `${name} committed ${pool.mesh.count} of the ${pool.used} it placed`)
+  }
+  // ...and the commit list covers the pools. `streetPools` is the list the
+  // creations and the commit loop BOTH read, so "declared == published" is now a
+  // property of the code's shape rather than something two hand-written lists can
+  // drift on. The gate still checks it, because the alternative is trusting the
+  // shape, and `verify-world.mjs` does not trust shapes.
+  assert.ok(view.streetPools.length > 0, 'the street recorded no pools at all')
+  for (const name of view.streetPools) {
+    assert.notEqual(view.pools[name], undefined, `${name} is named but was never created`)
+    assert.equal(view.pools[name].mesh.count, view.pools[name].used, `${name} is named but never committed`)
+  }
+  assert.ok(view.pools.parapets.mesh.count > 0, 'the parapet pool committed zero instances')
+})
+
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down
   // with it and leaves a WebGL context alive behind the next mount, so the frame

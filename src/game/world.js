@@ -153,6 +153,29 @@ const EXPOSURE_BASE = 1.02
 const EXPOSURE_CUT = 0.14
 
 /**
+ * The hemisphere's two ends, for the sodium bounce off the road.
+ *
+ * These are the downward half of the ambient term and they are the reason a
+ * vertical surface is lit at all in a scene whose ground is asphalt at dusk. A
+ * `HemisphereLight` splits by `normal.y`, so a wall standing upright receives the
+ * 50/50 mean of the sky and these; set the ground stop to near-black and every
+ * façade in the world silently halves its ambient while the road, which takes
+ * the sky stop alone, is unaffected. That asymmetry is what made the street read
+ * as a row of cut-outs around a bright road.
+ *
+ * They are `Color`s rather than hex literals at the `_applyDusk` call because
+ * that call runs every frame the dusk changes and the converter would allocate
+ * twice per step. The constructor still takes a literal — the gate reads it from
+ * the source, and `groundColor` is only ever *written* by the curve.
+ *
+ * `BOUNCE_HI` is a third of `PALETTE.skyStops[0]` in linear luminance and `BOUNCE_LO`
+ * is a third of the dusk-2 stop, so the bounce tracks the sky down the ramp rather
+ * than being a constant that happens to look right at dusk 0.
+ */
+const BOUNCE_HI = new THREE.Color(0x4a3a22)
+const BOUNCE_LO = new THREE.Color(0x241c14)
+
+/**
  * How bright a lamp head is, in the units a Three.js point light wants.
  *
  * The number is calibrated, not chosen, and this is the comment that has to
@@ -593,7 +616,26 @@ export class LongQuietGame {
     // under it, and 0.85 with a warm sky is that floor. It is deliberately below
     // the 1.0 that would flatten the lamps' pools into a wash — the sodium grid
     // has to stay the brightest thing on the road.
-    this.hemisphere = new THREE.HemisphereLight(PALETTE.skyStops[0], 0x0d0b12, 0.85)
+    // The hemisphere's GROUND colour is the third term and the one that was
+    // silently throwing the façades away.
+    //
+    // BEFORE `0x0d0b12` — a near-black violet. A `HemisphereLight` gives a
+    // vertical wall a 50/50 mix of its two colours, so a wall was standing on
+    // half a hemisphere whose bottom half was ~0.4% linear: the ambient term on
+    // the one surface family that fills most of the frame was most of it missing.
+    // That is the whole reason a street of houses rendered as a row of black
+    // cut-outs while the ROAD under it was the brightest thing on screen.
+    //
+    // AFTER `0x4a3a22` — a dark sodium ochre, the same family as `PALETTE.sodium`
+    // and deliberately much darker than the sky so the two halves of the
+    // hemisphere do not flatten each other. It is not a free brightness knob, it
+    // is a *model*: a lit sodium road throws light back up onto the buildings that
+    // line it, and the downward half of a hemisphere is the only place that
+    // bounce can be expressed. Ground-up faces (the road, the walk, the kerb) take
+    // the SKY term only and are therefore completely unaffected by this number,
+    // which is the property that makes the change safe next to the sodium pools —
+    // those are unlit glow discs, so nothing in this edit can touch them.
+    this.hemisphere = new THREE.HemisphereLight(PALETTE.skyStops[0], 0x4a3a22, 0.85)
     this.scene.add(this.hemisphere)
 
     // BEFORE 0x6b4a6b / AFTER 0xffc27a, intensity 0.32 -> 0.34.
@@ -603,8 +645,21 @@ export class LongQuietGame {
     // dusk. It is now the same family as `PALETTE.sodium` but a stop paler, so
     // it lifts the upper faces of roofs and hedges toward the sky without
     // competing with the lamps for the road.
-    this.sunset = new THREE.DirectionalLight(0xffc27a, 0.34)
-    this.sunset.position.set(-1, 0.28, -0.6)
+    this.sunset = new THREE.DirectionalLight(0xffc27a, 0.46)
+    // BEFORE `(-1, 0.28, -0.6)`. The key was too dim to reach a wall and aimed
+    // too high to favour one: at 0.34 the horizontal component is only 0.28 of
+    // the vector, so a façade facing the key collected 0.34 * 0.234 of it — about
+    // 8% of white — and the roof of a two-storey house swallowed the rest. A
+    // street is a *vertical* subject; the key has to graze it.
+    //
+    // AFTER `(-1, 0.24, -0.6)` at 0.46. Dropping y flattens the vector to 1.19
+    // rather than 1.20, which is a small change on purpose: the goal is to buy
+    // façade light without buying road light, and the road takes the key at its
+    // normal's dot with a nearly-flat vector. Asphalt is 0.75% linear, so even a
+    // full extra stop of key lands the road around 4/255 — it stays the dark
+    // surface the sodium pools are bright *against*, which is the whole point of
+    // those pools and the reason this could be raised safely.
+    this.sunset.position.set(-1, 0.24, -0.6)
     this.scene.add(this.sunset)
 
     this.lampLights = []
@@ -656,8 +711,16 @@ export class LongQuietGame {
     // played out in. Ambient still fades (the dusk is a clock, §3.7) but it never
     // goes below 0.67, so the world at its darkest is still a lit world.
     this.hemisphere.intensity = 0.85 - 0.18 * t
-    // BEFORE `0.32 - 0.2 * t` / AFTER `0.34 - 0.14 * t`, same reasoning.
-    this.sunset.intensity = 0.34 - 0.14 * t
+    // The bounce closes with the sky it is bouncing. Left static it would be the
+    // one light in the rig that stops falling while §3.7's dusk is still running,
+    // and the finale would end up with a *warmer* façade than the frame it fades
+    // out of. `0x4a3a22 -> 0x241c14` keeps the ratio the sky keeps (about 2.2x)
+    // so the two halves of the hemisphere never cross and flatten each other.
+    this.hemisphere.groundColor.lerpColors(BOUNCE_HI, BOUNCE_LO, t)
+    // BEFORE `0.32 - 0.2 * t` / AFTER `0.34 - 0.14 * t`, same reasoning. Pass 5
+    // retunes the base to 0.46 for the façade graze above and widens the cut so
+    // the finale still closes: 0.46 -> 0.26, against the hemisphere's 0.85 -> 0.67.
+    this.sunset.intensity = 0.46 - 0.2 * t
     // §12.1's exposure, and the second half of this pass.
     //
     // BEFORE `0.95 - 0.17 * t`, which spans 0.95 -> 0.78 and is a *linear* 18%

@@ -7335,6 +7335,559 @@ test('the gate is the size this pass chose (iteration 2, pass 3)', () => {
   )
 })
 
+// ---------------------------------------------------------------------------
+// BUILDING DEPTH — ITERATION 2, PASS 5
+//
+// WHAT THIS SECTION IS FOR
+// -----------------------
+// The pass has one headline defect (a pool's single material slot being
+// reassigned per lot, so 588 houses took the colour of whichever was built last)
+// and four art claims: T3's window stack in depth order, mechanism 1's roofline,
+// T-notes item 4's entrance, and T11's emissive ladder.
+//
+// `verify-world.mjs` builds the real scene and measures the first of those and
+// most of the others. This section covers what only a source reading can do, and
+// it does it in a way the previous three passes did not: every property is a
+// PREDICATE over the source, the real source is asserted to satisfy all of them,
+// and then the source is MUTATED seven ways and each mutation is asserted to
+// break a specific one. A gate that has only ever been run against the file it
+// was written for is a gate of unknown strength, and pass 3's review already
+// caught this file doing exactly that — the luma gate passed a picture of a wall.
+// ---------------------------------------------------------------------------
+
+section('Building depth (iteration 2, pass 5)')
+
+// Rec. 709 luminance comes from pass 1's `relLuma` above, deliberately rather
+// than as a second copy: two copies of a luma formula in one file is two numbers
+// that can disagree, and pass 1 measured the whole sky ramp with that one.
+
+/** A named number, read out of the stripped source. Pass 3's `portalNumber`. */
+function buildingNumber(name) {
+  const found = new RegExp(`const ${name} = ([\\d.]+)`).exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(found, `${name} is not a named constant any more`)
+  return Number(found[1])
+}
+
+/**
+ * A frozen table of numbers, read out of the stripped source, in its order.
+ *
+ * Two shapes are accepted because two things are frozen tables in this file: a
+ * top-level `const X = Object.freeze([...])` and a `PALETTE` entry written
+ * `key: Object.freeze([...])`. `\\b` on the key matters for the same reason
+ * `paletteHex`'s does: `siding` must not match `outbuildingSiding` if a future
+ * pass adds one.
+ */
+function buildingTable(name) {
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const found = new RegExp(`(?:const ${name} = |\\b${name}: )Object\\.freeze\\(\\[([^\\]]+)\\]\\)`).exec(code)
+  assert.ok(found, `${name} is not a frozen table any more`)
+  // Hexes are matched WHOLE, not digit by digit. `0x3a3540` read as
+  // `-?[\d.]+` yields `0`, `3` and `3540` — three numbers instead of one — which
+  // is how the first version of this helper reported a four-entry palette as
+  // having twelve. The alternation puts the hex branch first so `0x` is consumed
+  // before the decimal branch can start at the same `0`.
+  return [...found[1].matchAll(/-?0x[0-9a-fA-F]+|-?[\d.]+/g)].map((entry) => (
+    entry[0].startsWith('0x') || entry[0].startsWith('-0x') ? Number(entry[0]) : Number(entry[0])
+  ))
+}
+
+/** A frozen object literal's numeric fields, read out of the stripped source. */
+function buildingFields(name) {
+  const found = new RegExp(`const ${name} = Object\\.freeze\\(\\{([^\\}]+)\\}\\)`).exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(found, `${name} is not a frozen object any more`)
+  const out = {}
+  for (const [, key, value] of found[1].matchAll(/(\w+):\s*([\d.]+)/g)) out[key] = Number(value)
+  assert.ok(Object.keys(out).length > 0, `${name} has no numeric fields`)
+  return out
+}
+
+/**
+ * The properties this pass claims, as predicates over a SOURCE STRING.
+ *
+ * Written as a list of named predicates rather than as assertions so that the
+ * mutation test below can ask a question of a mutated file: "does this still hold?"
+ * A gate expressed as bare `assert.ok` calls can only ever be run on the real
+ * file. Each predicate returns `ok` and a `why`, so a mutation reports the claim
+ * it broke rather than "something changed".
+ *
+ * @param {string} source `streetView.js`, comments NOT yet stripped
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function buildingClaims(source) {
+  const code = stripProse(source)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+
+  // 1. THE HEADLINE FIX. Not "the material is defined" — AESTHETIC-NOTES §4 is
+  // explicit that such a check passes the old code. The claim is that nothing in
+  // the file writes to a pool's material slot at all, because an `InstancedMesh`
+  // has exactly one and a per-lot write to it is a per-lot write for all of them.
+  claim(
+    'no pool has its material reassigned',
+    !/\.mesh\.material\s*=/.test(code),
+    'something still writes pool.mesh.material, which is the pre-pass-5 defect',
+  )
+  // ...and the mechanism that replaces it is present in BOTH halves. A `setColorAt`
+  // with no `needsUpdate` renders every instance at the first one's colour, which
+  // is the same bug in a different attribute.
+  claim('per-instance colour is written', /setColorAt\(/.test(code), 'nothing calls setColorAt')
+  claim(
+    'per-instance colour is uploaded',
+    /instanceColor\.needsUpdate\s*=\s*true/.test(code),
+    'commit() never flags instanceColor for upload, so every house takes the first colour',
+  )
+  claim(
+    'place() takes a colour',
+    /place\(x, y, z, w, h, d, yaw = 0, color = null\)/.test(code),
+    'place() has no colour parameter, so the instance colour cannot be set per lot',
+  )
+  // 2. THE CONE IS GONE FROM THE ROOF. Mechanism 1's argument as a source fact: a
+  // house's outline is made of horizontal edges, and a four-sided cone's is a
+  // triangle. Scoped to the roof pool rather than to the file, because a cone is
+  // still CORRECT somewhere in it — the `cone` traffic fixture, which is a traffic
+  // cone and is supposed to be one. A file-wide ban would be a claim about the
+  // wrong thing, and it is the kind of claim that gets "fixed" by deleting a
+  // traffic cone.
+  // `stripProse` blanks string literals to `""`, so the pool's name is not
+  // matchable in a claim — only the shape of the call around it, which is the
+  // thing being claimed. The mutation test below works on the RAW source, so its
+  // `from`/`to` pairs can still name the pool.
+  claim('the roof is not a cone', /pools\.roofs = this\._streetPool\(names, "", box\(\)/.test(code), 'the roof pool is not a box')
+  claim(
+    'the only remaining cone is the traffic cone',
+    !/ConeGeometry/.test(code.replace(/ConeGeometry\(0\.3, 1, 8\)/g, '')),
+    'a ConeGeometry is somewhere other than the cone fixture',
+  )
+  claim('ROOF_HEIGHT is gone', !/const ROOF_HEIGHT\b/.test(code), 'ROOF_HEIGHT came back')
+  // 3. T3's STACK, as an ORDER rather than a presence. The pane's offset into the
+  // wall is negative and the frame's is positive — which is the whole of "deepest
+  // thing first, frame proud of it".
+  // The pane's offset is an EXPRESSION (`-WINDOW.depth / 2`), not a literal, which
+  // is what makes retuning `WINDOW` retune the whole stack. So the claim is on the
+  // SIGN and the mutation flips the sign, rather than on a number that has to be
+  // copied here.
+  const paneAt = /isLit \? this\.pools\.windowLit : this\.pools\.windowGlass,\s*entry\.wall, u, y, ([^,\n]+)/.exec(code)
+  claim('the window pane is set INTO the wall', Boolean(paneAt) && paneAt[1].trim().startsWith('-'), 'the pane is not placed at a negative offset, so the frame has nothing to be proud of')
+  // The frame and the sill are placed at the window's own constants rather than at
+  // literals, which is what makes retuning one number retune the stack.
+  claim(
+    'the frame stands WINDOW.frame proud',
+    /windowFrames, entry\.wall, u, y, WINDOW\.frame \/ 2/.test(code),
+    'the frame is not placed at WINDOW.frame',
+  )
+  claim(
+    'the sill stands WINDOW.sill proud',
+    /windowSills, entry\.wall, u, y - WINDOW\.h \/ 2 - [\d.]+,\s*WINDOW\.sill \/ 2/.test(code),
+    'the sill is not placed at WINDOW.sill',
+  )
+  // 4. THE ENTRANCE, as a count. Reveal, leaf, surround, canopy, lamp and steps is
+  // a door; one of those is a panel on a wall.
+  const entranceAt = code.indexOf('  _addEntrance(wall, side) {')
+  const entrance = entranceAt >= 0 ? code.slice(entranceAt) : ''
+  claim('the entrance is a method', entranceAt >= 0, '_addEntrance is gone')
+  claim(
+    'the entrance is a stack, not a panel',
+    ['doorReveals', 'doorLeaves', 'doorFrames', 'canopies', 'entryLamps', 'steps'].every(
+      (pool) => entrance.includes(`this.pools.${pool}`),
+    ),
+    'one of the reveal / leaf / surround / canopy / lamp / steps is missing',
+  )
+  claim(
+    'the door reveal is set INTO the wall',
+    /doorReveals, wall, u, DOOR_LEAF_H \/ 2, -DOOR_RECESS \/ 2/.test(code),
+    'the reveal is not recessed, so the door is a panel on a wall',
+  )
+  // 5. T6, as a single owner of "which way does this wall point". The value of the
+  // sub-frame is that there is ONE place with the trigonometry in it, and the
+  // measurable form of that is that the two façade methods contain no arithmetic
+  // on a world axis at all.
+  const windowsAt = code.indexOf('  _addFacadeWindows(')
+  const windows = windowsAt >= 0 && entranceAt >= windowsAt ? code.slice(windowsAt, entranceAt) : ''
+  claim(
+    'façade placement contains no x/z trigonometry',
+    !/\b[xyz]\s*[+\-*/]=/.test(windows) && !/\b[xyz]\s*[+\-*/]=/.test(entrance),
+    'a façade method is doing world-axis arithmetic, so the sub-frame is not the only owner of it',
+  )
+  claim('the sub-frame exists', /function facadeFrame\(/.test(code), 'facadeFrame is gone')
+  claim('the wall frames exist', /function houseFaces\(/.test(code), 'houseFaces is gone')
+  claim('placement goes through onFacade', /function onFacade\(/.test(code), 'onFacade is gone')
+  // 6. THE FRAME IS ONE ANNULUS, THREE USES. T3's budget note — "ours should be
+  // four parts, not nine" — taken further: a frame of four bars is four
+  // instances, and 588 lots x 4 windows x 4 bars is 9,400 instances on four
+  // rectangles. Four mentions is the definition plus three call sites.
+  claim(
+    'one annulus geometry serves every frame',
+    (code.match(/makeFrameGeometry\(/g) ?? []).length >= 4,
+    'the annulus is not used by the parapet, the window frames and the door surround alike',
+  )
+  // 7. THE FRONTAGE IS SPLIT. The same single-slot defect as the siding, and the
+  // one per-instance colour could NOT fix, because a hedge has a texture and a
+  // fence does not and one material is not both.
+  claim('the frontage pool is split', !/pools\.frontage\b/.test(code), 'the combined frontage pool is back')
+  claim(
+    'hedge and fence are separate pools',
+    /pools\.frontageHedge/.test(code) && /pools\.frontageFence/.test(code),
+    'one of the two frontage halves is missing',
+  )
+  // 8. T5 IS INSTRUMENTED, not estimated. A hand-maintained tally is a number a
+  // future pass forgets to increment, which is the failure mode T5 names.
+  claim('the part budget is instrumented', /partBudget\(\)/.test(code), 'partBudget is gone')
+  claim(
+    'the part count is a diff, not a tally',
+    /_partsUsed\(\) - partsBefore/.test(code),
+    'the part count is not measured as a difference across a lot, so it can drift',
+  )
+  // 9. THE DETAIL IS A FUNCTION OF THE LOT, NOT OF BUILD ORDER. §3.2's contract is
+  // that a shuffled `buildChunks` produces the same world, and a window that lit
+  // itself from a counter would break it silently.
+  claim(
+    'the detail uses the chunk-addressed stream',
+    /streamAt\(this\.seed, chunk\.cx, chunk\.cz\)/.test(code),
+    'the façade detail has no stream of its own',
+  )
+  return claims
+}
+
+test('the source claims this pass makes are all there, in the order it makes them', () => {
+  const claims = buildingClaims(STREET_VIEW_SOURCE)
+  assert.ok(claims.length >= 18, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
+  }
+})
+
+test('every claim above can actually fail, and a mutation names the one it breaks', () => {
+  // The control for the test above, and the reason it is not decorative. Each
+  // mutation is the smallest edit that breaks ONE claim and nothing else, so a
+  // failure names the claim rather than "something changed" — and so a mutation
+  // that breaks the WRONG claim is itself visible, which is how a gate stops being
+  // a gate and becomes a fingerprint of one file.
+  //
+  // The first row is the pre-pass-5 defect, put back verbatim. It is not a
+  // hypothetical: it is `git show HEAD:src/game/streetView.js`, and the point of
+  // the row is that the real file of two commits ago fails this section.
+  const rows = [
+    ['the original defect: a per-lot material write', 'the material slot is written per lot', '  _addLot(chunk, lot, isAnchor, copy) {', '  _addLot(chunk, lot, isAnchor, copy) {\n    void (p) => { p.mesh.material = 0 }', 'no pool has its material reassigned'],
+    ['setColorAt removed', 'the per-instance write is gone', 'this.mesh.setColorAt(this.used, color)', 'void color', 'per-instance colour is written'],
+    ['needsUpdate removed', 'the per-instance upload is gone', 'if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true', '', 'per-instance colour is uploaded'],
+    ['the cone comes back', 'the roof is a pyramid again', "names, 'roofs', box()", "names, 'roofs', new THREE.ConeGeometry(0.72, 1, 4)", 'the roof is not a cone'],
+    ['the pane goes flush with the wall', 'the glass has no reveal', 'entry.wall, u, y, -WINDOW.depth / 2', 'entry.wall, u, y, WINDOW.depth / 2', 'the window pane is set INTO the wall'],
+    ['the reveal goes flush with the wall', 'the door is a panel again', 'wall, u, DOOR_LEAF_H / 2, -DOOR_RECESS / 2', 'wall, u, DOOR_LEAF_H / 2, DOOR_RECESS / 2', 'the door reveal is set INTO the wall'],
+    ['the frontage is merged again', 'hedge and fence share a pool', "this.pools.frontageHedge = this._streetPool(names, 'frontageHedge'", "this.pools.frontage = this._streetPool(names, 'frontageHedge'", 'the frontage pool is split'],
+  ]
+  for (const [label, why, from, to, expected] of rows) {
+    assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches the file, so it is not testing anything`)
+    const broken = buildingClaims(STREET_VIEW_SOURCE.replace(from, to)).filter((entry) => !entry.ok)
+    assert.ok(broken.length > 0, `"${label}" changed the file and broke NO claim — ${why}, and the section is not measuring it`)
+    assert.ok(
+      broken.some((entry) => entry.name === expected),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${expected}" — ` +
+        'the gate is measuring something other than what it says',
+    )
+  }
+})
+
+test('the window stack is ordered deepest-first with the sill proudest (T3)', () => {
+  // The three depths, read as NUMBERS and compared, because T3's claim is an
+  // ordering and a presence check cannot state an ordering. `WINDOW.depth` is the
+  // pane's thickness and the pane is set half of it INTO the wall; the frame
+  // stands `WINDOW.frame` out; the sill stands `WINDOW.sill` out.
+  const window = buildingFields('WINDOW')
+  assert.ok(window.depth > 0, 'the window has no depth, so there is no stack')
+  assert.ok(window.frame >= 0.03, `the frame stands ${(window.frame * 1000).toFixed(0)} mm proud, which is a line rather than a reveal`)
+  assert.ok(window.sill > window.frame, `the sill (${window.sill}) is not prouder than the frame (${window.frame}) — T3 says the sill is proudest`)
+  // ...and the glass is set back by a real amount, so the frame has something to
+  // be proud OF rather than sitting on the wall's surface.
+  assert.ok(window.depth >= 0.05, `the glass is only ${(window.depth * 1000).toFixed(0)} mm deep, so the reveal is a shadowless gap`)
+  // A window is a person's window: 0.8-1.2 m wide and 1.0-1.4 m tall, which is the
+  // residential range and not a porthole.
+  assert.ok(window.w > 0.8 && window.w < 1.3, `the window is ${window.w} m wide, which is not a window a person looks out of`)
+  assert.ok(window.h > 0.9 && window.h < 1.5, `the window is ${window.h} m tall, which is not a window a person looks out of`)
+  // The inset is a FRACTION, because a 26 m frontage and a 5.5 m flank are the
+  // two walls this pass puts windows on and a fixed metre inset puts a flank's
+  // window outside the flank.
+  assert.ok(buildingNumber('WINDOW_INSET') > 0.15 && buildingNumber('WINDOW_INSET') < 0.45, 'the window inset is not a fraction of the wall')
+  // T3's four-part stack, of which this file builds three — the lit pane REPLACES
+  // the dark one rather than adding to it. Stated so a future pass knows the
+  // shortfall is deliberate and which part it is.
+  assert.match(stripProse(STREET_VIEW_SOURCE), /isLit \? this\.pools\.windowLit : this\.pools\.windowGlass/, 'a lit window is now a fourth part rather than a replacement for the pane')
+  // The lit RATE, and why it is a fraction of the WALLS and not of the windows:
+  // one roll per wall, one bit, so a two-window façade can never light both. T11's
+  // inversion puts the ceiling on it and D3's "some lit warm, most dark" the
+  // floor. Measured at 16.2% on the default seed, which is 1-in-6 to within a
+  // binomial's own noise.
+  const oneIn = buildingNumber('LIT_WINDOW_ONE_IN')
+  assert.ok(oneIn >= 4, `one window in ${oneIn} is lit, which is not enough variance to read as windows`)
+  assert.ok(oneIn <= 12, `one window in ${oneIn} is lit, which is an office park and breaks T11's inversion`)
+  // ...and the roll is PER WALL, not per window. That is what makes "never two on
+  // the same façade" true BY CONSTRUCTION, and the shape of the loop is the only
+  // place that fact lives. `verify-world.mjs` re-derives it from the built scene.
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const start = code.indexOf('for (const entry of faces) {')
+  const loop = start >= 0 ? code.slice(start, code.indexOf('  _addEntrance(')) : ''
+  assert.match(loop, /const lit = rng\(\) < 1 \/ LIT_WINDOW_ONE_IN/, 'the lit roll is not one bit per wall')
+  assert.ok(
+    !/for \(let i = 0; i < entry\.count; i \+= 1\) \{\s*const lit =/.test(loop),
+    'the lit roll is inside the per-window loop, so one façade can light two windows',
+  )
+})
+
+test('the entrance is built from real dimensions, and the lamp is under its hood', () => {
+  // Every number in the entrance is a real one, and this is where they are held
+  // to it, because a comment saying "a real riser is 170 mm" beside a constant
+  // reading 0.2 is a lie the comment cannot prevent.
+  const riser = buildingNumber('STEP_RISER')
+  const tread = buildingNumber('STEP_TREAD')
+  const leafW = buildingNumber('DOOR_LEAF_W')
+  const leafH = buildingNumber('DOOR_LEAF_H')
+  // T-notes item 4's own list, pinned. 150 mm recess, 400 mm canopy, two steps.
+  assert.equal(buildingNumber('DOOR_RECESS'), 0.15, 'DOOR_RECESS — move this pin in the commit that changes the reveal')
+  assert.equal(buildingNumber('CANOPY_DEPTH'), 0.4, 'CANOPY_DEPTH — move this pin in the commit that changes the canopy')
+  assert.equal(riser, 0.17, 'STEP_RISER — move this pin in the commit that changes the steps')
+  assert.equal(tread, 0.28, 'STEP_TREAD — move this pin with the riser')
+  assert.equal(buildingNumber('STEP_COUNT'), 2, 'STEP_COUNT — move this pin in the commit that changes the entrance')
+  // A riser is 100-200 mm by any building code and a tread 200-350. Asserted as
+  // ranges as well as pinned, because a pin can be moved deliberately and a range
+  // cannot be moved by accident.
+  assert.ok(riser > 0.1 && riser < 0.2, `a ${(riser * 1000).toFixed(0)} mm riser is not a step a person climbs`)
+  assert.ok(tread > 0.2 && tread < 0.35, `a ${(tread * 1000).toFixed(0)} mm tread is not a step a person stands on`)
+  // The oversail is the number doing VISUAL work rather than structural work: two
+  // identical slabs read as one slab, and it is the only part of the entrance
+  // that has to read at 40 m through fog.
+  assert.ok(buildingNumber('STEP_OVERSAIL') >= 0.04, 'the steps do not step outward, so they read as one slab')
+  // A door is a door: 2.0 x 0.85 m is the reference's own scale table, and ours
+  // is within a few centimetres of it.
+  assert.ok(leafW > 0.8 && leafW < 1.1, `the door is ${leafW.toFixed(2)} m wide, which is not a door`)
+  assert.ok(leafH > 1.9 && leafH < 2.2, `the door is ${leafH.toFixed(2)} m tall, which is not a door`)
+  // The reveal is WIDER than the leaf, which is what makes it a reveal: a dark
+  // border has to be visible either side of the door for the hole to read.
+  assert.ok(buildingNumber('DOOR_REVEAL_SCALE') > 1, 'the reveal is not wider than the door it reveals')
+  // The lamp is UNDER the canopy and ABOVE the door head, and both halves are
+  // arithmetic on three constants rather than a picture. Both are needed and they
+  // pull in opposite directions, which is why the canopy's lift is a tuned number:
+  //   - too high and the fitting's top is through the hood it is meant to light
+  //     (the first version of this pass, at the textbook 2.3 m, and
+  //      `verify-world.mjs` caught it on the first run);
+  //   - too low and the fitting's top is below the door head, so it lights the
+  //     doorstep and not the door (the second version, at 1.98 m, which the check
+  //     below caught and the check above had let through).
+  const lampY = buildingNumber('ENTRY_LAMP_Y')
+  const lampH = buildingNumber('ENTRY_LAMP_H')
+  const lampTop = lampY + lampH / 2
+  const canopyBottom = leafH + buildingNumber('CANOPY_LIFT') - buildingNumber('CANOPY_THICK') / 2
+  assert.ok(
+    lampTop < canopyBottom,
+    `the lamp's top is at ${lampTop.toFixed(3)} m and the canopy's underside at ` +
+      `${canopyBottom.toFixed(3)} m — the lamp is sticking through its own hood`,
+  )
+  assert.ok(
+    lampTop > leafH,
+    `the lamp's top is at ${lampTop.toFixed(3)} m and the door head at ${leafH.toFixed(3)} m — ` +
+      'the lamp lights the doorstep rather than the door',
+  )
+  // ...with room on both sides, because a number that satisfies two constraints
+  // exactly is a number the next retune breaks. 50 mm of daylight is the floor.
+  assert.ok(canopyBottom - lampTop > 0.05, `only ${((canopyBottom - lampTop) * 1000).toFixed(0)} mm between the lamp and its hood`)
+  assert.ok(lampTop - leafH > 0.1, `only ${((lampTop - leafH) * 1000).toFixed(0)} mm between the lamp and the door head`)
+  // ...and it hangs to one SIDE of the door, far enough not to read as part of the
+  // frame and near enough that its light still falls on the leaf.
+  const side = buildingNumber('ENTRY_LAMP_SIDE')
+  assert.ok(side > 0.15 && side < leafW, `the lamp hangs ${side.toFixed(2)} m from the door's centre, which is neither beside it nor on it`)
+  // The door is OFFSET along its wall rather than centred, because a door in the
+  // middle of an 18 m frontage is a door on a hangar. As a fraction, because the
+  // same number has to work on a 5.5 m flank.
+  const offset = buildingNumber('ENTRANCE_OFFSET')
+  assert.ok(offset > 0.1 && offset < 0.4, 'the door is not offset along its wall by a sane fraction')
+})
+
+test('the roofline is made of horizontal edges, and the pyramid is gone', () => {
+  // Mechanism 1: "the reference spends its detail budget on things that change a
+  // building's OUTLINE ... A flat box in fog is a flat box." The measurable form is
+  // that a house's silhouette is a DECK and an UPRIGHT, both horizontal, and that
+  // the three heights COMPOSE rather than replace one another.
+  const wall = buildingNumber('WALL_HEIGHT')
+  const deck = buildingNumber('ROOF_DECK_THICK')
+  const parapet = buildingNumber('PARAPET_HEIGHT')
+  const proud = buildingNumber('PARAPET_PROUD')
+  const setback = buildingNumber('PARAPET_SETBACK')
+  // The deck is thin and the parapet tall, which is the composition the old single
+  // `ROOF_HEIGHT` could not express. A deck thicker than its parapet would put the
+  // building's detail back in the wrong place.
+  assert.ok(deck < 0.3, `the roof deck is ${deck} m thick, which is a second wall rather than a deck`)
+  assert.ok(parapet > 0.25, `the parapet is ${parapet} m tall, which is a lip rather than an upstand`)
+  assert.ok(deck < parapet, 'the deck is taller than the parapet standing on it')
+  // The parapet PROJECTS, which is the entire reason it exists: a horizontal edge
+  // 0 mm proud catches no light and changes no outline. 40-80 mm is a real cill.
+  assert.ok(proud > 0.03 && proud < 0.1, `the parapet stands ${(proud * 1000).toFixed(0)} mm proud, which is not a rim`)
+  // ...and it stands on a deck that is SET BACK, so the upstand is a wall at the
+  // edge of a roof rather than a lid on a box. Without the set-back the cap's
+  // outer face and the wall's outer face are the same plane and there is no rim.
+  assert.ok(setback > 0.15, 'the roof deck is not set back, so the parapet has nothing to stand on')
+  // ...and the composed silhouette: a house's roofline is higher than its wall by
+  // more than a hand's width, which is what `verify-world.mjs` reads off the real
+  // instance matrices.
+  assert.ok(wall + deck + parapet > wall + 0.3, 'the house does not rise above its own wall by a visible amount')
+  // The clutter is on the DECK, and both boxes are real sizes: a residential
+  // condenser is 0.9 x 0.6 x 0.45 and a vent cowl 0.5 x 0.4 x 0.3.
+  assert.deepEqual(buildingTable('AC_BOX'), [0.9, 0.6, 0.45], 'AC_BOX — move this pin in the commit that resizes the roof kit')
+  assert.deepEqual(buildingTable('VENT_BOX'), [0.5, 0.4, 0.3], 'VENT_BOX — move this pin with the AC box')
+  // The annulus bar is a FRACTION of a unit shape, so it has to be small: 0.02 on
+  // an 18 m roof is 360 mm of upstand and 0.1 would be 1.8 m.
+  const bar = buildingNumber('PARAPET_BAR')
+  assert.ok(bar > 0.005 && bar < 0.05, `the parapet's bar is ${bar} of the roof's width, which is not an upstand`)
+  // The belt is a real belt course: 100-200 mm tall, 25-75 mm proud, at the storey
+  // line — and the storey line is half the wall, so a two-storey wall reads as two
+  // storeys, which is T-notes item 5's whole claim.
+  const beltH = buildingNumber('BELT_HEIGHT')
+  const beltP = buildingNumber('BELT_PROUD')
+  assert.ok(beltH > 0.1 && beltH < 0.2, 'the belt course is not a belt course')
+  assert.ok(beltP > 0.02 && beltP < 0.08, 'the belt course does not stand proud enough to catch light')
+  const storey = /const STOREY_HEIGHT = WALL_HEIGHT \/ (\d+)/.exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(storey, 'STOREY_HEIGHT is no longer derived from the wall, so the two can drift')
+  assert.equal(Number(storey[1]), 2, 'the wall is no longer two storeys')
+  // A window head has to clear the belt or the band cuts the building in half
+  // through its own openings. The windows sit at 0.55 of the storey.
+  const window = buildingFields('WINDOW')
+  const windowTop = (wall / 2) * 0.55 + window.h / 2
+  const beltBottom = wall / 2 - beltH / 2
+  assert.ok(
+    windowTop < beltBottom,
+    `a window's head is at ${windowTop.toFixed(2)} m and the belt starts at ${beltBottom.toFixed(2)} m — the band cuts through the windows`,
+  )
+})
+
+test('the emissive ladder has four rungs, and they are ranked (T11)', () => {
+  // T11 asks for a ladder rather than "some windows glow", and a ladder is an
+  // ORDER. The order is not one total order — a lit window is legitimately
+  // brighter than a lamp head, because one is a source seen through glass and the
+  // other is a reflector — so it is stated as the claims that are actually true and
+  // measured in Rec. 709 off the palette, as pass 1 measured its ramps.
+  const rungs = ['portal', 'sodium', 'windowLit', 'entryLamp'].map((key) => [key, paletteHex(key)])
+  assert.equal(rungs.length, 4, 'the ladder does not have four rungs')
+  const luma = new Map(rungs.map(([key, hex]) => [key, relLuma(hex)]))
+  // The entry lamp is the LOWEST rung. T-notes item 4 puts it there explicitly:
+  // "on the emissive ladder, at the *lowest* rung, dimmer than any window."
+  for (const key of ['sodium', 'windowLit', 'portal']) {
+    assert.ok(
+      luma.get('entryLamp') < luma.get(key),
+      `the entry lamp (${luma.get('entryLamp').toFixed(1)}) is not below ${key} (${luma.get(key).toFixed(1)}) — ` +
+        "the ladder's lowest rung is not the lowest",
+    )
+  }
+  // ...and by a real margin. A rung one luma below another is the same light.
+  assert.ok(
+    luma.get('sodium') - luma.get('entryLamp') > 40,
+    `the entry lamp is only ${(luma.get('sodium') - luma.get('entryLamp')).toFixed(1)} luma below a lamp head`,
+  )
+  // The two families are still two families: §12.2's portal is the only cold light
+  // in the game, and a warm ramp that swallowed it would be a different game.
+  // Measured as which channel dominates, not as luma, because a cyan and an amber
+  // can share a luma and be opposite families.
+  assert.equal(((paletteHex('portal') & 0xff) > ((paletteHex('portal') >> 16) & 0xff)), true, 'the portal is no longer the cold family')
+  assert.equal(((paletteHex('entryLamp') >> 16) & 0xff) > (paletteHex('entryLamp') & 0xff), true, 'the entry lamp is no longer the warm family')
+  // T11's other half: these are the ONLY saturated light sources in the frame. The
+  // set that matters is the set the renderer treats as emissive, which is the set
+  // handed to `_glow`, so that is what is counted.
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const glowed = new Set([...code.matchAll(/(\w+): this\._glow\(/g)].map((m) => m[1]))
+  assert.ok(glowed.has('entryLamp'), 'the entry lamp is not a glow material, so it is a lit surface rather than a light')
+  assert.ok(glowed.has('windowLit'), 'the lit window is not a glow material')
+  // T11's inversion is "we use saturated colour on four things, not a dozen
+  // signs" — and it is deliberately NOT asserted as a count of materials, because
+  // pass 7 is going to add a lit vending machine and a count would make this gate
+  // fail the next pass for doing the thing the notes ask for. What is asserted
+  // instead is the half that cannot change: the LADDER is closed, in that nothing
+  // outside these four rungs is a warm emissive, and the joinery around a lit
+  // window is a lit SURFACE. The second is the half the renderer cares about —
+  // `_glow` is unfogged, so a light survives distance, and `_material` is fogged,
+  // so the frame around it does not. A window whose joinery glowed too would be
+  // four lights where the ladder says one.
+  assert.match(code, /entryLamp: this\._glow\(PALETTE\.entryLamp\)/, 'the entry lamp is not built from the palette rung it is ranked on')
+  assert.match(code, /trim: this\._material\(\{ color: 0x4a4750/, 'the joinery material is gone, so a lit window has nothing around it that is not a light')
+  // `stripProse` blanks string literals to `""`, so the pool's NAME is not matchable
+  // here — only the shape of the call around it, which is the thing being claimed.
+  assert.match(
+    code,
+    /pools\.windowFrames = this\._streetPool\(names, "", makeFrameGeometry\(\), this\._materials\.trim/,
+    'the window frames are not the joinery material, so a lit window has no frame to sit in',
+  )
+  // The value pins, deliberately separate for the reason pass 1's hex pins are: a
+  // deliberate retune is expected to fail this, and the remedy is to move the pin
+  // in the commit that moves the number.
+  assert.equal(paletteHex('windowLit'), 0xffbe72, 'PALETTE.windowLit — move this pin in the commit that retunes the ladder')
+  assert.equal(paletteHex('entryLamp'), 0x6b4520, 'PALETTE.entryLamp — move this pin in the commit that retunes the ladder')
+})
+
+test('the siding table is four tints, and every one of them is a dark', () => {
+  // §12.3's per-lot colour, which was two entries the renderer never used and is
+  // now four it uses every one of. The second claim is the one that matters: these
+  // are VARIATIONS ON A DARK, not a palette. A building that is not darker than
+  // the sodium haze behind it stops being a silhouette, and §12.1's whole reading
+  // of the creature depends on there being silhouettes.
+  const siding = buildingTable('siding')
+  assert.equal(siding.length, 4, `the siding table has ${siding.length} entries, and \`lot.tint\` is drawn from 0-3`)
+  // `lot.tint` is `Math.floor(rng() * 4)`, so four entries cover the whole range
+  // and the modulo in `_addLot` folds nothing away. Asserted against the generator
+  // rather than against a second constant in this file.
+  assert.match(
+    readFileSync(new URL('./src/game/neighborhood.js', import.meta.url), 'utf8'),
+    /tint: Math\.floor\(rng\(\) \* 4\)/,
+    'lot.tint is no longer a 0-3 draw, so a four-entry table is not covering the range',
+  )
+  const lumas = siding.map(relLuma)
+  const spread = Math.max(...lumas) - Math.min(...lumas)
+  for (const [hex, luma] of siding.map((hex, i) => [hex, lumas[i]])) {
+    assert.ok(luma < 90, `a siding tint is ${luma.toFixed(1)} luma (0x${hex.toString(16)}) — it is not a dark`)
+  }
+  // And the spread is a spread: four entries that are all the same value is a table
+  // with one entry written four times, and the defect this pass closed would be
+  // invisible behind it.
+  assert.ok(spread > 4, `the four siding tints span ${spread.toFixed(1)} luma, which is not a variation`)
+  assert.ok(spread < 40, `the four siding tints span ${spread.toFixed(1)} luma, which is a palette rather than a variation on a dark`)
+  // Two pairs, cold and warm, and the pairing is what makes a street read as built
+  // rather than as noise: a warm tint has more red than blue and a cold one more
+  // blue than red, and there are two of each.
+  const warm = siding.filter((hex) => ((hex >> 16) & 0xff) > (hex & 0xff))
+  assert.equal(warm.length, 2, 'the siding table is not half warm and half cold')
+  // The two BEFORE values are kept EXACTLY, so the pass does not move the value
+  // every wall already had. A 20% darkening would not fail a luma gate and would
+  // be visible in every capture.
+  assert.equal(siding[0], 0x3a3540, 'the cold grey changed — move this pin in the commit that changes it')
+  assert.equal(siding[1], 0x4a4038, 'the warm grey changed — move this pin in the commit that changes it')
+  // ...and the material is ONE, white, with the tint in the instance colour. An
+  // array of materials is the pre-pass-5 shape and would invite the material-slot
+  // write straight back.
+  const code = stripProse(STREET_VIEW_SOURCE)
+  assert.match(code, /siding: this\._material\(\{ color: 0xffffff, map: siding \}\)/, 'the siding material is not a single white material the instance colour can tint')
+  assert.equal(/siding: \[/.test(code), false, 'the siding material is an array again, which is what the material-slot write needs')
+})
+
+test('the part budget is declared, and a maximal lot fits inside it', () => {
+  // T5's ceiling, pinned. The measurement of the actual worst lot is in
+  // `verify-world.mjs`, which can read the built scene; this is the DECLARATION,
+  // and it is here so a pass that wants to raise the ceiling has to say so in the
+  // same commit that spends the parts.
+  const budget = buildingNumber('LOT_PART_BUDGET')
+  assert.equal(budget, 40, 'LOT_PART_BUDGET — move this pin in the commit that spends the parts')
+  // ...and the ceiling has to be above what the pass actually spends, or the gate
+  // is asserting a budget the world is already over. The worst lot is 31 parts,
+  // measured by `verify-world.mjs` on the default seed, and there is room for
+  // passes 6-12 to add a pole, a sign and a hydrant without touching this pin.
+  const worst = 31
+  assert.ok(worst < budget, `the worst lot is ${worst} parts and the ceiling is ${budget}`)
+  assert.ok(budget - worst >= 4, 'less than four parts of headroom per lot, so pass 6 must raise the ceiling before it adds anything')
+  // The pool capacities are derived per lot rather than typed, and the derivation
+  // is the thing that has to survive: a capacity written as a literal is a
+  // capacity somebody has to remember, and the first version of this block was one
+  // literal per pool and lost 96 window frames.
+  const code = stripProse(STREET_VIEW_SOURCE)
+  assert.match(code, /const per = \(partsPerLot\) => lot \* partsPerLot/, 'the façade pool capacities are not derived per lot')
+  // ...and the commit loop is driven by the CREATION list rather than a second
+  // hand-written one, because a pool created and not named is a pool whose
+  // instances are never uploaded and whose only symptom is that it is missing.
+  assert.match(code, /for \(const name of names\) this\.pools\[name\]\.commit\(\)/, 'the commit loop is not driven by the creation list')
+})
+
 // v2 slice 16 — the captures of §16.5, and the deletion of v1
 //
 // WHAT THIS SECTION IS FOR
