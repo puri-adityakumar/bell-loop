@@ -31,7 +31,7 @@ Hard rules for every pass:
   captures clearly brighter and amber; creature silhouette still reads.
 
 ## P2 — PORTAL: a black-hole disc, not a halo
-- [x] `PASS 3: Portal look rebuild.` The floating cyan torus reads as a HALO.
+- [DONE] `PASS 3: Portal look rebuild.` The floating cyan torus reads as a HALO.
   Rebuild as a true portal: near-black core disc filling the doorway, bright
   hot rim, slow swirl (shader or layered rotated geometry), keeps its cyan
   identity + ground apron. Dead portal = cold, dim, inert disc. Captures
