@@ -86,7 +86,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 // decoding and the lower-scene crop. It is imported here rather than
 // reimplemented because a second decoder would be a second set of numbers for
 // the same file, and the two would eventually disagree in a comment.
-import { sceneProfile } from './tools/png-luma.mjs'
+import { sceneProfile, creatureContrast, describeCreatureContrast, repaintBody, LIT_LUMA } from './tools/png-luma.mjs'
 
 const VERIFY_LOOPS = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -6583,41 +6583,155 @@ test('the constructor exposure is the curve at dusk 0', () => {
 section('Sodium light (iteration 2, pass 2)')
 
 test('the creature still reads darker than its background (§12.1)', () => {
-  // The gate the pass-1 review asked for by name. Two populations, one frame:
-  // `p0_1` is the creature (the darkest thousandth of the lower scene, which at
-  // 460,800 scene pixels is ~460 px — a figure at 17 m) and `median` is the lit
-  // road it is standing on. The claim is the RATIO, not either value.
+  // THE GATE THE PASS-1 REVIEW ASKED FOR — AND WHY IT WAS REWRITTEN IN PASS 2
+  //
+  // The first version of this test asserted `p0_1 / median` over the whole
+  // lower scene, on the reasoning that the darkest thousandth was the creature
+  // and the median was the lit road it stood on. It passed, and it was worth
+  // nothing, for a reason that is easy to demonstrate and was checked before
+  // anything was rewritten:
+  //
+  //   `street.png` — which contains NO creature — scored 0.14 on that ratio,
+  //   against 0.18 for `creature-stalking.png`.
+  //
+  // A frame with no subject in it out-scored the frame with a subject in it. A
+  // gate like that cannot fail, so whatever it was reporting, it was not
+  // reporting the creature. The cause is that `p0_1` and `median` are
+  // properties of the frame's HISTOGRAM: on this street that histogram is a
+  // bright mass (the sodium pools) and a dark mass (the vignette, the unlit
+  // house fronts), the darkest 460 px of 460,800 are the frame's own corners,
+  // and brightening the pools lowers the ratio whether or not the creature
+  // changed at all. The comment it shipped with — "p0_1 IS the creature" — was
+  // simply false, and false in a way that made the gate decorative.
+  //
+  // The replacement measures the thing §12.1 actually claims. A "hole in the
+  // fog" is a statement about a subject and its IMMEDIATE surround, so the
+  // subject is located first (by its unfogged additive eye quad, the one mark
+  // in a frame that is unambiguously the creature) and the body's own pixels
+  // are compared against the pixels 10-30 px either side of them. Those two
+  // populations are adjacent, so they share the fog, the dusk and the grade: a
+  // pass that lifts the whole world moves both and the ratio holds, and a pass
+  // that lifts the creature alone is caught. The percentile version had no such
+  // property, which is the whole reason it could not fail.
   const file = new URL(`./${capture.CAPTURE_DIR}/creature-stalking.png`, import.meta.url)
   assert.equal(existsSync(file), true, 'creature-stalking.png is missing — run npm run capture')
-  const profile = sceneProfile(readFileSync(file))
-  assert.ok(profile.pixels > 0, 'the frame decoded to no scene pixels')
+  const measured = creatureContrast(readFileSync(file))
+  // A frame with no creature in it cannot be a frame where the creature reads
+  // as a hole. Stated first, and as its own assertion, because it is the
+  // property the old gate lacked entirely: the ratio below is only meaningful
+  // once there is something on the other side of it.
+  assert.ok(measured.found, `no creature in creature-stalking.png: ${measured.reason}`)
   // §12.1: "it should read as a hole in the fog rather than an object in it."
-  // A hole is *darker than what is around it*; the threshold is the fraction,
-  // and 0.55 is deliberately not tight. The measured ratio is 7/24 = 0.29, so
-  // the headroom absorbs a pass that legitimately warms the fog (raising the
-  // denominator) while still failing the one that warms the creature (raising
-  // the numerator toward the median).
+  // A hole is darker than what surrounds it. The threshold is 0.62 and the
+  // measured value is 0.57, so the margin is deliberately thin — this is the
+  // one gate in the file with almost no headroom, and that is on purpose: the
+  // subject is small, its background is a graded pool rather than a flat field,
+  // and a loose threshold here would be the same decorative gate again, just
+  // with a better formula. Both sides of the number are reported in the failure
+  // message so a retune starts from the measurement rather than from a guess.
   assert.ok(
-    profile.p0_1 < profile.median * 0.55,
-    `the creature is not a hole in the frame: p0.1 is ${profile.p0_1} against a median of ` +
-      `${profile.median} (ratio ${(profile.p0_1 / profile.median).toFixed(2)}, needs under 0.55)`,
+    measured.ratio < 0.62,
+    `the creature is not a hole in the frame: ${describeCreatureContrast(measured)} (needs under 0.62)`,
   )
-  // and the background it is a hole *in* is actually lit. Without this half, a
-  // frame that went uniformly black would satisfy the ratio above perfectly and
-  // satisfy §16.5's floor not at all — the two are a pair, and this is the one
-  // that stops the ratio being won by making the world worse.
+  // and the background it is a hole IN is actually lit. Without this half a
+  // black shape on an unlit wall scores a perfect 0.0 and the test above is
+  // satisfied by a frame with nothing in it worth silhouetting against — which
+  // is not a hypothetical: at bearing 34 the stalk frame put the figure against
+  // a dark house front, and it measured a ratio of 1.22, i.e. brighter than its
+  // own background, while this same global gate called it 0.18. The floor is
+  // `LIT_LUMA` — the same constant §16.5's own floor is built on, so "lit" means
+  // one thing in this repository rather than two.
   assert.ok(
-    profile.median >= 18,
-    `the background is unlit (median ${profile.median}), so there is nothing to be a silhouette against`,
+    measured.sides >= LIT_LUMA,
+    `the creature is against an unlit background (luma ${measured.sides.toFixed(1)}), so there is ` +
+      `nothing for it to be a silhouette against — reframe it into the pool rather than darkening the world`,
   )
-  // the subject is near-black in absolute terms too, not merely darker: §12.3
-  // pins the creature at #08070a, and a "dark" reading of 17 is a grey smudge
-  // the fog happens to be darker than.
-  assert.ok(profile.p0_1 <= 12, `the creature is luma ${profile.p0_1}, which is grey rather than a hole`)
-  // and the frame keeps a bright end as well as a dark one, so a mid-grey mush
-  // fails with a message that says so rather than leaving the reader to infer
-  // it from whichever number tripped first.
-  assert.ok(profile.p95 > profile.median, 'the frame has no lit end: everything is one value')
+})
+
+test('the creature gate cannot be satisfied by a frame with no creature in it', () => {
+  // The control for the test above, and the one the percentile gate could not
+  // have had. `street.png` is shot from the SAME viewpoint as
+  // `creature-stalking.png` — both are `goto lamp`, with the creature absent in
+  // one of them — so it is the exact frame the old measure scored 0.14 on. If
+  // `creatureContrast` reports a creature in it, the anchor has stopped being an
+  // anchor and every other number in this section is about something else.
+  //
+  // This is asserted rather than assumed because the failure it guards against
+  // is silent and self-flattering: a measure that finds "a creature" in every
+  // frame will pass this section forever while measuring nothing at all.
+  const street = new URL(`./${capture.CAPTURE_DIR}/street.png`, import.meta.url)
+  assert.equal(existsSync(street), true, 'street.png is missing — run npm run capture')
+  const measured = creatureContrast(readFileSync(street))
+  assert.equal(
+    measured.found,
+    false,
+    `street.png contains no creature, but the gate found one: ${describeCreatureContrast(measured)}`,
+  )
+})
+
+test('a creature washed toward its background loses contrast, monotonically', () => {
+  // WHY A MUTATION TEST, AND WHY IT BUILDS ITS OWN IMAGES
+  // ------------------------------------------------------
+  // Everything above reads a committed PNG, which means the gate is only ever
+  // exercised against frames that happen to exist. A gate that would have passed
+  // the old `creature-stalking.png` is precisely a gate that looks green on the
+  // one artifact nobody re-examined — so the honest way to know this one works
+  // is to hand it frames where the answer is known by construction.
+  //
+  // `repaintBody` fills the creature's trunk with a flat grey and leaves the eye
+  // and the entire rest of the frame alone. That is the smallest edit that
+  // isolates the quantity under test: the anchor still resolves in the same
+  // place, so the only thing varying between rows is how the body compares to
+  // the background around it.
+  //
+  // The expectation is stated as a DIRECTION, not as a pair of thresholds, and
+  // that is the point. A gate that passes frame A and fails frame B can be
+  // satisfied by a constant; a gate whose measurement moves the right way as the
+  // subject is washed toward its background cannot.
+  const chase = new URL(`./${capture.CAPTURE_DIR}/creature-chasing.png`, import.meta.url)
+  assert.equal(existsSync(chase), true, 'creature-chasing.png is missing — run npm run capture')
+  const bytes = readFileSync(chase)
+  const committed = creatureContrast(bytes)
+  assert.ok(committed.found, `creature-chasing.png should hold a creature: ${committed.reason}`)
+
+  // The ladder, washed to progressively lighter greys. 0 is the near-black body
+  // `creatureView.js` actually draws; 120 is a creature well on its way to being
+  // lost.
+  //
+  // The top rung stops at 120 rather than going to white for a reason that is
+  // about the ANCHOR, not the threshold: `EYE_MIN` is 150, so a body painted at
+  // 200 joins the eye quad, the flood fill swallows it, and the frame reports no
+  // creature at all. That is the measure behaving correctly — a body as bright
+  // as the eye is not a silhouette, it is a smudge — but it makes such a row
+  // evidence about the anchor rather than about contrast, so the ladder is
+  // held below it and every rung answers the same question.
+  const ladder = [120, 90, 60, 40, 20, 0]
+  const readings = ladder.map((value) => creatureContrast(repaintBody(bytes, committed, value)))
+  for (const [i, reading] of readings.entries()) {
+    assert.ok(reading.found, `washing to ${ladder[i]} lost the eye anchor, so that row proved nothing`)
+  }
+  // Falling, every step. A single non-decreasing step would be a band in which a
+  // washed-out creature still passes, which is precisely the failure the old
+  // gate had across its whole range.
+  for (let i = 1; i < readings.length; i += 1) {
+    assert.ok(
+      readings[i].ratio < readings[i - 1].ratio,
+      `contrast did not fall monotonically as the creature was washed toward its background: ` +
+        `${ladder.map((_, k) => readings[k].ratio.toFixed(2)).join(' > ')} — ` +
+        'a pass could hide in the band where this goes the wrong way',
+    )
+  }
+  // And the two ends agree with the gate the other tests apply, so the ladder is
+  // anchored to the real thresholds rather than merely being tidy.
+  assert.ok(
+    readings[readings.length - 1].ratio < 0.62,
+    `a creature at luma 0 must read as a hole in anything, and it does not: ` +
+      `${describeCreatureContrast(readings[readings.length - 1])}`,
+  )
+  assert.ok(
+    readings[0].ratio >= 0.62,
+    `a creature washed to luma 200 must not pass the gate, and it does: ${describeCreatureContrast(readings[0])}`,
+  )
 })
 
 test('the pools are wide enough to read as pools, and still a grid (§4)', () => {

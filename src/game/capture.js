@@ -324,12 +324,34 @@ const VIEWS = [
     steps: [
       { op: 'begin' },
       { op: 'takeHammer' },
-      // the lamp, not the bare node: §6.1's figure is a silhouette because it is
+      // The lamp, not the bare node: §6.1's figure is a silhouette because it is
       // standing in a lit street, and a figure 17 m out against unlit asphalt has
       // nothing to be a silhouette *against*. The pool lights the road the
       // creature is walking down.
-      { op: 'goto', target: 'lamp', back: 11 },
-      { op: 'creature', state: 'stalk', metres: 17, bearing: 34 },
+      //
+      // 25 m, not 11, and 6 degrees, not 34 — and the second number was the bug.
+      //
+      // The comment above has been true of the INTENT since this view was
+      // written and false of the FRAME the whole time. At `back: 11` the camera
+      // stood 11 m short of the lamp and the creature was then placed 17 m from
+      // the *camera*, which put it 6 m BEYOND the lamp and 34 degrees off the
+      // road axis — out of the pool entirely, in front of an unlit house front.
+      // Measured on the committed PNG before this was fixed: the creature's body
+      // sat at luma 18.8 against a local background of 15.4, a ratio of 1.22 —
+      // BRIGHTER than the wall behind it. The figure was a slightly-lighter
+      // smudge on a dark house, and the gate pass 2 shipped to prevent called it
+      // 0.18. Both numbers were true measurements of two different things, which
+      // is the whole failure this entry is worth reading for.
+      //
+      // Standing 25 m back puts the lamp 25 m ahead and the creature 17 m out, so
+      // the pool now lies BETWEEN the camera and the figure and fills the ground
+      // the figure is standing on. The measured ratio is 0.57, and 6 degrees is
+      // enough to keep it off the exact road axis without pushing it into the
+      // kerb. Two nearby framings were measured and rejected for the record:
+      // `back: 30` (0.56, a slightly smaller figure for no gain) and
+      // `back: 20` (0.62, which is the gate's own limit and has no margin).
+      { op: 'goto', target: 'lamp', back: 25 },
+      { op: 'creature', state: 'stalk', metres: 17, bearing: 6 },
       { op: 'wait', seconds: 0.35 },
       { op: 'frames', count: 2 },
     ],

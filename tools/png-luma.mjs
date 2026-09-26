@@ -39,7 +39,7 @@
  * interlacing — throws with the header field that disagreed, because silently
  * returning a wrong number to a gate is the one thing this file must not do.
  */
-import { inflateSync } from 'node:zlib'
+import { deflateSync, inflateSync } from 'node:zlib'
 
 /** The eight bytes every PNG opens with. */
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -317,3 +317,400 @@ export function sceneProfile(buffer) {
 }
 
 export default luma
+
+/**
+ * EYE_MIN — the luma at which a blob is the creature's eye and not scenery.
+ *
+ * §4 promises three things stay readable at distance: the portals, the sodium
+ * lamps and the thing hunting you. Only the first two are *fogged*, and the
+ * lamps are far larger than an eye, so the eye is separated from both by size
+ * as well as by brightness. 150 is measured, not guessed: the stalk eye in
+ * `creature-stalking` sits at 227 mean and the chase eye at 223, while the
+ * brightest thing anywhere in `street.png` — a lamp head — peaks at 167.
+ */
+const EYE_MIN = 150
+/**
+ * The eye quad's own size bounds, in pixels. `CREATURE_COLORS.eye` is a small
+ * additive billboard, so a *hit* is a compact blob: 9x8 in the stalk frame,
+ * 7x7 in the chase frame. The upper bound is what rejects the lamp heads, which
+ * are bright but grow past 14 px as the camera nears them; the lower bound
+ * rejects single-pixel specular hits on kerbs and window frames.
+ */
+const EYE_MAX_SPAN = 14
+const EYE_MIN_PIXELS = 4
+/**
+ * Shape tests, and the reason the eye can be found at all.
+ *
+ * See `findEyes`. Briefly: an eye quad is a solid billboard, so it FILLS its
+ * bounding box and is as wide as it is tall. The bright HUD fragments that share
+ * its luma are lines, and fail both. 0.70 and 2 are the measured margins — the
+ * two real eyes in the gallery fill 97% and 100% of their boxes and are 1.13
+ * and 1.00 aspect, while the nearest HUD impostor fills 100% of a 4x9 box at
+ * 0.44 aspect, so the shape test rejects it and the fill test has room to
+ * spare.
+ */
+const EYE_MIN_FILL = 0.7
+const EYE_MAX_ASPECT = 2
+/**
+ * The area floor, in lit pixels. See the AREA note in `findEyes`: it separates
+ * the two real eyes (49 and 70 px) from the largest square, solid impostor in
+ * the gallery (9 px, a lit window in `hammer-located`).
+ */
+const EYE_MIN_AREA = 24
+/** Rows measured below the eye quad, and the columns either side of it. */
+const BODY_ROWS = 22
+const SIDE_GAP = 10
+const SIDE_REACH = 30
+
+/**
+ * Every compact blob at or above `EYE_MIN`, brightest first.
+ *
+ * 8-connected flood fill over a boolean mask, one pass. The frames are 1280x720
+ * and the mask is sparse, so the straightforward version is the fast one here;
+ * a union-find or a scanline run would be a second algorithm to keep correct
+ * for no measurable gain.
+ */
+function findEyes(width, height, at) {
+  const seen = new Uint8Array(width * height)
+  const found = []
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const start = y * width + x
+      if (seen[start] || at(x, y) < EYE_MIN) continue
+      seen[start] = 1
+      const stack = [start]
+      let minX = width
+      let maxX = -1
+      let minY = height
+      let maxY = -1
+      let sum = 0
+      let count = 0
+      while (stack.length > 0) {
+        const key = stack.pop()
+        const py = Math.floor(key / width)
+        const px = key - py * width
+        sum += at(px, py)
+        count += 1
+        if (px < minX) minX = px
+        if (px > maxX) maxX = px
+        if (py < minY) minY = py
+        if (py > maxY) maxY = py
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) continue
+            const nx = px + dx
+            const ny = py + dy
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
+            const next = ny * width + nx
+            if (!seen[next] && at(nx, ny) >= EYE_MIN) {
+              seen[next] = 1
+              stack.push(next)
+            }
+          }
+        }
+      }
+      if (count < EYE_MIN_PIXELS) continue
+      if (maxX - minX > EYE_MAX_SPAN || maxY - minY > EYE_MAX_SPAN) continue
+      // AREA — the third impostor class, and the one the shape tests cannot see.
+      //
+      // A lit window in a distant house passes both shape tests: `hammer-located`
+      // has one at x934-936, y359-361 that is square and solid. It is 9 px
+      // against the real eyes' 49 and 70. The floor is set at 24 px, which is
+      // under half the smallest genuine eye in the gallery and over twice the
+      // largest impostor, so neither side of the decision is close.
+      //
+      // The margin exists because `eyeWorldSize` scales the quad with distance,
+      // and a *further* creature has a *smaller* eye — so this floor is a claim
+      // about the two distances the gallery actually shoots (§6.1's stalk at
+      // 17 m and §16.5.8's chase at 9 m), not a claim about all distances. The
+      // alternative, dropping the floor and relying on shape alone, was measured
+      // and lets windows through; this is the smaller of the two limitations and
+      // the one that fails loudly, since a too-distant creature reports no eye
+      // and the gate says so rather than measuring the wrong blob.
+      if (count < EYE_MIN_AREA) continue
+      // FILL AND SHAPE — the two checks that separate a creature's eye from the
+      // bright HUD fragments that share its luma.
+      //
+      // Without them the anchor is not an anchor. Measured over the gallery, the
+      // brightest blob in `street.png` is a 36 px HUD element at x593-596,
+      // y75-83 — above `SCENE_TOP`, in the sky, and nothing to do with the
+      // creature — and `title.png`, `win.png` and `responsive.png` all have
+      // similar ones. Each is a *sliver*: 4 wide by 9 tall, or 1 by 8. An eye
+      // quad is a billboard, so it is as wide as it is tall and solid across.
+      // The two tests are therefore:
+      //
+      //   FILL: at least 70% of the bounding box is lit. A HUD glyph run and a
+      //         window frame are lines, and a line fills a third of its box.
+      //   SQUARE: neither side is more than 2x the other. This is the one that
+      //         does the real work, because it is scale-free — it holds for a
+      //         9x8 eye at 17 m and a 7x7 eye at 9 m alike, while an absolute
+      //         width test would only ever be right at one distance.
+      //
+      // Both are stated against `CREATURE_SHAPE`'s proportions rather than
+      // tuned to the two frames that ship, so a creature drawn larger or
+      // further off still anchors.
+      const spanX = maxX - minX + 1
+      const spanY = maxY - minY + 1
+      if (count / (spanX * spanY) < EYE_MIN_FILL) continue
+      if (spanX > spanY * EYE_MAX_ASPECT || spanY > spanX * EYE_MAX_ASPECT) continue
+      found.push({ n: count, minX, maxX, minY, maxY, mean: sum / count })
+    }
+  }
+  found.sort((a, b) => b.mean - a.mean)
+  return found
+}
+
+/**
+ * creatureContrast — is the creature a HOLE in the fog, where "the fog" is the
+ * few hundred pixels immediately around it?
+ *
+ * WHY THE GLOBAL PERCENTILE MEASURE WAS WRONG, AND THIS IS THE REPLACEMENT
+ * -----------------------------------------------------------------------
+ * The first version of this asserted `p0_1 / median` over the whole lower
+ * scene, on the reasoning that the darkest thousandth is the creature and the
+ * median is the road it stands on. Both halves of that are false, and the
+ * failure is not subtle: measured over the shipped gallery, `street.png` —
+ * a frame with NO creature in it at all — scored a ratio of 0.14, *better
+ * separation* than `creature-stalking.png` at 0.18. A gate that passes a frame
+ * with no subject in it is not a gate.
+ *
+ * The reason is that those percentiles describe the frame's histogram, not its
+ * subject. On this street the histogram is dominated by a huge bright mass (the
+ * sodium pools) and a huge dark mass (the vignette, the unlit house fronts, the
+ * kerbs). `p0_1` is the darkest 460 px of 460,800, which on this content is
+ * the frame's own corners. Lifting the pools lifts the denominator and the
+ * ratio falls, whether or not the creature changed at all.
+ *
+ * So the claim §12.1 actually makes — "a hole in the fog rather than an object
+ * in it" — is a statement about a subject and its IMMEDIATE surround, and it
+ * has to be measured that way. The creature is located first, by the one mark
+ * in the frame that is unambiguously it (the unfogged additive eye quad), and
+ * only then are two populations compared:
+ *
+ *   - the BODY: the column of pixels directly beneath the head, which is the
+ *     figure's trunk, and
+ *   - the SIDES: the same rows, 10-30 px to either hand, which is whatever the
+ *     figure is standing in front of.
+ *
+ * Those two are adjacent, so they share the fog, the dusk and the grade. A pass
+ * that lifts the whole world lifts both and leaves the ratio alone; a pass that
+ * lifts the creature alone moves the numerator toward the denominator and is
+ * caught. That is the property the percentile version could not have.
+ *
+ * THE ANCHOR IS LOAD-BEARING
+ * --------------------------
+ * A ratio needs a subject, and "the darkest blob" is not one — on this content
+ * the lamp post, the house fronts and the vignette are all darker than the
+ * creature and all of them are bigger. The eye is used instead because
+ * `creatureView.js` draws it with `fog: false` and additive blending, which
+ * makes it the only mark in a frame that is (a) unfogged, (b) at a fixed
+ * brightness regardless of distance, and (c) small. Measured across the whole
+ * gallery, only the two frames that are *meant* to contain the creature produce
+ * an eye hit at all; `street.png`, `title.png`, `win.png` and `hammer-located`
+ * produce none, and a frame with no creature therefore cannot pass this gate no
+ * matter what its histogram looks like. That is the check the percentile
+ * version was missing, and it is why the anchor is the eye and not a
+ * threshold on darkness.
+ *
+ * @param {Buffer} buffer a PNG, as `luma` and `sceneProfile` take it
+ * @returns {{found: boolean, reason?: string, eye?: object, body?: number,
+ *   sides?: number, ratio?: number}}
+ */
+export function creatureContrast(buffer) {
+  const { width, height, channels, data } = decodePng(Buffer.from(buffer))
+  const at = (x, y) => lumaAt(data, (y * width + x) * channels, channels)
+  // The eye is searched over the WHOLE frame, not the `SCENE_TOP` crop the two
+  // other measures use, and deliberately so: a figure at 17 m has its head
+  // above the midpoint — the stalk frame's eye is at y=335 of 720 — so the
+  // lower-scene crop this module uses everywhere else would cut the subject's
+  // head off and find nothing. Searching the whole frame costs a little noise
+  // rejection and is the only crop under which the subject is intact.
+  const eyes = findEyes(width, height, at)
+  if (eyes.length === 0) {
+    return {
+      found: false,
+      reason: 'no eye quad anywhere in the frame — there is no creature in this picture to be a hole',
+    }
+  }
+  const eye = eyes[0]
+  const top = eye.maxY + 1
+  const bottom = Math.min(height - 1, top + BODY_ROWS)
+  if (top >= height) {
+    return { found: false, reason: `the eye at y=${eye.minY} has no body below it in the frame`, eye }
+  }
+  // The body: the head's own column span, rows below it. Averaged rather than
+  // thresholded, because a threshold would let the gate pick its own subject —
+  // "the pixels dark enough to count" is a moving definition that a brightened
+  // world can satisfy by having fewer of them.
+  let bodySum = 0
+  let bodyCount = 0
+  for (let y = top; y <= bottom; y += 1) {
+    for (let x = eye.minX; x <= eye.maxX; x += 1) {
+      bodySum += at(x, y)
+      bodyCount += 1
+    }
+  }
+  // The sides: the same rows, offset either hand. `SIDE_GAP` keeps the body's
+  // own antialiased edge out of its own comparison, and `SIDE_REACH` stops the
+  // "background" from drifting so far that it is a different part of the world.
+  let sideSum = 0
+  let sideCount = 0
+  for (let y = top; y <= bottom; y += 1) {
+    for (let x = eye.minX - SIDE_REACH; x <= eye.minX - SIDE_GAP; x += 1) {
+      if (x < 0 || x >= width) continue
+      sideSum += at(x, y)
+      sideCount += 1
+    }
+    for (let x = eye.maxX + SIDE_GAP; x <= eye.maxX + SIDE_REACH; x += 1) {
+      if (x < 0 || x >= width) continue
+      sideSum += at(x, y)
+      sideCount += 1
+    }
+  }
+  if (sideCount === 0 || bodyCount === 0) {
+    return { found: false, reason: 'the eye is at the frame edge with no room either side to compare against', eye }
+  }
+  const bodyMean = bodySum / bodyCount
+  const sideMean = sideSum / sideCount
+  return {
+    found: true,
+    eye,
+    body: bodyMean,
+    // The background has to be LIT for a dark figure to be a hole in it rather
+    // than a dark shape on a dark wall. §12.1's figure is a silhouette in a
+    // sodium street; against an unlit house front there is nothing to be a
+    // silhouette *against*, and the ratio alone cannot tell those apart — a
+    // black shape on a black wall scores a perfect 0.0.
+    sides: sideMean,
+    ratio: bodyMean / sideMean,
+  }
+}
+
+/**
+ * One sentence about a `creatureContrast` result, in the house voice.
+ *
+ * Written here rather than in the caller for the same reason `describeLuma` is:
+ * there is exactly one right way to phrase the gate's own evidence, and a
+ * harness that assembles its own sentences is a harness whose log lines drift.
+ */
+export function describeCreatureContrast(measured) {
+  if (!measured.found) return `no creature in frame: ${measured.reason}`
+  const e = measured.eye
+  return (
+    `body luma ${measured.body.toFixed(1)} against a local background of ` +
+    `${measured.sides.toFixed(1)} (ratio ${measured.ratio.toFixed(2)}), ` +
+    `eye ${e.n}px at x${e.minX}-${e.maxX} y${e.minY}-${e.maxY}`
+  )
+}
+
+
+// ---------------------------------------------------------------------------
+// Writing a PNG back out, which exists for exactly one reason: so the gate can
+// be tested against frames where the answer is known by construction.
+// ---------------------------------------------------------------------------
+
+/** The CRC-32 table PNG chunk checksums use, built once. */
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n += 1) {
+    let c = n
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  return table
+})()
+
+/** CRC-32 over a chunk's type and payload, per the PNG specification. */
+function crc32(bytes) {
+  let c = 0xffffffff
+  for (const byte of bytes) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/** One length-prefixed, CRC-suffixed PNG chunk. */
+function chunk(type, payload) {
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(payload.length)
+  const typed = Buffer.concat([Buffer.from(type, 'ascii'), payload])
+  const crc = Buffer.alloc(4)
+  crc.writeUInt32BE(crc32(typed))
+  return Buffer.concat([length, typed, crc])
+}
+
+/**
+ * encodePng — 8-bit RGB, non-interlaced, one filter-0 scanline per row.
+ *
+ * The narrowest thing that can hold what the mutations below need. It is NOT a
+ * general encoder and says so: it re-encodes 8-bit RGB only, which is what
+ * `decodePng` accepts and what Chrome emits, and it drops any alpha channel
+ * rather than guessing at it. The gate only ever round-trips frames it is
+ * about to assert on, so a file that survives `decodePng` survives this.
+ */
+function encodePng(width, height, rgb) {
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8 // bit depth
+  header[9] = 2 // colour type: truecolour
+  const stride = width * 3
+  const raw = Buffer.alloc(height * (stride + 1))
+  for (let y = 0; y < height; y += 1) {
+    raw[y * (stride + 1)] = 0 // filter type 0: None
+    rgb.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
+  }
+  return Buffer.concat([
+    SIGNATURE,
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+/**
+ * repaintBody — a copy of `buffer` with the creature's trunk filled to `luma`.
+ *
+ * WHY A MUTATOR LIVES IN THE MEASUREMENT MODULE
+ * ----------------------------------------------
+ * A gate that can only be run against committed PNGs is a gate that is only
+ * ever exercised against frames that happen to exist — and the whole reason the
+ * creature gate was wrong for a pass is that nobody could tell it was wrong
+ * without re-deriving what the creature looks like by hand. So the mutation is
+ * built here, next to the decoder and the measure, and the rectangle is derived
+ * from `creatureContrast`'s OWN reported eye rather than hard-coded: a hard-coded
+ * box is a second copy of "where the creature is", and it is exactly the kind of
+ * copy that silently stops matching when the view changes.
+ *
+ * The eye is deliberately left alone. Repainting it would move the anchor, and
+ * the point of these frames is to vary the subject's contrast while holding its
+ * position fixed, so that the only thing the measurement can be responding to
+ * is how the body compares to what surrounds it.
+ *
+ * @param {Buffer} buffer a PNG
+ * @param {{eye: {minX: number, maxX: number, maxY: number}}} measured the
+ *   result of `creatureContrast` on that same PNG
+ * @param {number} luma 0-255, the grey the trunk is filled with
+ * @returns {Buffer} a new PNG
+ */
+export function repaintBody(buffer, measured, luma) {
+  if (!measured.found) throw new Error('repaintBody needs a frame that actually has a creature in it')
+  const { width, height, channels, data } = decodePng(Buffer.from(buffer))
+  const rgb = Buffer.allocUnsafe(width * height * 3)
+  for (let i = 0; i < width * height; i += 1) {
+    rgb[i * 3] = data[i * channels]
+    rgb[i * 3 + 1] = data[i * channels + 1]
+    rgb[i * 3 + 2] = data[i * channels + 2]
+  }
+  const { eye } = measured
+  // The same span `creatureContrast` measures as the body, so the mutation lands
+  // on exactly the pixels the gate reads and nowhere else.
+  for (let y = eye.maxY + 1; y <= eye.maxY + BODY_ROWS; y += 1) {
+    if (y < 0 || y >= height) continue
+    for (let x = eye.minX; x <= eye.maxX; x += 1) {
+      if (x < 0 || x >= width) continue
+      rgb[(y * width + x) * 3] = luma
+      rgb[(y * width + x) * 3 + 1] = luma
+      rgb[(y * width + x) * 3 + 2] = luma
+    }
+  }
+  return encodePng(width, height, rgb)
+}
