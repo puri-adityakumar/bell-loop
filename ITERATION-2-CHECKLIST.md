@@ -38,7 +38,7 @@ Hard rules for every pass:
   portal-located/shutdown must photograph the disc, not a ring.
 
 ## P3 — 3D FIDELITY (the bulk; reference: sakuragaoka-station)
-- [x] `PASS 4: Aesthetic study.` Read the reference repo's world-building
+- [DONE] `PASS 4: Aesthetic study.` Read the reference repo's world-building
   (https://github.com/Kenton-GMI/sakuragaoka-station): what makes its streets
   read as places. Write AESTHETIC-NOTES.md: concrete techniques to port
   (procedural only) + what we deliberately keep different (darker, emptier).
