@@ -306,7 +306,13 @@ globalThis.cancelAnimationFrame = () => {}
 // (§10.5: the phase machine keeps its meaning). `LOOP_SECONDS`, `SHRINE_IDS` and
 // `RESET_TIMELINE` were imported here for the v1 live block, and v2 has no
 // countdown, no candles and no bell on a clock — the bells are `creature.js`'s.
-const { createInitialState, createStore, PHASE } = await import('./src/game/loop.js')
+// slice 16: `loop.js` is deleted, so this reads `store.js`, which is where the
+// phase table and the store now live. `createStartStore` replaces v1's
+// `createInitialState(1, PHASE.START)` verbatim — the title-screen state is the
+// one fact three entry points (here, `App.jsx` and the capture page) must agree
+// on, and having it be a named call rather than a hand-written literal is what
+// stops this harness drifting into a third starting state.
+const { createStartStore, PHASE } = await import('./src/game/store.js')
 const { BellLoopGame } = await import('./src/game/world.js')
 // The v2 pure modules the checks below read. All four are pure per §15.1 — they
 // import no DOM, no `three` and no clock — which is exactly the property that
@@ -427,7 +433,7 @@ function check(name, fn) {
   }
 }
 
-const store = createStore(createInitialState(1, PHASE.START))
+const store = createStartStore()
 const audio = makeFakeAudio()
 const game = new BellLoopGame(container, { store, audio, createRenderer: makeFakeRenderer })
 
@@ -471,13 +477,21 @@ check('BEGIN starts the run, and rings no bell (§13 removed the opening toll)',
     'BEGIN rang a toll: v1 opened the loop with the world\'s clock, and v2 has no clock',
   )
   run(game, 4)
-  // §9.3's black is the only fade v2 has, and it belongs to the capture. BEGIN
-  // lifts the *title* black, which is `start()`'s own `fade = 1`; after four
-  // seconds of a running clock, `_updatePlaying` never touches `fade` again, so
-  // what the HUD mirror reads is whatever the last setter left there. The
-  // assertion that means something is that the store agrees with the world, not
-  // that it equals a number v2 no longer has.
-  assert.equal(store.get().fade, game.fade, 'the mirrored fade and the world\'s own must agree')
+  // §9.3's black belongs to the capture, and the one other place a fade exists is
+  // BEGIN's own: `start()` puts `fade` back to 1 so the hand-off from the title
+  // card to the player is a dissolve rather than a cut. PLAYING therefore has to
+  // keep lifting it, because `fade` is painted as a full-viewport `background:
+  // #000` rect over the canvas — a value still standing at 1 is not a dark
+  // street, it is a run nobody can see.
+  //
+  // This assertion used to be the weaker "the mirror agrees with the world",
+  // which was written on the reasoning that `_updatePlaying` never touches
+  // `fade` again and so whatever the last setter left is fine. That reasoning
+  // described the bug and then excused it: the two sides agreed on `1` forever,
+  // the gate stayed green, and twelve of the fourteen gallery frames were
+  // photographs of a black rectangle. The number the design implies is zero.
+  assert.equal(game.fade, 0, 'four seconds into a run the screen is still black')
+  assert.equal(store.get().fade, 0, 'and the HUD is still painting the black over it')
   // §9: the thing that used to be the timer is now the run's own state, and none of
   // it is counting down — it is three portals, a hammer and a creature.
   assert.equal(game.state.loop, 1)
@@ -1882,7 +1896,7 @@ const SWING_COOLDOWN = 0.7
  * is the world's own, exactly as it is in the browser.
  */
 function simWorld(seed) {
-  const store = createStore(createInitialState(1, PHASE.START))
+  const store = createStartStore()
   const world = new BellLoopGame(container, {
     store,
     audio: makeFakeAudio(),

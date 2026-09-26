@@ -23,10 +23,9 @@
  * Pure: no DOM, no Three.js, no globals, no clock. `verify.mjs` imports this
  * file directly in node.
  *
- * NOTE: `maze.js` still carries its own copy of `mulberry32` for v1. That
- * duplication is deliberate and temporary — slice 16 deletes `maze.js`, and this
- * module is the canonical one. `verify.mjs` imports the two under distinct names
- * so the duplication stays visible rather than silent.
+ * NOTE: `maze.js` carried its own copy of `mulberry32` for v1, and slice 16
+ * deleted that file. This module is the only one left, and `verify.mjs` no longer
+ * has to import two of anything to prove it.
  */
 
 // ---------------------------------------------------------------------------

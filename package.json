@@ -11,7 +11,8 @@
     "verify:world": "node verify-world.mjs",
     "check": "npm run lint && npm run verify && npm run verify:world && npm run build",
     "benchmark:catalog": "node benchmark/build-catalog.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "capture": "node tools/capture.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -23,6 +24,7 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "oxlint": "^1.81.0",
+    "puppeteer-core": "^25.12.0",
     "vite": "^8.3.0"
   }
 }

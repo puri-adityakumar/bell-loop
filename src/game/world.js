@@ -27,19 +27,18 @@
  *
  * WHAT IS STILL IMPORTED FROM v1
  * -----------------------------
- * `PHASE` and `createStore` only, from `loop.js`. §10.5 is explicit that `PHASE`
- * keeps its meaning — start / playing / reset / won — and that the finale is a
- * flag rather than a fifth phase, so re-typing four string constants here to make
- * a module look clean would be the worst of both worlds: a second definition of
- * the phase machine, and an `App.jsx` diff larger than the one line the design
- * promised. `LOOP_SECONDS` was the third import until slice 12: it existed only
- * to pin the v1 countdown full, because v2 has no countdown. Everything else in
- * `loop.js` — candles, the door, the wall rise, the heartbeat projection — is
- * dead code, and so is all of `maze.js`. Slice 16 deletes both files and folds
- * `PHASE` into wherever the HUD ends up.
+ * Nothing. `PHASE` and `createStore` were the last two names v1's `loop.js` still
+ * owned, and slice 16 deleted the file; they now live in `src/game/store.js`, a
+ * module with no rule in it at all. §10.5 is explicit that `PHASE` keeps its
+ * meaning — start / playing / reset / won — and that the finale is a flag rather
+ * than a fifth phase, so re-typing four string constants here to make a module look
+ * clean would have been the worst of both worlds: a second definition of the phase
+ * machine, and an `App.jsx` diff larger than the one line the design promised.
+ * `LOOP_SECONDS` was the third import until slice 12, and it existed only to pin
+ * the v1 countdown full, because v2 has no countdown.
  */
 import * as THREE from 'three'
-import { createStore, PHASE } from './loop.js'
+import { createStore, PHASE } from './store.js'
 import { PlayerController } from './player.js'
 import { PALETTE, StreetView } from './streetView.js'
 import { CreatureView } from './creatureView.js'
@@ -64,6 +63,15 @@ const SPAWN_YAW = Math.PI * 0.25
 
 /** The cross-fade at a capture, seconds. §9.3's beat, and the only one v2 has. */
 const CAPTURE_FADE_SECONDS = 1.1
+
+/**
+ * How fast a fade nobody owns falls, per second, and so how long BEGIN's dissolve
+ * lasts: `1 / 0.7` = 1.43 s.
+ *
+ * A named rate rather than a literal repeated in two phases, because the bug this
+ * replaces was a literal written in only one of them.
+ */
+const FADE_LIFT_PER_SECOND = 0.7
 
 /**
  * The pathing walk's own two constants, and both of them exist because a Voronoi
@@ -100,6 +108,43 @@ const LAMP_LIGHTS = 4
 
 /** How far a lamp light reaches before the pool stops looking for another. */
 const LAMP_RADIUS = 40
+
+/**
+ * How bright a lamp head is, in the units a Three.js point light wants.
+ *
+ * The number is calibrated, not chosen, and this is the comment that has to
+ * survive the next person who decides 16 "looked fine in the editor". Measured
+ * over the lower half of the `street` view — the road, where the light has to
+ * land — holding every other variable still, the fraction of road pixels at or
+ * above luma 18 went: 1.64% at 16, 3.57% at 120, 13.96% at 400, 34.08% at 900.
+ *
+ * Sixteen was the bug and 400 is the fix, for a geometric reason rather than an
+ * aesthetic one. `streetView.js` puts a lamp head 5.1 m up with a 12 m painted
+ * pool under it, but a 16-candela point light at decay 2 falls to 16/64 of its
+ * value by the time it is 8 m from the head, and a 12 m pool lit only by a
+ * fading inverse square is a pool you cannot see. Lamps are one per
+ * intersection, 64 m apart, so a pool that only reaches its own kerb leaves 52 m
+ * of road between pools with nothing on it at all: the avenue read as a row of
+ * isolated coins on a black table rather than a lit street. The gap has to be
+ * closed by the *lights*, because the painted pools cannot be made to overlap —
+ * §4 needs them to read as a grid, and a grid is spacing.
+ *
+ * 900 is measurably brighter still and visibly wrong: the whole carriageway goes
+ * to a uniform orange and the sodium stops being a pool you steer by, which is
+ * the navigation affordance the pools exist for. 400 is the top of the legible
+ * range without spending that affordance.
+ */
+const LAMP_LIGHT_INTENSITY = 400
+
+/**
+ * How far one lamp light throws, in metres.
+ *
+ * Just over half the 64 m lamp spacing, so adjacent pools overlap slightly at
+ * the midpoint and the road between them is lit at both ends rather than dark in
+ * the middle. Below ~45 m the falloff is still inside the painted 12 m pool and
+ * the change is invisible; the reach is what does the work.
+ */
+const LAMP_LIGHT_DISTANCE = 60
 
 /**
  * How far away §6.1's first sighting has to stand, in metres.
@@ -291,7 +336,7 @@ export class LongQuietGame {
     // --- §14.3 pause and motion sensitivity ---------------------------------
     //
     // A pause is a *flag* and not a fifth `PHASE`, for §10.5's reason stated in
-    // `loop.js`: the phase machine is the game's four moments and the world
+    // `store.js`: the phase machine is the game's four moments and the world
     // reads it; a pause is an overlay on top of whichever moment is running, and
     // a player who pauses during a capture's black has not invented a phase.
     // `paused` therefore freezes `update` outright rather than selecting a
@@ -417,7 +462,7 @@ export class LongQuietGame {
 
     this.lampLights = []
     for (let i = 0; i < LAMP_LIGHTS; i += 1) {
-      const light = new THREE.PointLight(PALETTE.sodium, 0, 30, 2)
+      const light = new THREE.PointLight(PALETTE.sodium, 0, LAMP_LIGHT_DISTANCE, 2)
       light.visible = false
       this.scene.add(light)
       this.lampLights.push(light)
@@ -467,7 +512,7 @@ export class LongQuietGame {
       }
       light.visible = true
       light.position.set(lamp.x, lamp.y - 0.2, lamp.z)
-      light.intensity = 16
+      light.intensity = LAMP_LIGHT_INTENSITY
     }
   }
 
@@ -520,6 +565,26 @@ export class LongQuietGame {
     this._recentre()
     this._updateLampPool()
     this.fill.position.set(this.player.pos.x, 1.5, this.player.pos.z)
+
+    // The fade is the one piece of presentation that outlives a phase change, and
+    // that is why it is lifted here rather than inside one phase's own updater.
+    // `start()` puts `fade` back to 1 so the hand-off from the title card to the
+    // player is a dissolve and not a cut, and it makes the phase PLAYING on that
+    // same call — so a decay written only in the title updater runs for exactly
+    // one frame of a real run. Two phases own the value outright and assign it,
+    // so lifting it around them cannot disturb either: §9.3's cross-fade drives
+    // it in both directions across 1.1 s, and §10.4's card ramps it up to its own
+    // 0.6 ceiling. Every other phase lifts it.
+    //
+    // This does not fail like a lighting bug. `fade` is painted as a
+    // full-viewport `background: #000` rect over the canvas, so a value still
+    // standing at 1 is not a dark scene — it is a run nobody can see, at any
+    // dusk, under any lamp. It hid behind a green gate because the gate asserted
+    // that the mirror agreed with the world, which a permanently black world
+    // satisfies perfectly.
+    if (this.phase === PHASE.START || this.phase === PHASE.PLAYING) {
+      this.fade = Math.max(0, this.fade - dt * FADE_LIFT_PER_SECOND)
+    }
 
     switch (this.phase) {
       case PHASE.PLAYING:
@@ -631,7 +696,8 @@ export class LongQuietGame {
 
   /** The title screen still looks at the street, because it is behind the title. */
   _updateStart(dt) {
-    this.fade = Math.max(0, this.fade - dt * 0.7)
+    // the title's own black is lifted in `update()`, which is where every phase
+    // that does not own the fade lifts it
     this.camera.position.set(SPAWN.position.x, 1.75, SPAWN.position.z)
     this.camera.rotation.set(
       Math.sin(this.animTime * 0.31) * 0.03,

@@ -9,9 +9,10 @@
  * values the DOM wants, with no DOM, no Three.js, no clock and no globals of
  * any kind. `App.jsx` paints `hudSnapshot(state)` and nothing else; the
  * simulation never reaches into React and React never reaches into the
- * simulation. Slice 16 deletes `loop.js`, and v1's `hudSnapshot` came out of it
- * in this slice precisely so that the HUD has one owner before the deletion
- * rather than two after it.
+ * simulation. v1's `hudSnapshot` came out of `loop.js` in slice 12 precisely so
+ * that the HUD would have one owner before slice 16 deleted that file rather than
+ * two after it, and `PHASE` went to `src/game/store.js` rather than here — this
+ * module projects a state object and owns none, and a store is a lifetime.
  *
  * WHY THE PROJECTION IS CLOSED
  * ----------------------------

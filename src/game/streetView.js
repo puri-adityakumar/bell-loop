@@ -49,7 +49,8 @@
  * import it and every number it draws is asserted upstream in `neighborhood.js`,
  * `rules.js` and `creature.js` instead. What the gate *can* assert about this file
  * is its source contract — which modules it imports, what it exports, and that it
- * never reaches back into v1's `maze.js` — and slice 09 added exactly that.
+ * never reaches back into v1's `maze.js`, which slice 09 added as a check and
+ * slice 16 made vacuously true by deleting the file.
  */
 import * as THREE from 'three'
 import {
@@ -115,6 +116,24 @@ export const PALETTE = Object.freeze({
 /** §5.1: one portal per liminal structure, in PORTAL_IDS order. */
 export const PORTAL_STRUCTURES = Object.freeze(['shed', 'busShelter', 'phoneBox'])
 
+/**
+ * Which way each structure opens, in its own local axes, in the same order.
+ *
+ * The three shells are not three copies of one box and the difference is the
+ * whole reason a camera has to be told: the shed is walled front and back and
+ * gapped on its +X flank, the bus shelter has a back panel at -Z and nothing at
+ * +Z, and the phone box is a closed cube the ring reads through. Standing
+ * "north of the portal" therefore photographs the back of two of the three, and
+ * the §16.5.5 capture did exactly that — a flat black panel with a cyan sliver
+ * under its roofline, measured at 0.33% lit.
+ *
+ * This is stated here, beside the geometry that makes it true, rather than
+ * worked out at capture time from a bounding box: which way a door faces is a
+ * fact about the model, and a second place that re-derives it from geometry is a
+ * second thing that can be wrong about the door.
+ */
+const PORTAL_OPEN_AXIS = Object.freeze(['x', 'z', 'z'])
+
 /** How many wrapped copies of the neighbourhood exist. §3.1 needs no more. */
 export const WRAP_COPIES = Object.freeze([-1, 0, 1])
 
@@ -125,6 +144,35 @@ const SIDEWALK_WIDTH = 3
 const RUN_LENGTH = WORLD_EXTENT * 3
 const WALL_HEIGHT = 5.2
 const ROOF_HEIGHT = 1.9
+
+/**
+ * How wide a sodium pool is on the road, metres.
+ *
+ * Sized to the street rather than to the light: the carriageway is `2 *
+ * STREET_HALF_WIDTH` = 12 m wide, so a 12 m pool fills the road it stands on and
+ * stops at the kerb, which is what makes the pools read as a *grid you steer by*
+ * (§4's second navigation mechanism) rather than as a smear. A smaller pool reads
+ * as a spotlight on a stage and loses the spacing; a larger one runs the pools
+ * together and the grid stops being legible at all.
+ */
+const LAMP_POOL_DIAMETER = 12
+
+/**
+ * The cyan apron's diameter, metres. A quarter of the sodium pool's 12, which is
+ * the ratio of the things themselves: §12.2's portal stands in a doorway and
+ * lights the ground a player walks onto, where a lamp lights a street. It is
+ * still wide enough to reach under a camera standing at §5.2's hold distance,
+ * which is the measurement the two portal captures are actually judged on.
+ */
+const PORTAL_APRON_DIAMETER = 7
+
+/**
+ * The top face of a lot's yard slab, metres. `pools.yards.place` is called with
+ * this as its centre and 0.1 as its height, so the surface a portal's apron has
+ * to clear is `YARD_TOP` and not the road's y=0 — see the apron's own comment for
+ * what happens when a decal is laid at the road's height inside a lot.
+ */
+const YARD_TOP = 0.1
 
 
 // ---------------------------------------------------------------------------
@@ -227,6 +275,50 @@ function makeSurfaceTexture({ size = 128, seed = 1, base = 0.5, contrast = 0.3, 
  * board lines; the hedge is the noisiest of the four, which is the cheapest way to
  * make a box read as foliage at 40 m.
  */
+/**
+ * The sodium pool's own texture: a radial falloff, written as alpha rather than
+ * as colour, so one texture serves every pool at every brightness the flicker
+ * puts it at.
+ *
+ * Drawn per-pixel through `createImageData`/`putImageData` for the reason every
+ * other texture in this file is: `verify-world.mjs` stubs the 2D context with
+ * exactly these members, and a texture written with a gradient primitive would
+ * be a texture the gate cannot construct. The falloff is `(1 - r²)²` because a
+ * linear ramp reads as a painted disc with a hard edge, and a sodium lamp on wet
+ * asphalt has neither — it is bright under the head and gone well before the
+ * kerb.
+ */
+function makePoolTexture({ size = 128, peak = 1 } = {}) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const image = ctx.createImageData(size, size)
+  const data = image.data
+  const half = (size - 1) / 2
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = (x - half) / half
+      const dy = (y - half) / half
+      const r2 = dx * dx + dy * dy
+      const fall = r2 >= 1 ? 0 : (1 - r2) * (1 - r2) * peak
+      const value = Math.round(fall * 255)
+      const i = (y * size + x) * 4
+      // white in RGB and the falloff in alpha, so the material's own colour is the
+      // sodium hue and the pool flickers with the lamp head it belongs to
+      data[i] = 255
+      data[i + 1] = 255
+      data[i + 2] = 255
+      data[i + 3] = value
+    }
+  }
+  ctx.putImageData(image, 0, 0)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
+
 export const SURFACE_SEEDS = Object.freeze({
   asphalt: 0x515f,
   sidewalk: 0x51de,
@@ -473,7 +565,39 @@ export class StreetView {
       glass: this._material({ color: 0x1b2026, roughness: 0.25, metalness: 0.5 }),
       shed: this._material({ color: 0x2d2a26 }),
       sodium: this._glow(PALETTE.sodium),
+      // The pool the lamp throws on the road. Additive, unlit and depth-writing
+      // nothing, because it is a light rather than a surface: the four point
+      // lights `world.js` owns cannot cover a 49-lamp grid, so without this the
+      // sodium family exists as 49 glowing heads over 49 pools of pure black
+      // asphalt, and §12.1's "the streetlights have already come on" is a claim
+      // the renderer never makes. `fog: true` here and `fog: false` on the head
+      // above it is deliberate and is the whole depth cue: the pool fades with
+      // distance, the lamp does not.
+      sodiumPool: this._glow(PALETTE.sodium, {
+        map: makePoolTexture(),
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: true,
+      }),
       portal: this._glow(PALETTE.portal),
+      // §12.2's cold family, given the ground the sodium family already gets.
+      // The comment on `sodiumPool` below is the whole argument: a light source
+      // with nothing underneath it is a glowing hoop over black tarmac. The
+      // sodium lamps had 49 pools and four point lights between them, and the
+      // comment explains that the pools are what make "the streetlights have
+      // already come on" true rather than merely asserted. A portal had the ring,
+      // a 9-intensity point light and no pool at all, which is the same failure
+      // in its worst form — the one cold light in the game, reading as a decal on
+      // a dark shed. Same additive plane and same falloff texture, cyan instead
+      // of sodium, and a quarter of the diameter: a doorway is not a streetlight.
+      portalPool: this._glow(PALETTE.portal, {
+        map: makePoolTexture(),
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: true,
+      }),
       portalDead: this._glow(PALETTE.portalDead),
       headlight: this._glow(PALETTE.headlight),
       windowLit: this._glow(0xffbe72),
@@ -572,11 +696,30 @@ export class StreetView {
     this.pools.frontage = this._pool('frontage', new THREE.BoxGeometry(1, 1, 1), this._materials.hedge, lot * 2 + 8)
     this.pools.lampPosts = this._pool('lampPost', new THREE.CylinderGeometry(0.09, 0.12, 1, 6), this._materials.metal, CHUNKS * WRAP_COPIES.length + 8)
     this.pools.lampHeads = this._pool('lampHead', new THREE.BoxGeometry(1, 1, 1), this._materials.sodium, CHUNKS * WRAP_COPIES.length + 8)
+    // The pools lie on the road, so their geometry is pre-rotated flat rather than
+    // given a rotation: `InstancePool.place` composes yaw only, and a pool is
+    // radially symmetric, so yaw is the one transform it does not need.
+    this.pools.lampPools = this._pool(
+      'lampPool',
+      new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+      this._materials.sodiumPool,
+      CHUNKS * WRAP_COPIES.length + 8,
+    )
     this.buildChunks()
-    for (const name of ['yards', 'houses', 'roofs', 'outbuildings', 'frontage', 'lampPosts', 'lampHeads']) {
+    // The lamps are built *before* the commit loop, and that order is the whole
+    // reason this call is here rather than after it. `InstancePool.commit()` is
+    // the only thing that publishes instances: it sets `mesh.count` and flags
+    // `instanceMatrix` for upload. Filling a pool after its commit places 147
+    // lamp posts and 147 lamp heads into a buffer that is never uploaded and
+    // never counted, which is not a subtle shading problem — it is a street with
+    // no streetlights on it at all, and the only reason it read as "a dark
+    // scene" rather than "a bug" is that the four dynamic point lights
+    // `world.js` aims at `lampPositions` still work, because those come from the
+    // data rather than the geometry.
+    this._buildLamps()
+    for (const name of ['yards', 'houses', 'roofs', 'outbuildings', 'frontage', 'lampPosts', 'lampHeads', 'lampPools']) {
       this.pools[name].commit()
     }
-    this._buildLamps()
   }
 
   /**
@@ -607,8 +750,10 @@ export class StreetView {
     const z = lot.z + copy * WORLD_EXTENT
     const tint = lot.tint % PALETTE.siding.length
 
-    // the lot's own ground: a yard slab, so a driveway reads as a driveway
-    this.pools.yards.place(x, 0.05, z, frame.long, 0.1, frame.short)
+    // the lot's own ground: a yard slab, so a driveway reads as a driveway.
+    // `YARD_TOP - 0.1` is the same 0.1 the slab is thick, written so the apron's
+    // `YARD_TOP` and this placement cannot drift apart into a buried decal
+    this.pools.yards.place(x, YARD_TOP - 0.1, z, frame.long, 0.1, frame.short)
 
     if (!isAnchor) {
       const wall = lot.kind === 'house' ? WALL_HEIGHT : lot.kind === 'garage' ? 2.7 : 2.2
@@ -678,6 +823,17 @@ export class StreetView {
         for (const copy of WRAP_COPIES) {
           this.pools.lampPosts.place(lx + copy * WORLD_EXTENT, 2.6, lz + copy * WORLD_EXTENT, 1, 5.2, 1)
           this.pools.lampHeads.place(lx - 0.9 + copy * WORLD_EXTENT, 5.1, lz + copy * WORLD_EXTENT, 1.9, 0.18, 0.34)
+          // The pool sits under the head rather than the post, and reaches the
+          // kerbs and stops. `place` scales the pre-rotated plane by (x, z), so
+          // both numbers below are the same diameter.
+          this.pools.lampPools.place(
+            lx - 0.9 + copy * WORLD_EXTENT,
+            0.03,
+            lz + copy * WORLD_EXTENT,
+            LAMP_POOL_DIAMETER,
+            1,
+            LAMP_POOL_DIAMETER,
+          )
         }
         // one canonical record per lamp, for the light pool `world.js` drives
         this.lampPositions.push({ x: lx, z: lz })
@@ -715,11 +871,30 @@ export class StreetView {
       root.rotation.y = frame.yaw
       const shell = new THREE.Group()
       if (index === 0) {
-        // shed: four walls, a gap for the doorway, a shallow roof
+        // Shed: a back wall, two side walls, and a +X flank built as TWO panels
+        // with a gap between them — the doorway the ring stands in.
+        //
+        // The gap is the whole point of this structure and it was missing. The
+        // +X flank used to be one box 2.4 m deep, which is exactly the full
+        // depth of the shed, so the panel sealed the opening it was named for
+        // and the §16.5.5 view photographed a closed black box with the ring
+        // sealed inside it. The apron on the ground and the light around the
+        // roofline still measured, so the luma gate passed a picture of a wall:
+        // the gate measures how much light is in the frame, not whether the
+        // frame is of the thing it claims to be.
+        //
+        // 1.3 m of the 2.4 m flank is wall, 1.1 m is the doorway, and the ring
+        // (1.56 m across at 0.78 m radius) is sized to be *wider* than the
+        // opening — so from outside you see the cyan rim of a ring the doorway
+        // is cropping, which is what a ring in a doorway actually looks like.
         shell.add(this._box(3.2, 2.4, 0.18, this._materials.shed, 0, 1.2, -1.3))
-        shell.add(this._box(3.2, 2.4, 0.18, this._materials.shed, 0, 1.2, 1.3))
         shell.add(this._box(0.18, 2.4, 2.4, this._materials.shed, -1.5, 1.2, 0))
-        shell.add(this._box(0.9, 2.4, 2.4, this._materials.shed, 1.25, 1.2, 0))
+        // the two flank panels, each 0.65 m deep, leaving z in (-0.65, 0.65) open
+        shell.add(this._box(0.9, 2.4, 0.65, this._materials.shed, 1.25, 1.2, -0.975))
+        shell.add(this._box(0.9, 2.4, 0.65, this._materials.shed, 1.25, 1.2, 0.975))
+        // a lintel over the opening, so the doorway reads as a built opening
+        // rather than a missing wall, and the gap is not a hole in the shed
+        shell.add(this._box(0.9, 0.5, 1.3, this._materials.shed, 1.25, 2.15, 0))
         shell.add(this._box(3.6, 0.16, 3.0, this._materials.roof, 0, 2.5, 0))
       } else if (index === 1) {
         // bus shelter: a back panel, a roof on two posts, and nothing else
@@ -736,12 +911,24 @@ export class StreetView {
       }
       root.add(shell)
 
-      // the ring: §12.2's only cold light, standing in the doorway of each shell
+      // The ring: §12.2's only cold light, standing in the doorway of each shell.
+      //
+      // Turned to face out of the opening, which is not a detail. A
+      // `TorusGeometry` lies in the XY plane and so is seen edge-on — as a thin
+      // vertical bar, not a ring — by any camera looking down its own Z axis.
+      // The shed opens on its +X flank, so a ring left unrotated is viewed
+      // side-on by exactly the camera `capture.js` places on the shed's `facing`
+      // side, and §16.5.5 photographed a cyan stick. `PORTAL_OPEN_AXIS` already
+      // records which way each shell opens, so the quarter-turn that brings the
+      // ring's face toward the opening is read from that table rather than
+      // hardcoded per structure.
       const ring = new THREE.Mesh(
         new THREE.TorusGeometry(0.78, 0.08, 10, 28),
         this._materials.portal.clone(),
       )
       ring.position.set(0, 1.35, 0)
+      // a quarter turn about Y, for the shells that open on X
+      if (PORTAL_OPEN_AXIS[index] === 'x') ring.rotation.y = Math.PI / 2
       ring.name = `portal-ring-${id}`
       root.add(ring)
 
@@ -749,7 +936,37 @@ export class StreetView {
       light.position.set(0, 1.5, 0)
       root.add(light)
 
+      // The apron the ring throws on the ground, and the reason the portal views
+      // have anything in the bottom half of the frame to measure. Pre-rotated
+      // flat for the same reason the sodium pools are: `place` composes yaw only
+      // and a radial falloff needs nothing else. A cloned material rather than
+      // the shared one, so `setPortalShut` can put this portal's apron out
+      // individually — three portals sharing one material could not be shut one
+      // at a time, which is the entire rule of §5.3.
+      //
+      // The height is 0.13 and not the sodium pools' 0.03, and that difference is
+      // the whole bug this had on its first run: a portal stands in a *lot*, and
+      // a lot's ground is a yard slab 0.1 m thick with its top face at 0.1, so an
+      // apron laid at 0.03 is inside the slab and renders nothing. It measured
+      // 0.33% lit — the sodium value, apparently, and no cyan in it at all. The
+      // pools clear their own surface by 0.03; this clears the yard by the same.
+      const apron = new THREE.Mesh(
+        new THREE.PlaneGeometry(PORTAL_APRON_DIAMETER, PORTAL_APRON_DIAMETER).rotateX(-Math.PI / 2),
+        this._materials.portalPool.clone(),
+      )
+      apron.position.set(0, YARD_TOP + 0.03, 0)
+      root.add(apron)
+
       this.group.add(root)
+      // The direction out of the opening, in world space, so a camera can be put
+      // on the side the portal is actually readable from. `root.rotation.y` is
+      // `frame.yaw`, and rotating a local axis by it about Y gives local +X ->
+      // (cos, -sin) and local +Z -> (sin, cos). Stored as a unit vector rather
+      // than a yaw because a stand-off is a direction and a distance, and every
+      // caller wants exactly that.
+      const sin = Math.sin(frame.yaw)
+      const cos = Math.cos(frame.yaw)
+      const facing = PORTAL_OPEN_AXIS[index] === 'x' ? { x: cos, z: -sin } : { x: sin, z: cos }
       const portal = {
         id,
         anchor,
@@ -757,6 +974,8 @@ export class StreetView {
         root,
         ring,
         light,
+        apron,
+        facing,
         shut: false,
         position: { x: anchor.position.x, z: anchor.position.z },
       }
@@ -1151,6 +1370,10 @@ export class StreetView {
     portal.ring.material = shut ? this._materials.portalDead : this._materials.portal
     portal.light.intensity = shut ? 0 : 9
     portal.light.visible = !shut
+    // and the apron with them, in the same breath and for the same reason: a
+    // shut portal that kept a cyan pool on the ground would be advertising an
+    // objective the run has already spent
+    portal.apron.visible = !shut
     return true
   }
 
@@ -1188,6 +1411,10 @@ export class StreetView {
     const t = this._time
     const flicker = 0.88 + (Math.sin(t * 7.3) + Math.sin(t * 2.9 + 1.1) + Math.sin(t * 17.7)) * 0.04
     this._materials.sodium.color.setHex(PALETTE.sodium).multiplyScalar(flicker)
+    // The pool gutters with the head above it. They share one grid on purpose, and
+    // a pool that stayed steady under a guttering lamp would be the one thing in
+    // the sodium family giving the flicker away.
+    this._materials.sodiumPool.color.setHex(PALETTE.sodium).multiplyScalar(flicker)
     const pulse = 0.86 + Math.sin(t * 1.9) * 0.1 + Math.sin(t * 0.61) * 0.04
     for (const portal of this.portals) {
       if (portal.shut) continue

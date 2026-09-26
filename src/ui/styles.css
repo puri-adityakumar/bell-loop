@@ -419,15 +419,20 @@
   animation: overlay-in 1.6s ease both;
 }
 
-/* loop 10: darkness veil so the title reads over the drifting fog */
+/* loop 10: darkness veil so the title reads over the drifting fog.
+   A scrim, not a lid: it darkens the street enough for nine tracked-out letters
+   to hold their edges and no further. The first pass ran to 0.94 at the corners
+   and the frame measured 2.36% lit — the card was legible and the world behind
+   it was gone, which is the opposite of what §16.5.1 asks this view to be
+   ("the start overlay over the *live* street"). */
 .title-veil {
   position: absolute;
   inset: 0;
   background: radial-gradient(
     ellipse at 50% 46%,
-    rgba(4, 5, 9, 0.55) 0%,
-    rgba(4, 5, 9, 0.82) 55%,
-    rgba(4, 5, 9, 0.94) 100%
+    rgba(4, 5, 9, 0.28) 0%,
+    rgba(4, 5, 9, 0.5) 55%,
+    rgba(4, 5, 9, 0.66) 100%
   );
 }
 
@@ -587,7 +592,12 @@
    loading screen, and the world being *there and still* is the reassurance. */
 
 .overlay--pause {
-  background: rgba(3, 4, 7, 0.62);
+  /* 0.62 was enough to dim the street and not enough to keep it: the pause view
+     measured 1.52% lit, because a 4.8%-lit street under a 0.62 scrim is a 1.8%
+     street. A scrim this dark is only justified if the world behind it is bright
+     to begin with, and §14.3's reassurance is that the world is *there* — so the
+     scrim drops to 0.42 and leans on the blur for separation instead. */
+  background: rgba(3, 4, 7, 0.42);
   backdrop-filter: blur(3px) saturate(0.7);
   gap: 2.4rem;
   animation: overlay-in 0.25s ease both;
@@ -641,8 +651,15 @@
   color: rgba(216, 207, 174, 0.35);
 }
 
+/* §10.4's card sits over §10.3's car, and the car is the only thing in the
+   frame with its headlights on. The first pass filled this with opaque hex
+   stops, which ended the frame the instant the run did: the win view measured
+   3.09% lit and the gallery's brightest, best-composed scene — the beacon
+   through the fog — was not in it at all. The stops keep their shape and go
+   translucent, so the headlights still throw their wash up the card and the
+   sentence lands over the thing it is about. */
 .overlay--win {
-  background: radial-gradient(circle at 50% 44%, #1a1408 0%, #05060a 64%);
+  background: radial-gradient(circle at 50% 44%, rgba(26, 20, 8, 0.5) 0%, rgba(5, 6, 10, 0.78) 64%);
   animation: overlay-in 2.4s ease both;
 }
 

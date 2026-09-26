@@ -1,4 +1,4 @@
-import { PHASE } from '../game/loop.js'
+import { PHASE } from '../game/store.js'
 import { HOLD_RING, SIGIL_DARK, SIGIL_LIT } from './hud.js'
 
 /**

@@ -1,71 +1,55 @@
 #!/usr/bin/env node
 /**
- * verify.mjs — node-side assertions over the PURE game modules
- * (`src/game/maze.js` and the reducers in `src/game/loop.js`).
+ * verify.mjs — node-side assertions over the PURE game modules.
  *
  * The browser game cannot be clicked by a script, so this file proves the parts
- * that are testable headlessly:
- *   - the PRNG is deterministic and the seed really is the loop number
- *   - every loop's maze is fully connected and byte-identical on re-generation
- *   - the centre chamber always has exactly one doorway, matching centerApproach
- *   - the three shrines are always one per documented zone, distinct, clear of
- *     the landmarks, and reachable inside a single 60s loop
- *   - wall segments exactly cover every closed edge (no gaps, no phantoms)
- *   - the candle / door / timer / bell-timeline rules in loop.js
+ * that are testable headlessly. As of slice 16 it proves the whole of v2:
+ *
+ *   - the random-access PRNG is deterministic, well distributed and free of
+ *     adjacency clustering (§3.2)
+ *   - chunks, the wrap and the street graph agree with each other in any
+ *     generation order, and across the seam in all four directions (§3.1–§3.2)
+ *   - objective anchors are one per district, on lots, fair distances apart,
+ *     and the exit is the far edge (§3.4)
+ *   - the four fixture rules hold for every chunk, loop and seed (§3.6)
+ *   - the portal verb, the breath meter, the capture table and the win test
+ *     (§5.2, §7.3, §9.1, §10.1)
+ *   - the creature's awareness, sight, state machine, pathing and both ladders
+ *     (§6, §7.4, §8, §11.1–§11.3)
+ *   - the HUD as a closed, total, colour-blind-safe projection (§14)
+ *   - the finale and the win (§10)
+ *   - the capture set of §16.5, and that v1 is really gone (slice 16)
+ *
+ * WHAT WAS DELETED AND WHY IT IS NOT MISSED
+ * -----------------------------------------
+ * v1's `maze.js` and `loop.js` are gone, and so are the eight sections that only
+ * ever tested them (PRNG, solvability, extra carves, shrine zones, wall segments,
+ * the loop rules, the store's v1 reducers, and the scripted candle run). Every
+ * one of them asserted a claim about a game that no longer exists: a 15x15 perfect
+ * maze, three candle shrines, a countdown and a door. None of it is "still true of
+ * v2 in another file" — the v2 replacements are the connectivity and fairness
+ * checks in slices 02 and 03, and they were written rather than inherited,
+ * because the two games have nothing geometric in common. What survives of the
+ * store is its contract, which is v2's contract: the unchanged-patch-does-not-
+ * notify rule that the HUD mirror's repaint budget is built on.
  *
  * Run: node verify.mjs   (exit code 0 = all green)
  */
 import assert from 'node:assert/strict'
-import {
-  generateMaze,
-  mulberry32,
-  mazeSignature,
-  reachableCells,
-  hasPath,
-  pathLength,
-  distanceMap,
-  openEdgeCount,
-  hasWall,
-  cellKey,
-  cellToWorld,
-  chebyshev,
-  GRID,
-  CELL_SIZE,
-  WALL_HEIGHT,
-  WALL_THICKNESS,
-  MAX_ENTRANCE_DEPTH,
-  MIN_EXTRA_CARVES,
-  EXTRA_CARVE_BUDGET,
-  LANDMARK_CLEARANCE,
-  MIN_SHRINE_DISTANCE,
-  SHRINE_POOL,
-  ZONES,
-  SHRINE_IDS,
-  ENTRANCE,
-  CENTER,
-  DIRS,
-  E,
-  S,
-  APPROACH_YAW,
-} from './src/game/maze.js'
-// v2 slice 01. `maze.js` still exports its own `mulberry32` for v1 and that is
-// untouched until slice 16 deletes it, so the two are imported under distinct
-// names here — the temporary duplication stays visible instead of silent.
-import {
-  hash32,
-  streamAt,
-  mulberry32 as mulberry32V2,
-} from './src/game/hash.js'
+// v2 slice 01. `hash32`, `streamAt` and the one `mulberry32` left in the
+// repository — v1's `maze.js` carried a second copy and slice 16 deleted it, so
+// the alias this import used to need (`mulberry32V2`) is gone with it.
+import { hash32, streamAt, mulberry32 } from './src/game/hash.js'
 // v2 slice 02. Imported as a namespace because GRID, BLOCK and the BFS helper
-// names all collide with v1's maze.js exports; slice 16 removes that overlap for
-// good, and until then the v2 world reads `hood.*` beside v1's flat names.
+// names all collide with the v2 world modules' own vocabulary, and the v2 world
+// reads `hood.*` beside them.
 import * as hood from './src/game/neighborhood.js'
 // v2 slice 05. Namespace again: `breath`, `portals` and friends are game-state
 // names as well as rule names, and flat imports would read ambiguously.
 import * as rules from './src/game/rules.js'
 // v2 slice 06. Namespace for the same reason, twice over: `state`, `distance`,
 // `sounds` and `captured` are all frame fields *and* all rule names, and the
-// creature's states would sit next to v1's PHASE table looking like one thing.
+// creature's states would sit next to the PHASE table looking like one thing.
 import * as beast from './src/game/creature.js'
 // v2 slice 08. The first-person controller. It is in the pure harness because
 // slice 08 removed its `three` import, which is the only thing that ever made it
@@ -82,34 +66,22 @@ import * as audio from './src/game/audio.js'
 // v2 slice 12. The HUD as a pure projection, in `src/ui/hud.js`. Imported as a
 // namespace under its own name for the same reason as `rules`, `beast` and
 // `audio` — `hud`, `sigil`, `hold` and `clamp01` are all rule names here and
-// half of them collide with things already imported flat. It is also the module
-// that *replaced* v1's `hudSnapshot` in `loop.js`, so nothing here has to be
-// renamed when slice 16 deletes `loop.js`.
+// half of them collide with things already imported flat.
 import * as hud from './src/ui/hud.js'
-import { readdirSync, readFileSync } from 'node:fs'
-import {
-  LOOP_SECONDS,
-  PHASE,
-  RESET_TIMELINE,
-  RESET_SWAP_AT,
-  createInitialState,
-  candlesLit,
-  allCandlesLit,
-  shouldDoorOpenAtLoopStart,
-  applyLightCandle,
-  advanceTimer,
-  beginLoop,
-  restartState,
-  resetFade,
-  wallRiseProgress,
-  wallRiseDelay,
-  createStore,
-  DOOR_WIN_RADIUS,
-  isInsideChamber,
-} from './src/game/loop.js'
+// slice 16. The phase table and the store, which v1's `loop.js` owned and
+// `src/game/store.js` now owns. `createStartStore` is here because the world
+// harness and `App.jsx` both start from it and the gate is the third reader of
+// the same fact: a store that starts somewhere else is a title screen that
+// disagrees with the world behind it.
+import { createStartStore, createStore, PHASE } from './src/game/store.js'
+// slice 16. The §16.5 capture set as data. The harness that photographs it lives
+// in `tools/capture.mjs` and the page it drives in `capture/`, and this is the
+// one piece of it that is pure — which is what lets the gate assert that the
+// gallery is the gallery the design asked for, before anything is rendered.
+import * as capture from './src/game/capture.js'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 
 const VERIFY_LOOPS = [1, 2, 3, 4, 5, 6, 7, 8]
-const WALK_SPEED = 3.6 // m/s, PlayerController default
 
 const sections = []
 let current = null
@@ -226,7 +198,7 @@ test('the same (seed, cx, cz) always yields the same stream', () => {
     }
   }
   // the exported generator is the same one streamAt drives
-  const direct = mulberry32V2(hash32(1337, 6, 6))
+  const direct = mulberry32(hash32(1337, 6, 6))
   const viaStream = streamAt(1337, 6, 6)
   for (let i = 0; i < 64; i++) assert.equal(direct(), viaStream())
 })
@@ -1344,8 +1316,15 @@ test('the third portal opens the finale, and only the third', () => {
   assert.equal(rules.applyCapture(state).dusk, 1, 'dusk fell when the player died')
 })
 
-test('isInsideExit mirrors v1 isInsideChamber, negatives included', () => {
-  assert.equal(rules.EXIT_WIN_RADIUS, DOOR_WIN_RADIUS)
+test('isInsideExit is the v1 chamber test, negatives included', () => {
+  // §15.2 asked for the v2 win geometry to be the same *shape* as v1's
+  // `isInsideChamber`, so two runs of this benchmark are comparable. Slice 16
+  // deleted the function it used to be compared against, so the comparison can no
+  // longer be made live — which means the table below is now the artifact. Every
+  // row of it was transcribed from the run that did compare the two, including the
+  // three null rows and the negatives, and the one number it leaned on is pinned
+  // immediately below so a drift in the radius cannot pass as parity.
+  assert.equal(rules.EXIT_WIN_RADIUS, 1.15, '§10.4: the win radius is v1\'s 1.15 m, unchanged')
   const cases = [
     [{ x: 0, z: 0 }, { x: 0, z: 0 }, 1.15],
     [{ x: 1.1, z: 0 }, { x: 0, z: 0 }, 1.15],
@@ -1363,16 +1342,17 @@ test('isInsideExit mirrors v1 isInsideChamber, negatives included', () => {
     [{ x: 8, z: 4 }, { x: 3, z: 4 }, 5],
   ]
   for (const [position, centre, radius] of cases) {
-    assert.equal(
-      rules.isInsideExit(position, centre, radius),
-      isInsideChamber(position, centre, radius),
-      `isInsideExit disagreed with isInsideChamber at ${JSON.stringify(position)}`,
-    )
+    // the closed disc, both signs on both axes, and no throw on a missing argument
+    const inside = rules.isInsideExit(position, centre, radius)
+    assert.equal(typeof inside, 'boolean', `isInsideExit did not answer for ${JSON.stringify(position)}`)
+    if (position && centre) {
+      const expected = Math.hypot(position.x - centre.x, position.z - centre.z) <= radius
+      assert.equal(inside, expected, `isInsideExit disagrees with its own definition at ${JSON.stringify(position)}`)
+    } else {
+      assert.equal(inside, false, 'a missing position or centre is never inside')
+    }
   }
-  assert.equal(
-    rules.isInsideExit({ x: 0, z: 0 }, { x: 0, z: 0 }),
-    isInsideChamber({ x: 0, z: 0 }, { x: 0, z: 0 }),
-  )
+  assert.equal(rules.isInsideExit({ x: 0, z: 0 }, { x: 0, z: 0 }), true)
   assert.equal(rules.isInsideExit({ x: 2, z: 0 }, { x: 0, z: 0 }), false)
   assert.equal(rules.isInsideExit(null, { x: 0, z: 0 }), false)
 })
@@ -2073,7 +2053,8 @@ test('the view layer is drawn from the pure modules and never from v1', () => {
   for (const module of ['./streetView.js', './creature.js', './rules.js', './neighborhood.js']) {
     assert.ok(WORLD_SOURCE.includes(`from '${module}'`), `world.js should import ${module}`)
   }
-  // v1 is still on disk (slice 16 deletes it) and nothing reaches it any more
+  // v1 reached this file from nowhere at all, and since slice 16 there is nothing
+  // left in the repository to reach for
   assert.equal(/from ['"]\.\/maze\.js['"]/.test(APP_SOURCE), false, 'App.jsx still imports v1 maze.js')
   // a comment may say "shrines" — this file's own header does — but no code may
   assert.equal(/SHRINE_IDS/.test(WORLD_SOURCE), false, 'world.js still uses the v1 shrine ids')
@@ -4983,417 +4964,30 @@ test('the audio module is in the pure harness, and every sound is synthesized', 
   manager.stopPortalHums()
   assert.equal(manager.ready, false, 'a headless manager built an AudioContext')
 })
-
 // ---------------------------------------------------------------------------
-// PRNG + determinism (the learnable pattern)
-// ---------------------------------------------------------------------------
-
-section('PRNG + deterministic layouts')
-
-test('mulberry32 is reproducible and stays inside [0, 1)', () => {
-  const a = mulberry32(42)
-  const b = mulberry32(42)
-  for (let i = 0; i < 1000; i++) {
-    const value = a()
-    assert.equal(value, b())
-    assert.ok(value >= 0 && value < 1, `out of range: ${value}`)
-  }
-})
-
-test('different seeds explore different streams', () => {
-  const seen = new Set()
-  for (let seed = 1; seed <= 16; seed++) {
-    const rng = mulberry32(seed)
-    seen.add(Array.from({ length: 10 }, () => rng().toFixed(6)).join(','))
-  }
-  assert.equal(seen.size, 16)
-})
-
-test('the maze seed IS the loop number', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    assert.equal(maze.seed, loop)
-    assert.equal(maze.loop, loop)
-  }
-})
-
-test('same loop number => byte-identical maze, even after other loops ran', () => {
-  const first = JSON.stringify(generateMaze(3))
-  for (const loop of VERIFY_LOOPS) generateMaze(loop)
-  assert.equal(JSON.stringify(generateMaze(3)), first)
-  assert.equal(JSON.stringify(generateMaze(3)), JSON.stringify(generateMaze(3)))
-  assert.equal(mazeSignature(generateMaze(6)), mazeSignature(generateMaze(6)))
-})
-
-test('loops 1..8 are all different layouts', () => {
-  const signatures = new Set(VERIFY_LOOPS.map((loop) => mazeSignature(generateMaze(loop))))
-  assert.equal(signatures.size, VERIFY_LOOPS.length)
-})
-
-test('PLAN constants are honoured', () => {
-  assert.equal(GRID, 15)
-  assert.equal(CELL_SIZE, 3.0)
-  assert.equal(WALL_HEIGHT, 2.8)
-  assert.equal(WALL_THICKNESS, 0.34)
-  assert.equal(LOOP_SECONDS, 60)
-  assert.equal(ENTRANCE.r, 0)
-  assert.equal(ENTRANCE.c, 0)
-  assert.equal(CENTER.r, 7)
-  assert.equal(CENTER.c, 7)
-})
-
-// ---------------------------------------------------------------------------
-// connectivity / solvability
-// ---------------------------------------------------------------------------
-
-section('Solvability')
-
-test('every cell is reachable from the entrance', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    assert.equal(reachableCells(maze).size, GRID * GRID, `loop ${loop} is not fully connected`)
-  }
-})
-
-test('entrance -> centre chamber is always solvable', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    assert.ok(hasPath(maze, maze.entrance, maze.center), `loop ${loop}`)
-  }
-})
-
-test('entrance -> every shrine is always solvable', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    for (const id of SHRINE_IDS) {
-      assert.ok(hasPath(maze, maze.entrance, maze.shrineCells[id]), `loop ${loop} shrine ${id}`)
-    }
-  }
-})
-
-test('the deepest cell of a loop is still walkable inside one loop', () => {
-  // MAX_ENTRANCE_DEPTH is the target of the carve rule; the carve budget can be
-  // exhausted first, so allow a small documented margin.
-  for (let loop = 1; loop <= 60; loop++) {
-    const maze = generateMaze(loop)
-    const distances = distanceMap(maze, maze.entrance)
-    let deepest = 0
-    for (const value of distances.values()) deepest = Math.max(deepest, value)
-    assert.ok(
-      deepest <= MAX_ENTRANCE_DEPTH + 8,
-      `loop ${loop} is ${deepest} steps deep (limit ${MAX_ENTRANCE_DEPTH + 8})`,
-    )
-  }
-})
-
-test('shrines and the chamber are reachable within one 60s loop at walk speed', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    const toCentre = pathLength(maze, maze.entrance, maze.center)
-    const walkSeconds = (toCentre * CELL_SIZE) / WALK_SPEED
-    assert.ok(walkSeconds <= LOOP_SECONDS, `loop ${loop}: chamber is a ${walkSeconds.toFixed(1)}s walk`)
-    for (const id of SHRINE_IDS) {
-      const steps = pathLength(maze, maze.entrance, maze.shrineCells[id])
-      const seconds = (steps * CELL_SIZE) / WALK_SPEED
-      assert.ok(seconds <= LOOP_SECONDS, `loop ${loop} shrine ${id}: ${seconds.toFixed(1)}s walk`)
-    }
-  }
-})
-
-// ---------------------------------------------------------------------------
-// extra carves + the centre chamber
-// ---------------------------------------------------------------------------
-
-section('Extra carves + chamber')
-
-test('carve count stays inside the documented budget', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    assert.ok(maze.extraCarved >= MIN_EXTRA_CARVES, `loop ${loop}: ${maze.extraCarved} carves`)
-    assert.ok(maze.extraCarved <= EXTRA_CARVE_BUDGET, `loop ${loop}: ${maze.extraCarved} carves`)
-  }
-})
-
-test('the graph has cycles (multiple routes), not a bare tree', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    // spanning tree + the single chamber doorway + the extra carves
-    assert.equal(maze.treePassages, GRID * GRID - 2)
-    assert.equal(openEdgeCount(maze), maze.treePassages + 1 + maze.extraCarved)
-  }
-})
-
-test('the chamber has exactly one doorway, and it is centerApproach', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    const approach = DIRS.find((dir) => dir.name === maze.centerApproach)
-    assert.ok(approach, `loop ${loop}: unknown approach ${maze.centerApproach}`)
-    assert.ok(Object.hasOwn(APPROACH_YAW, maze.centerApproach))
-    for (const dir of DIRS) {
-      const bit = maze.open[CENTER.r][CENTER.c] & dir.bit
-      if (dir.name === maze.centerApproach) assert.ok(bit, `loop ${loop}: doorway is walled`)
-      else assert.equal(bit, 0, `loop ${loop}: chamber is open to the ${dir.name}`)
-    }
-  }
-})
-
-test('the entrance corner and the centre never move, shrines keep clear', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    assert.deepEqual(maze.entrance, { r: 0, c: 0 })
-    assert.deepEqual(maze.center, { r: 7, c: 7 })
-    for (const id of SHRINE_IDS) {
-      const cell = maze.shrineCells[id]
-      assert.notDeepEqual(cell, ENTRANCE)
-      assert.notDeepEqual(cell, CENTER)
-      assert.ok(chebyshev(cell, ENTRANCE) >= LANDMARK_CLEARANCE, `${id} too close to the entrance`)
-      assert.ok(chebyshev(cell, CENTER) >= LANDMARK_CLEARANCE, `${id} too close to the door`)
-    }
-  }
-})
-
-// ---------------------------------------------------------------------------
-// shrines: the stable zone rule
-// ---------------------------------------------------------------------------
-
-section('Shrine zones')
-
-test('exactly three shrines, one per documented zone', () => {
-  for (let loop = 1; loop <= 60; loop++) {
-    const maze = generateMaze(loop)
-    assert.deepEqual(Object.keys(maze.shrineCells).sort(), [...SHRINE_IDS].sort())
-    for (const zone of ZONES) {
-      const cell = maze.shrineCells[zone.id]
-      assert.ok(
-        cell.r >= zone.minR && cell.r <= zone.maxR && cell.c >= zone.minC && cell.c <= zone.maxC,
-        `loop ${loop}: shrine ${zone.id} left zone ${zone.name} (${cell.r},${cell.c})`,
-      )
-    }
-  }
-})
-
-test('shrine cells are distinct and never on the doorstep', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    const keys = SHRINE_IDS.map((id) => cellKey(maze.shrineCells[id].r, maze.shrineCells[id].c))
-    assert.equal(new Set(keys).size, SHRINE_IDS.length, `loop ${loop}: shrines overlap`)
-    const distances = distanceMap(maze, maze.entrance)
-    for (const id of SHRINE_IDS) {
-      const cell = maze.shrineCells[id]
-      const steps = distances.get(cellKey(cell.r, cell.c))
-      assert.ok(steps !== undefined && steps >= MIN_SHRINE_DISTANCE, `loop ${loop} ${id}: ${steps} steps`)
-    }
-  }
-})
-
-test('shrines are drawn from the closest SHRINE_POOL cells of their zone', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    const distances = distanceMap(maze, maze.entrance)
-    for (const zone of ZONES) {
-      const pool = []
-      for (let r = zone.minR; r <= zone.maxR; r++) {
-        for (let c = zone.minC; c <= zone.maxC; c++) {
-          if (r === CENTER.r && c === CENTER.c) continue
-          if (chebyshev({ r, c }, ENTRANCE) < LANDMARK_CLEARANCE) continue
-          if (chebyshev({ r, c }, CENTER) < LANDMARK_CLEARANCE) continue
-          const d = distances.get(cellKey(r, c))
-          if (d === undefined || d < MIN_SHRINE_DISTANCE) continue
-          pool.push({ r, c, d })
-        }
-      }
-      pool.sort((a, b) => a.d - b.d)
-      const limit = pool[Math.min(SHRINE_POOL, pool.length) - 1].d
-      const cell = maze.shrineCells[zone.id]
-      const steps = distances.get(cellKey(cell.r, cell.c))
-      assert.ok(steps <= limit, `loop ${loop} ${zone.id}: ${steps} steps vs pool limit ${limit}`)
-    }
-  }
-})
-
-// ---------------------------------------------------------------------------
-// wall geometry fed to the InstancedMeshes + the collision AABBs
-// ---------------------------------------------------------------------------
-
-section('Wall segments')
-
-test('wall segments cover every closed edge exactly once', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    const seen = new Map()
-    for (const wall of maze.walls) {
-      const key = `${wall.r},${wall.c},${wall.edge}`
-      assert.ok(!seen.has(key), `loop ${loop}: duplicate wall ${key}`)
-      seen.set(key, wall)
-    }
-    let boundary = 0
-    let closedInterior = 0
-    for (let r = 0; r < GRID; r++) {
-      for (let c = 0; c < GRID; c++) {
-        const { x, z } = cellToWorld(r, c)
-        const expectations = [
-          ['N', r === 0, r === 0, { cx: x, cz: z - CELL_SIZE / 2 }],
-          ['S', r === GRID - 1 || (maze.open[r][c] & S) === 0, r === GRID - 1, { cx: x, cz: z + CELL_SIZE / 2 }],
-          ['W', c === 0, c === 0, { cx: x - CELL_SIZE / 2, cz: z }],
-          ['E', c === GRID - 1 || (maze.open[r][c] & E) === 0, c === GRID - 1, { cx: x + CELL_SIZE / 2, cz: z }],
-        ]
-        for (const [edge, present, isBoundary, position] of expectations) {
-          const wall = seen.get(`${r},${c},${edge}`)
-          if (present) {
-            assert.ok(wall, `loop ${loop}: missing ${edge} wall at ${r},${c}`)
-            assert.equal(wall.cx, position.cx)
-            assert.equal(wall.cz, position.cz)
-            if (isBoundary) boundary += 1
-            else closedInterior += 1
-          } else {
-            assert.equal(wall, undefined, `loop ${loop}: phantom ${edge} wall at ${r},${c}`)
-          }
-        }
-      }
-    }
-    assert.equal(maze.walls.length, boundary + closedInterior)
-    assert.equal(boundary, GRID * 4, 'the maze must be sealed on all four sides')
-    // every interior edge is either an open passage or exactly one wall segment
-    const interiorEdges = 2 * GRID * (GRID - 1)
-    assert.equal(closedInterior, interiorEdges - openEdgeCount(maze))
-  }
-})
-
-test('wall AABBs use the documented dimensions and stay inside the footprint', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    const limit = (GRID * CELL_SIZE) / 2 + WALL_THICKNESS
-    for (const wall of maze.walls) {
-      const alongX = wall.axis === 'x'
-      assert.equal(wall.hx, alongX ? (CELL_SIZE + WALL_THICKNESS) / 2 : WALL_THICKNESS / 2)
-      assert.equal(wall.hz, alongX ? WALL_THICKNESS / 2 : (CELL_SIZE + WALL_THICKNESS) / 2)
-      assert.ok(Math.abs(wall.cx) <= limit && Math.abs(wall.cz) <= limit)
-    }
-  }
-})
-
-test('open passages are symmetric between neighbours', () => {
-  for (const loop of VERIFY_LOOPS) {
-    const maze = generateMaze(loop)
-    for (let r = 0; r < GRID; r++) {
-      for (let c = 0; c < GRID; c++) {
-        for (const dir of DIRS) {
-          const nr = r + dir.dr
-          const nc = c + dir.dc
-          if (nr < 0 || nr >= GRID || nc < 0 || nc >= GRID) continue
-          const here = (maze.open[r][c] & dir.bit) !== 0
-          const there = (maze.open[nr][nc] & dir.opposite) !== 0
-          assert.equal(here, there, `loop ${loop}: ${r},${c} ${dir.name} disagrees`)
-        }
-      }
-    }
-  }
-})
-
-// ---------------------------------------------------------------------------
-// the loop rules: timer, candles, door, bell timeline
-// ---------------------------------------------------------------------------
-
-section('Loop rules (the win condition)')
-
-test('the timer counts down and clamps at zero', () => {
-  assert.equal(advanceTimer(LOOP_SECONDS, 1.5), LOOP_SECONDS - 1.5)
-  assert.equal(advanceTimer(0.4, 1), 0)
-  assert.equal(advanceTimer(10, 10), 0)
-})
-
-test('candle state is immutable, idempotent and persistent', () => {
-  const start = createInitialState(1)
-  assert.equal(candlesLit(start.candles), 0)
-  const one = applyLightCandle(start, 'A')
-  assert.equal(one.candles.A, true)
-  assert.equal(start.candles.A, false, 'applyLightCandle must not mutate its input')
-  assert.equal(applyLightCandle(one, 'A'), one, 'lighting a lit candle is a no-op')
-  assert.equal(candlesLit(applyLightCandle(one, 'B').candles), 2)
-})
-
-test('the door opens on the loop AFTER the third candle, and stays open', () => {
-  let state = createInitialState(1)
-  state = applyLightCandle(state, 'A')
-  state = applyLightCandle(state, 'B')
-  assert.equal(shouldDoorOpenAtLoopStart(state.candles), false)
-  assert.equal(allCandlesLit(state.candles), false)
-
-  state = applyLightCandle(state, 'C')
-  assert.equal(allCandlesLit(state.candles), true)
-  // lighting the last candle mid-loop does NOT open the door in that loop
-  assert.equal(state.doorOpen, false)
-
-  state = beginLoop(state, 2)
-  assert.equal(state.loop, 2)
-  assert.equal(state.doorOpen, true, 'the door must stand open from loop 2 onward')
-  assert.equal(state.timeLeft, LOOP_SECONDS)
-
-  state = beginLoop(state, 3)
-  assert.equal(state.doorOpen, true)
-  assert.equal(candlesLit(state.candles), 3, 'shrines stay lit across resets')
-
-  state = beginLoop(state, 4)
-  assert.equal(state.doorOpen, true)
-})
-
-test('phases are the documented four', () => {
-  assert.deepEqual(Object.values(PHASE).sort(), ['playing', 'reset', 'start', 'won'].sort())
-  assert.equal(createInitialState().phase, PHASE.PLAYING)
-  assert.equal(createInitialState(1, PHASE.START).phase, PHASE.START)
-  assert.equal(createInitialState(1, PHASE.START).fade, 1, 'the start overlay sits behind black')
-  const fresh = restartState(1)
-  assert.equal(candlesLit(fresh.candles), 0)
-  assert.equal(fresh.doorOpen, false)
-  assert.equal(fresh.loop, 1)
-})
-
-test('beginLoop can hold the RESET phase (the swap happens behind black)', () => {
-  const state = beginLoop(createInitialState(1), 2, PHASE.RESET)
-  assert.equal(state.loop, 2)
-  assert.equal(state.phase, PHASE.RESET)
-})
-
-test('the bell timeline fades to black, swaps, then clears', () => {
-  assert.equal(resetFade(0), 0)
-  assert.equal(resetFade(RESET_SWAP_AT), 1, 'full black at the moment of the swap')
-  assert.ok(resetFade(RESET_SWAP_AT * 0.5) > 0)
-  assert.ok(resetFade(RESET_SWAP_AT * 0.5) < 1)
-  assert.equal(resetFade(RESET_TIMELINE.total), 0)
-  assert.equal(resetFade(RESET_TIMELINE.total + 1), 0)
-  assert.equal(resetFade(-1), 0)
-  const rising = [...Array(6)].map((_, i) => resetFade((RESET_SWAP_AT * i) / 6))
-  for (let i = 1; i < rising.length; i++) assert.ok(rising[i] >= rising[i - 1])
-  const falling = [0.1, 0.3, 0.6, 0.9].map((k) => resetFade(RESET_SWAP_AT + RESET_TIMELINE.fadeIn * k))
-  for (let i = 1; i < falling.length; i++) assert.ok(falling[i] <= falling[i - 1])
-})
-
-test('walls rise with a stagger and are all the way up by the end', () => {
-  assert.equal(wallRiseProgress(RESET_SWAP_AT, 0), 0, 'nothing is up at the swap')
-  assert.equal(wallRiseProgress(RESET_SWAP_AT - 0.2, 0.3), 0)
-  assert.equal(wallRiseProgress(RESET_SWAP_AT + 5, 0.5), 1)
-  const mid = wallRiseProgress(RESET_SWAP_AT + 0.5, 0)
-  const late = wallRiseProgress(RESET_SWAP_AT + 0.5, 0.4)
-  assert.ok(mid > late, 'walls near the entrance rise first')
-  assert.equal(wallRiseDelay(0, 40), 0)
-  assert.equal(wallRiseDelay(40, 40), 0.5)
-  assert.ok(wallRiseDelay(20, 40) > 0 && wallRiseDelay(20, 40) < 0.5)
-  assert.equal(wallRiseDelay(10, 0), 0)
-})
-
-test('the reset window is long enough for all three tolls', () => {
-  assert.ok(RESET_TIMELINE.total > (RESET_TIMELINE.tolls - 1) * RESET_TIMELINE.tollSpacing)
-  assert.ok(RESET_SWAP_AT > 0 && RESET_SWAP_AT < RESET_TIMELINE.total)
-})
-
-// ---------------------------------------------------------------------------
-// the mutable store React subscribes to
+// the store React subscribes to — v2's `src/game/store.js`
+//
+// WHAT SURVIVED v1's `loop.js` HERE, AND WHY
+// ------------------------------------------
+// The three v1 store tests are gone and one of them is the only one that was
+// ever about a rule rather than about the game. "the store only notifies when a
+// value actually changes" is not a claim about candles: it is the repaint
+// budget. `world.js`'s `_syncHud` quantizes every continuous value onto
+// `hud.STEPS` before it writes, and the whole reason that works is that a patch
+// of identical values is not an event. Drop the rule and the HUD repaints sixty
+// times a second to redraw three identical sigils, so the test is kept, restated
+// against v2's own fields.
+//
+// The other two are gone with their reducers: `applyLightCandle` and `beginLoop`
+// are a candle and a countdown, and the run that used them is the one that is
+// deleted. `PHASE` is the survivor that matters, so it gets a test of its own
+// now that it is no longer sharing a file with a bell.
 // ---------------------------------------------------------------------------
 
 section('Store')
 
 test('the store only notifies when a value actually changes', () => {
-  const store = createStore(createInitialState(1, PHASE.PLAYING))
+  const store = createStore({ phase: PHASE.PLAYING, loop: 1 })
   let notifications = 0
   const unsubscribe = store.subscribe(() => {
     notifications += 1
@@ -5402,7 +4996,7 @@ test('the store only notifies when a value actually changes', () => {
   assert.equal(notifications, 0, 'setting the same phase must not re-render React')
   store.set({ loop: 2 })
   assert.equal(notifications, 1)
-  store.set({ timeLeft: 59.5, loop: 2 })
+  store.set({ loop: 2, awareness: 0.5 })
   assert.equal(notifications, 2)
   assert.equal(store.listenerCount(), 1)
   unsubscribe()
@@ -5412,79 +5006,64 @@ test('the store only notifies when a value actually changes', () => {
   assert.equal(store.get().loop, 3)
 })
 
-test('store.update() runs the pure reducers', () => {
-  const store = createStore(createInitialState(1))
-  store.update((state) => applyLightCandle(state, 'B'))
-  assert.equal(store.get().candles.B, true)
-  store.update((state) => beginLoop(state, 2))
-  assert.equal(store.get().loop, 2)
-  assert.equal(store.get().doorOpen, false, 'two candles is not enough')
-  store.update((state) => applyLightCandle(state, 'A'))
-  store.update((state) => applyLightCandle(state, 'C'))
-  store.update((state) => beginLoop(state, 3))
-  assert.equal(store.get().doorOpen, true)
+test('store.update() is the atomic read-modify-write, and it merges nothing', () => {
+  const store = createStore({ phase: PHASE.PLAYING, portals: { A: false, B: false, C: false } })
+  let notifications = 0
+  store.subscribe(() => {
+    notifications += 1
+  })
+  const first = store.get()
+  store.update((state) => ({ ...state, portals: { ...state.portals, A: true } }))
+  assert.equal(store.get().portals.A, true)
+  assert.equal(store.get().phase, PHASE.PLAYING, 'update replaces the state, it does not patch it')
+  assert.notEqual(store.get(), first, 'a reducer that returns a new object must be adopted')
+  assert.equal(notifications, 1)
+  // a reducer that returns the same object is a no-op, not an event
+  store.update((state) => state)
+  assert.equal(notifications, 1)
 })
 
-test('loop.js no longer owns a HUD projection, and the v2 one lives in src/ui', () => {
-  // slice 12 moved the projection into `src/ui/hud.js` and deleted the v1 one
-  // from here, so this module no longer exports a `hudSnapshot` at all. The store
-  // and the reducers around it are v1's and stay until slice 16 deletes them.
-  const loopSource = readFileSync(new URL('./src/game/loop.js', import.meta.url), 'utf8')
-  const hudSource = readFileSync(new URL('./src/ui/hud.js', import.meta.url), 'utf8')
-  assert.equal(/export function hudSnapshot/.test(loopSource), false, 'loop.js grew a second HUD projection')
-  assert.match(hudSource, /export function hudSnapshot/)
+test('PHASE is still the four §10.5 moments, and the finale is not a fifth', () => {
+  assert.deepEqual(Object.values(PHASE).sort(), ['playing', 'reset', 'start', 'won'])
+  assert.deepEqual(Object.values(PHASE), ['start', 'playing', 'reset', 'won'])
+  // §10.5: the finale is a flag on the run state, so the phase of a finished run
+  // is `playing` until the player is inside the car. This is the sentence the
+  // finale's whole rule set hangs on, and it is now checkable in one line
+  // because the flag and the phase are in different objects.
+  const objectives = hood.placeObjectives(1337, 1)
+  const opening = rules.createInitialState(objectives, { loop: 1 })
+  assert.equal(opening.phase, undefined, 'a run state carries no phase of its own')
+  assert.equal(rules.triggersFinale(opening.portals), false)
+  const finished = { ...opening, portals: { A: true, B: true, C: true }, finale: true }
+  assert.equal(rules.triggersFinale(finished.portals), true, 'three and only three')
+  assert.equal(finished.finale, true, 'and the flag is what the rest of the run reads')
+  // the win still needs the geometry: the flag alone, standing in the street,
+  // is not a win. That is §10.4's conjunction, and the finale flag is the half
+  // a careless implementation forgets.
+  assert.equal(
+    rules.checkExitWin(finished, { x: objectives.exit.position.x, z: objectives.exit.position.z }),
+    true,
+  )
+  assert.equal(rules.checkExitWin(finished, { x: 0, z: 0 }), false)
+  assert.equal(rules.checkExitWin(opening, { x: 0, z: 0 }), false)
+  assert.equal(PHASE.FINAL, undefined, 'a fifth phase crept back in')
 })
 
-// ---------------------------------------------------------------------------
-// end-to-end: a scripted run that wins (headless proof the game is beatable)
-// ---------------------------------------------------------------------------
-
-section('Scripted run')
-
-test('one candle per loop, then the door opens and the chamber is a walk away', () => {
-  let state = createInitialState(1)
-
-  // loop 1: light shrine A, the bell rings
-  state = applyLightCandle(state, 'A')
-  assert.equal(state.doorOpen, false)
-  state = beginLoop(state, 2)
-  assert.equal(state.doorOpen, false, 'one candle is not enough')
-  assert.equal(state.loop, 2)
-  assert.equal(state.timeLeft, LOOP_SECONDS, 'the timer refills every loop')
-  assert.equal(state.candles.A, true, 'the first shrine stays lit')
-
-  // loop 2: shrine B
-  state = applyLightCandle(state, 'B')
-  state = beginLoop(state, 3)
-  assert.equal(state.doorOpen, false, 'two candles are not enough')
-  assert.equal(candlesLit(state.candles), 2)
-
-  // loop 3: shrine C — the third and last one
-  state = applyLightCandle(state, 'C')
-  assert.equal(allCandlesLit(state.candles), true)
-  state = beginLoop(state, 4)
-  assert.equal(state.loop, 4)
-  assert.equal(state.doorOpen, true, 'the door stands open on the loop after the third candle')
-
-  // loop 4: walk to the chamber. Its only doorway is centerApproach, and the
-  // closed-door blocking collider is gone, so the centre is reachable.
-  const maze = generateMaze(state.loop)
-  const steps = pathLength(maze, maze.entrance, maze.center)
-  const seconds = (steps * CELL_SIZE) / WALK_SPEED
-  assert.ok(steps > 0, 'the chamber must be reachable')
-  assert.ok(seconds <= LOOP_SECONDS, `the walk takes ${seconds.toFixed(1)}s`)
-
-  // three of the chamber's four edges are real walls; the fourth is the doorway
-  const walled = DIRS.filter((dir) => hasWall(maze, CENTER.r, CENTER.c, dir))
-  assert.equal(walled.length, 3, 'exactly three of the chamber edges are walls')
-  assert.equal(walled.find((dir) => dir.name === maze.centerApproach), undefined)
-
-  // and the win trigger itself: a pure rule — you must be inside the chamber
-  const centre = cellToWorld(CENTER.r, CENTER.c)
-  assert.ok(DOOR_WIN_RADIUS < CELL_SIZE / 2, 'the win radius must sit inside the chamber')
-  assert.ok(isInsideChamber({ x: centre.x, z: centre.z }, centre))
-  assert.ok(!isInsideChamber({ x: centre.x + CELL_SIZE, z: centre.z }, centre))
-  assert.ok(!isInsideChamber(null, centre))
+test('createStartStore() is the title screen, and the HUD projects it', () => {
+  const store = createStartStore()
+  assert.deepEqual(store.get(), { phase: PHASE.START, loop: 1, fade: 1 })
+  // `hudSnapshot` is total, and this is the call `App.jsx` makes before the world
+  // exists: three fields in, a complete set of paint values out, nothing thrown
+  // and no `undefined` where the overlay is about to be painted.
+  const snapshot = hud.hudSnapshot(store.get())
+  assert.equal(snapshot.phase, PHASE.START)
+  assert.equal(snapshot.loop, 1)
+  assert.equal(snapshot.fade, 1)
+  assert.deepEqual(snapshot.sigils, hud.portalSigils({ A: false, B: false, C: false }))
+  assert.equal(snapshot.hammer.state, hud.SIGIL_DARK, 'no hammer before the pickup')
+  assert.equal(snapshot.hammer.flash, 0, 'and no §14.3 flash on the title screen')
+  assert.equal(snapshot.vignette.clear, hud.VIGNETTE_CLEAR_OPEN, 'nothing is hunting yet')
+  assert.equal(snapshot.prompt, null, '§14.1: the HUD never says a word')
 })
 
 // ---------------------------------------------------------------------------
@@ -5539,16 +5118,25 @@ test('the projection returns a closed set of fields, and none of them is a meter
   assert.equal(painted.hammer.state, hud.SIGIL_DARK)
 })
 
-test('the projection is total over a v1-shaped store', () => {
-  // the store is still built from v1's `createInitialState` until slice 16, so
-  // every v2 field arrives as `undefined` on the first frame and a projection
-  // that assumed otherwise would take the title screen down with it
-  const painted = hud.hudSnapshot(createInitialState(1, PHASE.START))
+test('the projection is total over the store the title screen really has', () => {
+  // `App.jsx` paints `hudSnapshot` of a three-field store before the world has
+  // written a single frame, so a projection that assumed otherwise would take the
+  // title screen down with it. Slice 16 deleted v1's `createInitialState`, which
+  // used to stand in for that store here; `createStartStore()` is the real thing,
+  // and this is the check that the projection survives both of its extremes — the
+  // thinnest store the game ever has and a full run state.
+  const painted = hud.hudSnapshot(createStartStore().get())
   assert.equal(painted.phase, PHASE.START)
   assert.equal(painted.loop, 1)
   assert.equal(painted.prompt, null)
   assert.equal(painted.reducedMotion, false)
   assert.deepEqual([...hud.HUD_FIELDS].sort(), Object.keys(painted).sort())
+  // and the other extreme: a full v2 run state, which is the *thinnest* thing the
+  // projection can be handed that still has every optional field missing
+  const full = hud.hudSnapshot(rules.createInitialState(hood.placeObjectives(1337, 1)))
+  assert.deepEqual([...hud.HUD_FIELDS].sort(), Object.keys(full).sort())
+  assert.equal(full.hammer.state, hud.SIGIL_DARK)
+  assert.equal(hud.hudSnapshot().phase, undefined, 'an absent phase stays absent, not invented')
 })
 
 test('every string the HUD can paint comes from a closed vocabulary', () => {
@@ -6681,6 +6269,259 @@ test('the win card says §10.4, and v1 never comes back', () => {
   assert.equal(hud.HUD_FIELDS.includes('finaleActive'), true, 'the HUD no longer projects the finale')
   assert.equal(hud.HUD_FIELDS.includes('winText'), false, '§14.1: the win line is a card, not a HUD field')
 })
+
+// ---------------------------------------------------------------------------
+// v2 slice 16 — the captures of §16.5, and the deletion of v1
+//
+// WHAT THIS SECTION IS FOR
+// ------------------------
+// Two claims, both of which are only worth anything if they are checked:
+//
+//   1. **v1 is really gone.** Sixteen slices of comments said "slice 16 deletes
+//      it". A comment is not a deletion, and a repository that still has a 438-line
+//      maze generator and a 220-line rule module nothing imports is a repository
+//      whose next contributor will extend the wrong one. The walk below is over
+//      every file in `src/`, so "nothing reaches for v1" is a fact about the tree
+//      and not about three greps that were known to pass.
+//
+//   2. **the gallery is a build output, not a memory.** `capture.js` says which
+//      fourteen views exist and in what order; `tools/capture.mjs` is what
+//      produces them; the PNGs and the run report are what proves it ran. The
+//      checks below tie the three together, and the size floor is the one that
+//      matters most: a 2 KB PNG is a black frame, and a gallery that silently
+//      decays into black frames is worse than a gallery with a visible hole.
+// ---------------------------------------------------------------------------
+
+section('Captures and cleanup (v2 slice 16)')
+
+const SRC_SOURCES = readdirSync(new URL('./src', import.meta.url), {
+  recursive: true,
+  encoding: 'utf8',
+}).filter((name) => name.endsWith('.js') || name.endsWith('.jsx'))
+
+test('v1 is deleted, and nothing in src/ can reach for it', () => {
+  for (const name of ['game/maze.js', 'game/loop.js']) {
+    assert.equal(existsSync(new URL(`./src/${name}`, import.meta.url)), false, `${name} is still on disk`)
+  }
+  assert.equal(SRC_SOURCES.length, 18, `src/ has ${SRC_SOURCES.length} sources — the walk may be broken`)
+  for (const name of SRC_SOURCES) {
+    const text = readFileSync(new URL(`./src/${name}`, import.meta.url), 'utf8')
+    // an import is a failure; a sentence remembering v1 is not, and there are
+    // quite a few of those left in the headers
+    assert.equal(
+      /from\s+['"][^'"]*(maze|loop)\.js['"]/.test(text),
+      false,
+      `${name} imports a deleted v1 module`,
+    )
+  }
+})
+
+test('PHASE and the store survived v1 in a module that owns nothing else', () => {
+  // the two things `loop.js` still had at the end, and the reason they are in
+  // their own file rather than in `hud.js` (a projection holds no state) or in
+  // `world.js` (which imports Three.js, so the gate could not assert §10.5)
+  const store = readFileSync(new URL('./src/game/store.js', import.meta.url), 'utf8')
+  assert.equal(/^import /m.test(store), false, 'store.js imports something, and must stay pure')
+  for (const name of ['PHASE', 'createStore', 'createStartStore']) {
+    assert.match(store, new RegExp(`export (?:function|const) ${name}\\b`))
+  }
+  // and the three entry points that need them all read the same module
+  for (const [file, pattern] of [
+    ['./src/App.jsx', /from '\.\/game\/store\.js'/],
+    ['./src/ui/Hud.jsx', /from '\.\.\/game\/store\.js'/],
+    ['./src/game/world.js', /from '\.\/store\.js'/],
+  ]) {
+    assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), pattern, `${file} does not read store.js`)
+  }
+})
+
+test("the capture set is §16.5's twelve, in order, plus responsive and pause", () => {
+  assert.deepEqual(
+    [...capture.CAPTURE_IDS],
+    [
+      'title',
+      'street',
+      'hammer-located',
+      'hammer-awakening',
+      'portal-located',
+      'portal-shutdown',
+      'creature-stalking',
+      'creature-chasing',
+      'banish',
+      'capture-reset',
+      'finale-headlights',
+      'win',
+      'responsive',
+      'pause',
+    ],
+  )
+  assert.deepEqual([...capture.TWELVE_CAPTURE_IDS], [...capture.CAPTURE_IDS].slice(0, 12))
+  assert.deepEqual([...capture.EXTRA_CAPTURE_IDS], ['responsive', 'pause'])
+  assert.equal(capture.CAPTURE_VIEWS.length, 14, 'a view was added or lost')
+  assert.equal(new Set(capture.CAPTURE_IDS).size, 14, 'two views share an id')
+  assert.equal(new Set(capture.CAPTURE_VIEWS.map((view) => view.label)).size, 14, 'two views share a label')
+  for (const view of capture.CAPTURE_VIEWS) {
+    assert.ok(view.label.length > 20, `${view.id} has no label a reviewer can read`)
+    assert.ok(view.steps.length > 0, `${view.id} has no steps`)
+    // twelve of the fourteen are the comparison size; the responsive one is the
+    // exception and it is the only exception
+    const expected = view.id === 'responsive' ? capture.RESPONSIVE_VIEWPORT : capture.CAPTURE_VIEWPORT
+    assert.deepEqual({ ...view.viewport }, { ...expected }, `${view.id} is captured at the wrong size`)
+  }
+  assert.equal(capture.CAPTURE_DIR, 'benchmark/screenshots')
+  // The lit floor is a calibrated constant, not a tunable, and the calibration
+  // only holds if it stays inside a gap that was measured rather than assumed:
+  // the bug's frames reached 3.09%, the fixed world starts at 13.96%. Both sides
+  // are in `benchmark/captures.json` next to the constant they justify.
+  assert.ok(
+    capture.CAPTURE_MIN_LIT > 0.0309 && capture.CAPTURE_MIN_LIT < 0.1396 * 0.5,
+    'the lit floor has drifted out of the gap between the broken frames and the fixed world',
+  )
+  // §16.5.1's title is a full-bleed card over the street, so it is measured
+  // against its own floor. Two things have to hold for that to be an exception
+  // rather than a hole: the number still rejects every frame the original bug
+  // produced (3.09% was the worst of them), and no other view may ask for it —
+  // a floor that spreads is a floor that has stopped meaning anything.
+  assert.ok(
+    capture.TITLE_MIN_LIT > 0.0309 && capture.TITLE_MIN_LIT < capture.CAPTURE_MIN_LIT,
+    'the title floor must still reject a black frame, and must be lower than the street floor',
+  )
+  const lowered = capture.CAPTURE_VIEWS.filter((view) => view.minLit !== undefined)
+  assert.deepEqual(
+    lowered.map((view) => view.id),
+    ['title'],
+    'only the title view may carry its own floor',
+  )
+  assert.equal(capture.captureView('title').minLit, capture.TITLE_MIN_LIT)
+  for (const view of capture.CAPTURE_VIEWS) {
+    if (view.id === 'title') continue
+    assert.equal(
+      view.minLit,
+      undefined,
+      `${view.id} declares a floor of ${view.minLit} instead of the street's ${capture.CAPTURE_MIN_LIT}`,
+    )
+  }
+  assert.equal(capture.captureView('street').id, 'street')
+  assert.equal(capture.captureView('nope'), null, 'an unknown id must answer null, not throw')
+})
+
+test('every capture step is a verb the interpreter implements, and nothing else', () => {
+  // the vocabulary and the interpreter are allowed to drift from each other only
+  // in one direction: an op nobody implements is a view that cannot be taken, and
+  // a case the interpreter handles that is not in the vocabulary is a rule with no
+  // written-down meaning. Both are read off the source, because the interpreter is
+  // browser code the gate cannot import.
+  const page = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+  const used = new Set(capture.allSteps().map((entry) => entry.step.op))
+  for (const op of used) {
+    assert.ok(capture.CAPTURE_OPS.includes(op), `capture.js uses an op outside the vocabulary: ${op}`)
+  }
+  for (const op of capture.CAPTURE_OPS) {
+    assert.match(page, new RegExp(`case '${op}'`), `capture/main.jsx does not implement the op ${op}`)
+  }
+  // and the shape of each step is the shape the interpreter switches on
+  for (const { view, step } of capture.allSteps()) {
+    const keys = Object.keys(step).filter((key) => key !== 'op')
+    switch (step.op) {
+      case 'wait':
+        assert.ok(step.seconds > 0, `${view}: a wait of ${step.seconds} s`)
+        assert.deepEqual(keys, ['seconds'], `${view}: wait takes only seconds`)
+        break
+      case 'frames':
+        assert.ok(step.count >= 1, `${view}: a wait of ${step.count} frames`)
+        assert.deepEqual(keys, ['count'], `${view}: frames takes only count`)
+        break
+      case 'hold':
+        assert.match(step.key, /^Key[A-Z]$/, `${view}: ${step.key} is not a key code`)
+        assert.ok(step.seconds > 0, `${view}: a hold of ${step.seconds} s`)
+        break
+      case 'goto':
+        assert.ok(
+          ['node', 'avenue', 'lamp', 'hammer', 'portal', 'exit', 'spawn'].includes(step.target),
+          `${view}: unknown target`,
+        )
+        assert.ok(step.back >= 0, `${view}: a negative stand-off distance`)
+        if (step.target === 'portal') {
+          assert.ok(hood.PORTAL_IDS.includes(step.id), `${view}: ${step.id} is not a portal`)
+        }
+        break
+      case 'creature':
+        assert.ok(beast.CREATURE_STATES.includes(step.state), `${view}: ${step.state} is not a §6.1 state`)
+        assert.ok(step.metres > 0, `${view}: a creature at ${step.metres} m`)
+        // §7.4's reach and §6.6's capture radius are the two numbers a
+        // hand-placed figure has to respect or the shot is not what it says
+        if (step.state === 'stalk') {
+          assert.ok(step.metres > beast.CAPTURE_RADIUS, `${view}: a stalk inside the capture radius`)
+        }
+        break
+      default:
+        assert.deepEqual(keys, [], `${view}: ${step.op} takes no arguments`)
+    }
+  }
+})
+
+test('no capture does an Act II thing before the hammer is held (§8.1)', () => {
+  // §8.1: the Act I creature is a telegraph with no capture path, so a view that
+  // swings, banishes or gets caught without the pickup has photographed a state
+  // the game cannot reach. This is the check that keeps the gallery honest about
+  // the game's own rules rather than about what the interpreter can force.
+  for (const view of capture.CAPTURE_VIEWS) {
+    const ops = view.steps.map((step) => step.op)
+    const hammerAt = ops.indexOf('takeHammer')
+    if (hammerAt < 0) {
+      // Act I views are fine — a portal hold and a dark street are Act I — but
+      // none of them may reach for a hunter, a swing or a capture
+      for (const actII of ['creature', 'caught', 'swing']) {
+        assert.equal(ops.includes(actII), false, `${view.id} reaches into Act II with no hammer in it`)
+      }
+      continue
+    }
+    for (const actII of ['creature', 'caught', 'swing']) {
+      const at = ops.indexOf(actII)
+      if (at < 0) continue
+      assert.ok(hammerAt < at, `${view.id}: ${actII} comes before the pickup`)
+    }
+  }
+  // the finale is reached through real shutdowns, never by writing the flag
+  for (const view of capture.CAPTURE_VIEWS) {
+    const ops = view.steps.map((step) => step.op)
+    if (!ops.includes('win')) continue
+    assert.ok(ops.includes('shut'), `${view.id}: wins without shutting three portals down`)
+    assert.ok(ops.indexOf('shut') < ops.indexOf('win'), `${view.id}: wins before the shutdowns`)
+  }
+  // and the title screen is the one view that must never have pressed START
+  assert.equal(capture.captureView('title').steps.some((step) => step.op === 'begin'), false)
+})
+
+test('the gallery in the repository is the gallery the design asks for', () => {
+  // the anti-rotation check. A view that stops being photographed leaves a stale
+  // PNG behind, and a stale PNG in a results README is a claim about a build that
+  // no longer exists — so the file has to be there, and it has to be a frame.
+  // 20 KB is well under any real 1280x720 night-street capture (they land around
+  // 300-700 KB) and well over a solid-colour one (a few KB).
+  const MIN_PNG_BYTES = 20 * 1024
+  for (const id of capture.CAPTURE_IDS) {
+    const file = new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)
+    assert.equal(existsSync(file), true, `${id}.png is missing — run npm run capture`)
+    const bytes = statSync(file).size
+    assert.ok(bytes > MIN_PNG_BYTES, `${id}.png is ${bytes} bytes, which is a blank frame, not a capture`)
+  }
+  // and the report the harness writes has to agree with the same list, so a run
+  // that captured eleven of fourteen cannot be presented as fourteen
+  const report = new URL('./benchmark/captures.json', import.meta.url)
+  assert.equal(existsSync(report), true, 'benchmark/captures.json is missing — run npm run capture')
+  const parsed = JSON.parse(readFileSync(report, 'utf8'))
+  assert.deepEqual(
+    parsed.captures.map((entry) => entry.id),
+    [...capture.CAPTURE_IDS],
+    'the capture report does not match §16.5',
+  )
+  for (const entry of parsed.captures) {
+    assert.equal(entry.status, 'captured', `${entry.id} is ${entry.status}: ${entry.error ?? ''}`)
+  }
+  assert.equal(parsed.failed, 0, `${parsed.failed} captures failed`)
+})
+
 
 // ---------------------------------------------------------------------------
 // report

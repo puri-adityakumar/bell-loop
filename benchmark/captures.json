@@ -1,0 +1,661 @@
+{
+  "tool": "tools/capture.mjs",
+  "design": "GAMEDESIGN.md §16.5",
+  "module": "src/game/capture.js",
+  "seed": 1337,
+  "lumaFloor": 0.06,
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.57 Safari/537.36",
+  "browser": "HeadlessChrome/154.0.8037.57",
+  "node": "v26.7.0",
+  "started": "2026-09-26T08:16:47.910Z",
+  "ms": 425581,
+  "captured": 14,
+  "failed": 0,
+  "captures": [
+    {
+      "id": "title",
+      "label": "Title — the start overlay over the live street (§16.5.1)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/title.png",
+      "minLit": 0.035,
+      "luma": {
+        "lit": 0.045989583333333334,
+        "litPct": 4.6,
+        "mean": 15.093,
+        "max": 205
+      },
+      "status": "captured",
+      "state": {
+        "id": "title",
+        "label": "Title — the start overlay over the live street (§16.5.1)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 2,
+        "ms": 4314,
+        "phase": "start",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "telegraph",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 4314
+    },
+    {
+      "id": "street",
+      "label": "Street — first person, dusk, repeating blocks (§16.5.2)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/street.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.5280295138888889,
+        "litPct": 52.8,
+        "mean": 28.894,
+        "max": 184
+      },
+      "status": "captured",
+      "state": {
+        "id": "street",
+        "label": "Street — first person, dusk, repeating blocks (§16.5.2)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 4,
+        "ms": 9375,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "dormant",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 9375
+    },
+    {
+      "id": "hammer-located",
+      "label": "Hammer located — the one warm light on a dark lot (§16.5.3)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/hammer-located.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.08246744791666667,
+        "litPct": 8.25,
+        "mean": 23.78,
+        "max": 199
+      },
+      "status": "captured",
+      "state": {
+        "id": "hammer-located",
+        "label": "Hammer located — the one warm light on a dark lot (§16.5.3)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 4,
+        "ms": 18997,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "telegraph",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 18997
+    },
+    {
+      "id": "hammer-awakening",
+      "label": "Hammer awakening — §7.2 pickup toll, sigil flash, telegraph to stalk",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/hammer-awakening.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.08035373263888888,
+        "litPct": 8.04,
+        "mean": 23.765,
+        "max": 221
+      },
+      "status": "captured",
+      "state": {
+        "id": "hammer-awakening",
+        "label": "Hammer awakening — §7.2 pickup toll, sigil flash, telegraph to stalk",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 4,
+        "ms": 26696,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": true,
+        "hold": 0,
+        "creature": "dormant",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 26696
+    },
+    {
+      "id": "portal-located",
+      "label": "Portal located — cyan through a gap between houses (§16.5.5)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/portal-located.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.3879513888888889,
+        "litPct": 38.8,
+        "mean": 31.503,
+        "max": 198
+      },
+      "status": "captured",
+      "state": {
+        "id": "portal-located",
+        "label": "Portal located — cyan through a gap between houses (§16.5.5)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 4,
+        "ms": 7966,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "dormant",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 7966
+    },
+    {
+      "id": "portal-shutdown",
+      "label": "Portal shutdown — the hold, past §5.2's midpoint tick (§16.5.6)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/portal-shutdown.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.8117230902777778,
+        "litPct": 81.17,
+        "mean": 36.988,
+        "max": 189
+      },
+      "status": "captured",
+      "state": {
+        "id": "portal-shutdown",
+        "label": "Portal shutdown — the hold, past §5.2's midpoint tick (§16.5.6)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 3,
+        "ms": 14260,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0.556,
+        "creature": "dormant",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 14260
+    },
+    {
+      "id": "creature-stalking",
+      "label": "Creature stalking — a silhouette at the edge of vision (§16.5.7)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/creature-stalking.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.6352625868055556,
+        "litPct": 63.53,
+        "mean": 30.17,
+        "max": 252
+      },
+      "status": "captured",
+      "state": {
+        "id": "creature-stalking",
+        "label": "Creature stalking — a silhouette at the edge of vision (§16.5.7)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 6,
+        "ms": 31844,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": true,
+        "hold": 0,
+        "creature": "stalk",
+        "awareness": 0.382,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 31844
+    },
+    {
+      "id": "creature-chasing",
+      "label": "Creature chasing — full chase, §14.3 vignette tightened (§16.5.8)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/creature-chasing.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.8124435763888889,
+        "litPct": 81.24,
+        "mean": 32.206,
+        "max": 251
+      },
+      "status": "captured",
+      "state": {
+        "id": "creature-chasing",
+        "label": "Creature chasing — full chase, §14.3 vignette tightened (§16.5.8)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 6,
+        "ms": 14755,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": true,
+        "hold": 0,
+        "creature": "chase",
+        "awareness": 0.938,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 14755
+    },
+    {
+      "id": "banish",
+      "label": "Banish — §7.4's connected swing, the creature leaving (§16.5.9)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/banish.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.48105902777777776,
+        "litPct": 48.11,
+        "mean": 25.758,
+        "max": 221
+      },
+      "status": "captured",
+      "state": {
+        "id": "banish",
+        "label": "Banish — §7.4's connected swing, the creature leaving (§16.5.9)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 7,
+        "ms": 12946,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": true,
+        "hold": 0,
+        "creature": "stagger",
+        "awareness": 0.576,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 1
+      },
+      "ms": 12946
+    },
+    {
+      "id": "capture-reset",
+      "label": "Capture reset — §9.3's sting and cross-fade, the street behind it",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/capture-reset.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.5269118923611111,
+        "litPct": 52.69,
+        "mean": 28.941,
+        "max": 221
+      },
+      "status": "captured",
+      "state": {
+        "id": "capture-reset",
+        "label": "Capture reset — §9.3's sting and cross-fade, the street behind it",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 7,
+        "ms": 18431,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 2,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": true,
+        "hold": 0,
+        "creature": "stalk",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 18431
+    },
+    {
+      "id": "finale-headlights",
+      "label": "Finale headlights — §10.3's car, lit, beacon through the fog",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/finale-headlights.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.9133658854166666,
+        "litPct": 91.34,
+        "mean": 31.315,
+        "max": 239
+      },
+      "status": "captured",
+      "state": {
+        "id": "finale-headlights",
+        "label": "Finale headlights — §10.3's car, lit, beacon through the fog",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 5,
+        "ms": 52422,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": true,
+          "B": true,
+          "C": true
+        },
+        "finale": true,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "enraged",
+        "awareness": 1,
+        "dusk": 1,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 52422
+    },
+    {
+      "id": "win",
+      "label": "Win — §10.4: \"THE NEIGHBORHOOD WENT QUIET.\" (§16.5.12)",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/win.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.08897786458333333,
+        "litPct": 8.9,
+        "mean": 14.494,
+        "max": 196
+      },
+      "status": "captured",
+      "state": {
+        "id": "win",
+        "label": "Win — §10.4: \"THE NEIGHBORHOOD WENT QUIET.\" (§16.5.12)",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 5,
+        "ms": 49402,
+        "phase": "won",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": true,
+          "B": true,
+          "C": true
+        },
+        "finale": true,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "enraged",
+        "awareness": 1,
+        "dusk": 1,
+        "fade": 0.6,
+        "banished": 0
+      },
+      "ms": 49402
+    },
+    {
+      "id": "responsive",
+      "label": "Responsive — the same street at 480x854, a phone in portrait",
+      "viewport": {
+        "width": 480,
+        "height": 854
+      },
+      "file": "benchmark/screenshots/responsive.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.8670765027322405,
+        "litPct": 86.71,
+        "mean": 35.588,
+        "max": 184
+      },
+      "status": "captured",
+      "state": {
+        "id": "responsive",
+        "label": "Responsive — the same street at 480x854, a phone in portrait",
+        "viewport": {
+          "width": 480,
+          "height": 854
+        },
+        "steps": 4,
+        "ms": 6863,
+        "phase": "playing",
+        "paused": false,
+        "simFrozen": false,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "dormant",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 6863
+    },
+    {
+      "id": "pause",
+      "label": "Pause — §14.3's card over a completely frozen simulation",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "file": "benchmark/screenshots/pause.png",
+      "minLit": 0.06,
+      "luma": {
+        "lit": 0.2113715277777778,
+        "litPct": 21.14,
+        "mean": 18.283,
+        "max": 196
+      },
+      "status": "captured",
+      "state": {
+        "id": "pause",
+        "label": "Pause — §14.3's card over a completely frozen simulation",
+        "viewport": {
+          "width": 1280,
+          "height": 720
+        },
+        "steps": 5,
+        "ms": 9247,
+        "phase": "playing",
+        "paused": true,
+        "simFrozen": true,
+        "loop": 1,
+        "portals": {
+          "A": false,
+          "B": false,
+          "C": false
+        },
+        "finale": false,
+        "hammerHeld": false,
+        "hold": 0,
+        "creature": "dormant",
+        "awareness": 0,
+        "dusk": 0,
+        "fade": 0,
+        "banished": 0
+      },
+      "ms": 9247
+    }
+  ],
+  "luma": {
+    "floor": 6,
+    "mean": 46.237,
+    "tightest": {
+      "id": "title",
+      "litPct": 4.6,
+      "floor": 3.5,
+      "margin": 1.1
+    }
+  }
+}

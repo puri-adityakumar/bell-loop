@@ -8,8 +8,8 @@
  *
  * Everything here is a pure function of its arguments, in the same style as v1's
  * `loop.js`: primitives in, a new plain object out, never a mutation. The
- * mutable store that React subscribes to is built from these in slice 09; this
- * module has no idea a store exists.
+ * mutable store that React subscribes to is `store.js`'s and lives elsewhere
+ * entirely; this module has no idea a store exists.
  *
  * WHY THE PORTAL VERB IS THE INTERESTING PART
  * -------------------------------------------

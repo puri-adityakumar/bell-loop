@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <!--
+      capture.html — the page the §16.5 gallery is taken on (v2 slice 16).
+
+      It is NOT part of the shipped game. `vite build` takes `index.html` as its
+      only entry, so this file and `capture/main.jsx` never reach `dist/`; they
+      exist to be served by `npm run capture`, which starts a Vite dev server,
+      opens this page in a headless Chrome and walks `src/game/capture.js`.
+
+      The reason for a second page at all, rather than a query parameter on the
+      real one, is that the interpreter needs the game object. The real `App.jsx`
+      owns it in a ref and correctly gives it to nobody, and the cheapest way to
+      expose it would have been to hang it off `window` in shipped code. A
+      separate entry point keeps every line of capture machinery out of the
+      bundle a player downloads.
+    -->
+    <title>capture — THE LONG QUIET</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/capture/main.jsx"></script>
+  </body>
+</html>

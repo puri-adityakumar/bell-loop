@@ -9,9 +9,9 @@
  * phase-out), §8.3 (where re-emergence puts the creature) and §11.1–§11.3 (the two
  * difficulty ladders and the balance assertion between them). Pure: no DOM, no
  * Three.js, no clock, no globals — primitives in, a new plain object out, the house
- * style from v1's `loop.js`. `verify.mjs` imports this file directly in node,
- * which is the only reason a hunting AI is at all viable in a project nobody can
- * playtest (§16.1).
+ * style from v1's `loop.js`, a file slice 16 deleted. `verify.mjs` imports this
+ * file directly in node, which is the only reason a hunting AI is at all viable in
+ * a project nobody can playtest (§16.1).
  *
  * WHAT DOES NOT LIVE HERE
  * -----------------------

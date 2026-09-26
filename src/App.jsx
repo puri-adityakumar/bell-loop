@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { AudioManager } from './game/audio.js'
-import { PHASE, createInitialState, createStore } from './game/loop.js'
+// §10.5's phase table and the store React subscribes to. They were v1's
+// `loop.js` until slice 16 deleted that file, and they now live in the small pure
+// module that owns nothing else — see the note at the top of `store.js` for why
+// the two obvious alternatives (world.js, which is not pure, and hud.js, which is
+// a projection and holds no state) are both worse.
+import { createStartStore, PHASE } from './game/store.js'
 // §14.1/§14.3: the projection moved out of `loop.js` in slice 12, and with it the
 // last thing v1's store module did for the screen. Everything the HUD paints
 // comes from here, and everything the HUD knows is in `hud.js`'s closed field
@@ -30,7 +35,7 @@ export default function App() {
 
   // one store + one AudioManager for the lifetime of the component; the
   // AudioContext itself is still only created on the first click
-  const [store] = useState(() => createStore(createInitialState(1, PHASE.START)))
+  const [store] = useState(() => createStartStore())
   const [audio] = useState(() => new AudioManager())
 
   const [hud, setHud] = useState(() => hudSnapshot(store.get()))
