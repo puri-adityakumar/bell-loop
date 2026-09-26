@@ -2050,6 +2050,10 @@ test('the fog closes as the run advances', () => {
 const STREET_VIEW_SOURCE = readFileSync(new URL('./src/game/streetView.js', import.meta.url), 'utf8')
 const WORLD_SOURCE = readFileSync(new URL('./src/game/world.js', import.meta.url), 'utf8')
 const APP_SOURCE = readFileSync(new URL('./src/App.jsx', import.meta.url), 'utf8')
+// Read as text, not imported: `creatureView.js` touches Three.js, and §15.2's
+// seam is the reason `verify.mjs` is a pure module that never constructs a
+// renderer. A source read costs nothing and keeps it that way.
+const CREATURE_VIEW_SOURCE = readFileSync(new URL('./src/game/creatureView.js', import.meta.url), 'utf8')
 
 test('the view layer is drawn from the pure modules and never from v1', () => {
   // §15.1's split, asserted rather than described: `streetView.js` may reach for
@@ -7908,6 +7912,411 @@ test('the part budget is declared, and a maximal lot fits inside it', () => {
 //      matters most: a 2 KB PNG is a black frame, and a gallery that silently
 //      decays into black frames is worse than a gallery with a visible hole.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// STREET FURNITURE I (iteration 2, pass 6)
+//
+// WHAT PASS 6 CLAIMS
+// ------------------
+//   1. **the wires sag** (T7) — a parabola, three tiers, and one span in five
+//      that hangs visibly lower than its neighbours
+//   2. **the ribbon is a screen-space quantity** (T8) — the pixel width divides
+//      by clip-space `p.w`, never by `-p.z`, and the near plane is clipped
+//      against in view space FIRST so that division is safe by construction
+//   3. **one buffer, one mesh, one draw call** for the whole overhead of the map
+//   4. **the hardware is real**: poles on the pavement, crossarms at 93% of the
+//      shaft, six conductors, signs at driver height, gullies in the gutter
+//
+// (2) is the one this section exists for. `-p.z` is a perfectly ordinary-looking
+// divisor — it is the z component of the same `vec4` — and it is wrong: clip Z is
+// a non-linear function of depth, and it goes NEGATIVE for geometry nearer than
+// the near plane's z-midpoint. A negative divisor is a negative pixel width, and
+// `clamp()` pins that to the cap: every wire in the world becomes a 3-28 px
+// black band at full coverage, ruled across the amber sky. Nothing else in this
+// repository can catch that, because nothing else in it divides by `p.z`.
+// ---------------------------------------------------------------------------
+
+section('Street furniture I (iteration 2, pass 6)')
+
+/**
+ * `furnitureClaims` — pass 6's claims, as predicates over a source string.
+ *
+ * Written as named predicates, not bare assertions, for the same reason pass 5's
+ * `buildingClaims` is: a gate expressed as `assert.ok` can only ever be run on
+ * the real file, and a gate that can only be run on the real file cannot be
+ * asked whether it would have caught the bug. Each returns `ok` and a `why`, so
+ * a mutation names the claim it broke.
+ *
+ * @param {string} source `streetView.js`, comments NOT yet stripped
+ * @param {string} [creature] `creatureView.js`, for the one claim in this pass
+ *   that is about the creature rather than about the furniture
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function furnitureClaims(source, creature = CREATURE_VIEW_SOURCE) {
+  const code = stripProse(source)
+  // The wire's claims are read from a source with its COMMENTS removed and its
+  // strings intact, which is the opposite of `stripProse` and for one reason:
+  // the shader lives inside a template literal, which `stripProse` blanks whole,
+  // while the comments around it quote the very thing being claimed ("and never
+  // -p.z"). A negative claim over raw prose fails on prose, and a positive claim
+  // over a blanked template literal is vacuously true.
+  const glsl = source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+
+  // 1. THE HEADLINE, named exactly as the contract in the file names it.
+  // Both halves: the divisor is `p.w`, AND the segment is clipped against the
+  // near plane before it is projected. The second is not a nicety — a segment
+  // straddling the near plane has a `w` approaching zero at one end, so the
+  // width goes to infinity, and a segment wholly behind has a `w` that is
+  // NEGATIVE, which is the same pinning bug from the other direction.
+  claim(
+    'the wire shader clips against the near plane',
+    /float near = projectionMatrix\[3\]\[2\] \/ \(projectionMatrix\[2\]\[2\] - 1\.0\)/.test(glsl)
+      && /if \(mvPosition\.z > -near && mvEnd\.z > -near\)/.test(glsl)
+      && /if \(mvPosition\.z > -near\) \{\s*mvPosition\.xyz = mix\(/.test(glsl)
+      && /else if \(mvEnd\.z > -near\) \{\s*mvEnd\.xyz = mix\(/.test(glsl),
+    'a segment is projected before it is clipped against the near plane, so its w can approach zero or go negative',
+  )
+  claim(
+    'the wire width divides by p.w, never by -p.z',
+    /float depth = clip\.w;/.test(glsl)
+      && /float worldPx = aWidth \* uResolution\.y \* projectionMatrix\[1\]\[1\] \/ \(2\.0 \* depth\)/.test(glsl)
+      && /gl_Position = clip \+ vec4\(normal \* px \* aSide \* 2\.0 \/ uResolution \* depth, 0\.0, 0\.0\)/.test(glsl)
+      && !/-p\.z/.test(glsl)
+      && !/-clip\.z/.test(glsl),
+    'the pixel width is not computed from clip-space w, or something has reintroduced a -p.z divisor',
+  )
+  // T8's other half: a sub-pixel wire is drawn at the minimum width and at
+  // partial opacity, rather than aliasing at its true width or vanishing.
+  claim(
+    'the wire fades sub-pixel geometry by coverage',
+    /vCoverage = clamp\(worldPx \/ max\(uMinPx, 1e-6\), uCovFloor, 1\.0\)/.test(glsl),
+    'coverage is not derived from the shortfall against the minimum pixel width',
+  )
+  // ...and a `ShaderMaterial` gets NO fog unless the chunks are included by
+  // hand, which is a different failure: far wires hanging over the amber at
+  // full strength, which is what makes a wire system read as a wireframe.
+  // `fog: true` is scoped to the wire's own material block, because three other
+  // materials in the file also ask for it and a file-wide test would pass with
+  // the wire's fog switched off.
+  claim(
+    'the wire carries the fog chunks by hand',
+    /#include <fog_pars_vertex>/.test(glsl)
+      && /#include <fog_vertex>/.test(glsl)
+      && /#include <fog_pars_fragment>/.test(glsl)
+      && /#include <fog_fragment>/.test(glsl)
+      && /THREE\.UniformsLib\.fog/.test(code)
+      && /new THREE\.ShaderMaterial\(\{[\s\S]*?\n    fog: true,/.test(glsl),
+    'the wire is a ShaderMaterial with no fog, so every far span hangs at full strength',
+  )
+  // 2. ONE BUFFER, ONE MESH, ONE CALL. The claim is the shape of the build, not
+  // the presence of a function: a `LineSegments` per span would also "have a
+  // wire geometry" and would draw 252 calls at one pixel of width.
+  claim(
+    'every span lands in one wire mesh',
+    /const wire = new THREE\.Mesh\(makeWireGeometry\(this\.wireSpans\), this\._materials\.wire\)/.test(code)
+      && /this\.group\.add\(wire\)/.test(code)
+      && (code.match(/makeWireGeometry\(/g) ?? []).length === 2,
+    'the wire mesh is not built from the whole span list, or makeWireGeometry is called from more than one place',
+  )
+  claim(
+    'the wire is not culled',
+    /wire\.frustumCulled = false/.test(code),
+    'the wire is frustum-culled, and its bounds are the bounds of the whole world',
+  )
+  // 3. T7. A parabola, and a sag that is a FRACTION of the span rather than a
+  // metre count — a fixed count droops to the pavement on a short span and barely
+  // bends on a long one.
+  claim(
+    'every span is a catenary',
+    /p\.y \+= \(b\.y - a\.y\) \* t - sag \* 4 \* t \* \(1 - t\)/.test(code)
+      || /y: a\.y \+ \(b\.y - a\.y\) \* t - sag \* 4 \* t \* \(1 - t\)/.test(code),
+    'a span is not a parabola, and a straight line between two poles reads as a mistake (T7)',
+  )
+  claim(
+    'the sag is a fraction of the span',
+    /sag: tier\.sag \* run \* \(low \? LOW_SPAN_SAG_MULT : 1\)/.test(code),
+    'the sag is not derived from the horizontal distance, so a short span droops to the pavement',
+  )
+  claim(
+    'one span in five hangs lower',
+    /Math\.floor\(rng\(\) \* LOW_SPAN_ONE_IN\) === 0/.test(code) && /low \? LOW_SPAN_SAG_MULT : 1/.test(code),
+    'every span sags the same amount, which is a ruled grid rather than a street',
+  )
+  // 4. THE HARDWARE, against real dimensions and the pavement.
+  claim(
+    'the pole stands on the pavement',
+    /const POLE_STANDOFF = STREET_HALF_WIDTH \+ POLE_KERB_SETBACK/.test(code),
+    'the pole offset is a literal rather than a derived one, so widening the road leaves the poles in the tarmac',
+  )
+  claim(
+    'the pole corner is the district',
+    /CORNER_SIGNS\[districtOf\(ax, az\)\]/.test(code),
+    'the pole corner is not a function of the district, so "per district placement" is a comment',
+  )
+  claim(
+    'the furniture is a function of the intersection, not of build order',
+    /const rng = streamAt\(this\.seed, ax, az\)/.test(code)
+      && /streamAt\(this\.seed, ax, az \+ \(axis \+ 1\) \* GRID\)/.test(code),
+    'the furniture has no stream of its own, so it moves when the build order does',
+  )
+  claim(
+    'the gully is in the gutter',
+    /STREET_HALF_WIDTH \+ KERB_WIDTH - DRAIN_SETBACK/.test(code),
+    'the grate is not set against the kerb face, so it is either on the pavement or in the middle of the lane',
+  )
+  claim(
+    'the signs are capped per intersection',
+    /for \(let sign = 0; sign < SIGNS_PER_INTERSECTION; sign \+= 1\)/.test(code)
+      && /const \[sx, sz\] = free\[corner % free\.length\]/.test(code),
+    'a sign is placed on every corner, which is a picket fence rather than a street',
+  )
+  // 5. THE RESOLUTION, and the teardown. Both are one-line claims that are
+  // invisible in a screenshot and impossible to reconstruct afterwards.
+  claim(
+    'the wire resolution is device pixels and follows a resize',
+    /wire: makeWireMaterial\(this\.resolution\.x, this\.resolution\.y\)/.test(code)
+      && /setResolution\(x, y\)/.test(code)
+      && /this\.streetView\.setResolution\(buffer\.x, buffer\.y\)/.test(stripProse(WORLD_SOURCE))
+      && /Math\.round\(w \* this\.pixelRatio\)/.test(stripProse(WORLD_SOURCE)),
+    'the wire is sized once, in CSS pixels, and is the wrong width in a resized window',
+  )
+  claim(
+    'the wire geometry is disposed with the rest',
+    /if \(this\.wireMesh\) this\.wireMesh\.geometry\.dispose\(\)/.test(code),
+    'the wire mesh is not a pool, so nothing in the pool loop can release it',
+  )
+  // 6. THE ONE CLAIM IN THIS PASS THAT IS ABOUT SOMETHING ELSE ENTIRELY.
+  //
+  // Every claim above is a claim about the furniture. This one is about the
+  // creature, and it exists because the furniture broke the creature: a cable
+  // two metres from the lens is sorted AFTER an eye at thirty, and a luma-17.6
+  // silhouette over a luma-226 additive quad cut `creature-stalking.png`'s one
+  // solid 9x7 eye into two fragments and made `creatureContrast` report that a
+  // frame with a creature in it had no creature in it.
+  //
+  // Three.js sorts transparents back-to-front unless `renderOrder` says
+  // otherwise, so the fix is a number on the eye quads, and the claim is that
+  // the number exists, is above zero, and is set on the MESH rather than on the
+  // `eyes` group — a `Group` is never queued for rendering, so a `renderOrder`
+  // left there is a comment that reads like a fix.
+  claim(
+    'the eye is lifted out of the transparent depth sort',
+    /const EYE_RENDER_ORDER = ([1-9]\d*)/.exec(creature) !== null
+      && /eye\.renderOrder = EYE_RENDER_ORDER/.test(creature)
+      && !/this\.eyes\.renderOrder/.test(creature)
+      // The other half, and the half that keeps the claim from being a cheat:
+      // `depthTest` must stay on, or an eye renders through a house and §8.3
+      // stops being a rule the AI enforces.
+      && /blending: THREE\.AdditiveBlending/.test(creature)
+      && !/depthTest: false/.test(creature),
+    'the eye is depth-sorted with the street furniture, so any transparent thing between the camera and the creature erases the one mark the creature gate anchors on',
+  )
+  return claims
+}
+
+test('the wire shader clips against the near plane, and its width is clip-space w', () => {
+  const claims = furnitureClaims(STREET_VIEW_SOURCE)
+  assert.ok(claims.length >= 16, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
+  }
+})
+
+test('every wire claim can actually fail, and a mutation names the one it breaks', () => {
+  // The control for the test above, and the reason the section is a gate rather
+  // than a fingerprint of one file. Each row is the smallest edit that breaks ONE
+  // claim, and the row that matters most is the first: the pre-pass file is
+  // `git show HEAD~1:src/game/streetView.js` and it has no wire shader at all, so
+  // the divisor bug is a HYPOTHETICAL — except that it is the default state
+  // anyone porting T8 writes, which is why it is here as a mutation rather than
+  // as a historical defect.
+  const rows = [
+    ['the wrong divisor', 'the pixel width is computed from -p.z again', 'float depth = clip.w;', 'float depth = -clip.z;', 'the wire width divides by p.w, never by -p.z'],
+    ['the near-plane clip is gone', 'a segment is projected before it is clipped', 'if (mvPosition.z > -near && mvEnd.z > -near) {', 'if (false) {', 'the wire shader clips against the near plane'],
+    ['coverage is a constant', 'sub-pixel wires alias instead of fading', 'vCoverage = clamp(worldPx / max(uMinPx, 1e-6), uCovFloor, 1.0);', 'vCoverage = 1.0;', 'the wire fades sub-pixel geometry by coverage'],
+    ['the fog is dropped', 'a ShaderMaterial with no fog hangs over the amber at full strength', '    fog: true,\n  })', '    fog: false,\n  })', 'the wire carries the fog chunks by hand'],
+    ['the spans stop sagging', 'a straight line between two poles', 'y: a.y + (b.y - a.y) * t - sag * 4 * t * (1 - t),', 'y: a.y + (b.y - a.y) * t,', 'every span is a catenary'],
+    ['the low spans are gone', 'every span sags the same amount, which is a ruled grid', 'sag: tier.sag * run * (low ? LOW_SPAN_SAG_MULT : 1),', 'sag: tier.sag * run,', 'the sag is a fraction of the span'],
+    ['the pole is in the road', 'the offset is a literal rather than a derived one', 'const POLE_STANDOFF = STREET_HALF_WIDTH + POLE_KERB_SETBACK', 'const POLE_STANDOFF = POLE_KERB_SETBACK', 'the pole stands on the pavement'],
+    ['the gully is on the pavement', 'the grate is not set against the kerb face', 'const gutter = STREET_HALF_WIDTH + KERB_WIDTH - DRAIN_SETBACK', 'const gutter = STREET_HALF_WIDTH - DRAIN_SETBACK', 'the gully is in the gutter'],
+    ['a sign on every corner', 'uniformity is what makes a generated street read as generated', 'for (let sign = 0; sign < SIGNS_PER_INTERSECTION; sign += 1) {', 'for (let sign = 0; sign < 4; sign += 1) {', 'the signs are capped per intersection'],
+    ['one mesh per span', 'a LineSegments per span is 252 calls at one pixel of width', 'const wire = new THREE.Mesh(makeWireGeometry(this.wireSpans), this._materials.wire)', 'const wire = new THREE.Group(makeWireGeometry(this.wireSpans), this._materials.wire)', 'every span lands in one wire mesh'],
+  ]
+  for (const [label, why, from, to, expected] of rows) {
+    assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches the file, so it is not testing anything`)
+    const broken = furnitureClaims(STREET_VIEW_SOURCE.replace(from, to)).filter((entry) => !entry.ok)
+    assert.ok(broken.length > 0, `"${label}" changed the file and broke NO claim — ${why}, and the section is not measuring it`)
+    assert.ok(
+      broken.some((entry) => entry.name === expected),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${expected}" — ` +
+        'the gate is measuring something other than what it says',
+    )
+  }
+
+  // The eye claim reads a DIFFERENT file, so it gets its own rows rather than
+  // being smuggled into the table above — a mutation that edited
+  // `streetView.js` could never break it, and a gate with a row that cannot
+  // fail is worse than no row because it counts.
+  //
+  // These are the three ways this fix can be written wrong, and all three are
+  // edits somebody would plausibly make while tidying up the eye rig.
+  const EYE_CLAIM = 'the eye is lifted out of the transparent depth sort'
+  const eyeRows = [
+    ['the order is zero', 'the eye is back in the depth sort with the street furniture', 'const EYE_RENDER_ORDER = 1', 'const EYE_RENDER_ORDER = 0'],
+    ['the assignment is dropped', 'a constant nobody assigns is a constant doing nothing', '      eye.renderOrder = EYE_RENDER_ORDER\n', ''],
+    ['it is set on the Group', 'a Group is never queued for rendering, so this is a comment that reads like a fix', '      eye.renderOrder = EYE_RENDER_ORDER', '      this.eyes.renderOrder = EYE_RENDER_ORDER'],
+  ]
+  for (const [label, why, from, to] of eyeRows) {
+    assert.ok(CREATURE_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches creatureView.js, so it is not testing anything`)
+    const broken = furnitureClaims(STREET_VIEW_SOURCE, CREATURE_VIEW_SOURCE.replace(from, to)).filter((entry) => !entry.ok)
+    assert.ok(
+      broken.some((entry) => entry.name === EYE_CLAIM),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${EYE_CLAIM}" — ${why}`,
+    )
+  }
+})
+
+/** The three wire tiers, read out of the source as data. */
+function wireTiers() {
+  const found = [...STREET_VIEW_SOURCE.matchAll(
+    /Object\.freeze\(\{ name: '(\w+)', y: ([\d.]+), sag: ([\d.]+), width: ([\d.]+), arms: Object\.freeze\(\[([-\d, ]+)\]\) \}\)/g,
+  )]
+  assert.equal(found.length, 3, 'the wire tier table is not three rows any more')
+  return found.map(([, name, y, sag, width, arms]) => ({
+    name,
+    y: Number(y),
+    sag: Number(sag),
+    width: Number(width),
+    arms: arms.split(',').map((entry) => Number(entry.trim())),
+  }))
+}
+
+test('the wire is a real span on a real pole, and every dimension is one', () => {
+  // Every number the pass introduced is held to a real range, because a comment
+  // saying "a real riser is 170 mm" beside a constant reading 0.2 is a lie the
+  // comment cannot prevent. Ranges rather than pins where the range IS the claim,
+  // pins where a specific value is.
+  const between = (name, low, high) => {
+    const value = buildingNumber(name)
+    assert.ok(value >= low && value <= high, `${name} is ${value}, which is not between ${low} and ${high}`)
+    return value
+  }
+  // A distribution pole: 8-10 m is the plan's own figure and 190-250 mm the
+  // real diameter, which is also what makes it a POLE and not a lamp post.
+  const height = between('POLE_HEIGHT', 8, 10)
+  between('POLE_DIAMETER', 0.16, 0.28)
+  // The crossarm: a real LV arm is 1.6-2.0 m of 80-100 mm timber, and it sits at
+  // 88-94% of the shaft — high enough to be clear of the drop.
+  const armY = height * between('POLE_ARM_FRACTION', 0.88, 0.95)
+  between('POLE_ARM_LENGTH', 1.6, 2)
+  between('POLE_ARM_THICKNESS', 0.07, 0.12)
+  between('POLE_INSULATOR_SPACING', 0.6, 1)
+  between('POLE_INSURATOR_SIZE', 0.08, 0.15)
+  // T8's width: a floor of about 1.15 px (the reference's own number) and a cap
+  // well under the width the wrong divisor produces, which is 13-28 px.
+  const minPx = between('WIRE_MIN_PX', 1, 1.5)
+  const maxPx = between('WIRE_MAX_PX', 2, 5)
+  assert.ok(maxPx > minPx, 'the width cap is below the minimum width, so the clamp is upside down')
+  between('WIRE_COVERAGE_FLOOR', 0.1, 0.3)
+  // T7: enough samples that a 64 m span is a curve, and a low span that is
+  // VISIBLY low rather than marginally low.
+  between('CATENARY_SEGMENTS', 8, 16)
+  const lowOneIn = between('LOW_SPAN_ONE_IN', 4, 8)
+  const lowMult = between('LOW_SPAN_SAG_MULT', 1.4, 2.2)
+  assert.ok(lowOneIn <= 6 && lowMult >= 1.5, 'the low span is one in too many, or not much lower than the rest')
+  // The small furniture, at the real dimensions of each.
+  between('SIGN_POST_HEIGHT', 2.2, 2.6)
+  const plateY = between('SIGN_PLATE_Y', 1.9, 2.2)
+  between('SIGN_PLATE_W', 0.4, 0.8)
+  between('SIGN_PLATE_H', 0.3, 0.6)
+  between('HYDRANT_BODY_H', 0.5, 0.7)
+  between('HYDRANT_BONNET_H', 0.1, 0.25)
+  between('DRAIN_W', 0.3, 0.5)
+  between('DRAIN_D', 0.3, 0.5)
+  const bars = buildingNumber('DRAIN_BAR_COUNT')
+  assert.ok(bars >= 3 && bars <= 7, `a grate with ${bars} bars is a slot, not a grate`)
+  // The gully is in the GUTTER, which means its setback is less than a kerb is
+  // wide: anything larger and the grate is on the pavement, which is the single
+  // placement mistake this check can make.
+  assert.ok(buildingNumber('DRAIN_SETBACK') < 0.4, 'the gully is set back further than the kerb is wide')
+  // ...and the sign face is on a post, above the player's eyeline and below the
+  // top of it: 2.05 m on a 2.55 m post.
+  assert.ok(plateY < buildingNumber('SIGN_POST_HEIGHT'), 'the sign face is above the top of its own post')
+  // THE THREE CIRCUITS, as the table rather than as prose. T7's claim is an
+  // ORDER — heavier trunk cables sag more than telecom — and an ordering cannot
+  // be stated by a presence check.
+  const tiers = wireTiers()
+  assert.deepEqual(tiers.map((tier) => tier.name), ['trunk', 'secondary', 'telecom'], 'the tiers are not the three T7 names, in order')
+  for (const tier of tiers) {
+    assert.ok(tier.y > 5.6, `the ${tier.name} tier is at ${tier.y} m, which is down among the rooflines`)
+    assert.ok(tier.y < armY, `the ${tier.name} tier at ${tier.y} m is above its own crossarm at ${armY.toFixed(2)} m`)
+    assert.ok(tier.sag > 0.005 && tier.sag < 0.05, `the ${tier.name} tier sags ${tier.sag} of its span, which is not a cable`)
+    assert.ok(tier.width > 0.01 && tier.width < 0.08, `the ${tier.name} tier is ${(tier.width * 1000).toFixed(0)} mm across`)
+  }
+  for (let i = 1; i < tiers.length; i += 1) {
+    assert.ok(tiers[i - 1].y > tiers[i].y, `${tiers[i - 1].name} is not above ${tiers[i].name} on the pole`)
+    assert.ok(tiers[i - 1].sag > tiers[i].sag, `${tiers[i - 1].name} does not sag more than ${tiers[i].name}`)
+    assert.ok(tiers[i - 1].width > tiers[i].width, `${tiers[i - 1].name} is not thicker than ${tiers[i].name}`)
+  }
+  // Six conductors, and the two ends of the arm are carried by exactly one tier
+  // each so the top tier's three insulators are not fighting the bottom's.
+  const conductors = tiers.reduce((total, tier) => total + tier.arms.length, 0)
+  assert.equal(conductors, 6, `the pole carries ${conductors} conductors, and the plan asks for six`)
+  // ...and the top tier hangs JUST under the arm, which is the whole of
+  // POLE_ARM_FRACTION: the insulator is as tall as the gap.
+  const insulator = buildingNumber('POLE_INSURATOR_SIZE')
+  assert.ok(armY - tiers[0].y < insulator, 'the top tier is not hanging off the crossarm')
+})
+
+test('the six furniture colours are variations on a dark, and none of them is a light', () => {
+  // AESTHETIC-NOTES §4: "a surface is a variation on a dark, not a palette", and
+  // §12.1's silhouette rule needs every one of them to stay a dark shape against
+  // a sodium haze. D6 caps a frame at four saturated things, and the wire is
+  // dark because T8's whole argument is that a wire is a silhouette and nothing
+  // else — so the values are held to a range rather than admired.
+  const luma = (hex) => {
+    const r = (hex >> 16) & 0xff
+    const g = (hex >> 8) & 0xff
+    const b = hex & 0xff
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+  const keys = ['wire', 'pole', 'poleArm', 'sign', 'hydrant', 'drain']
+  const values = keys.map((key) => [key, luma(paletteHex(key))])
+  for (const [key, value] of values) {
+    assert.ok(value > 10, `PALETTE.${key} is at luma ${value.toFixed(1)}, which is a hole rather than a surface`)
+    // Under half the sky (89 after pass 1), or the furniture stops being a
+    // silhouette and starts being a light source it was never meant to be.
+    assert.ok(value < 89, `PALETTE.${key} is at luma ${value.toFixed(1)}, which is brighter than the sky it is seen against`)
+  }
+  const wire = values.find(([key]) => key === 'wire')[1]
+  const sign = values.find(([key]) => key === 'sign')[1]
+  // The wire is the darkest thing in the world after the creature, and the sign
+  // is the brightest piece of furniture: the two ends of the pass, stated as an
+  // ordering because that is what the palette comment claims.
+  for (const [key, value] of values) {
+    if (key !== 'wire') assert.ok(value > wire, `PALETTE.${key} is darker than the wire, which is the darkest thing in the world`)
+    if (key !== 'sign') assert.ok(value < sign, `PALETTE.${key} is brighter than the sign, which is the brightest furniture`)
+  }
+  assert.ok(sign - wire < 60, `the furniture spans ${(sign - wire).toFixed(1)} luma, which is a palette rather than a family`)
+  // ...and NONE of them is built with `_glow`. A surface that is tone-mapped as
+  // if it were lit is a light source on T11's ladder, which has four rungs and
+  // no room for a fifth (D6).
+  const code = stripProse(STREET_VIEW_SOURCE)
+  for (const key of ['pole', 'poleArm', 'painted', 'hydrant', 'drain']) {
+    assert.match(
+      code,
+      new RegExp(`${key}: this\\._material\\(\\{`),
+      `the ${key} material is not a lit surface`,
+    )
+  }
+  // The wire is the only `ShaderMaterial` in the file, and the only material
+  // whose width is not metres.
+  assert.equal((code.match(/new THREE\.ShaderMaterial\(/g) ?? []).length, 1, 'something other than the wire is a ShaderMaterial')
+})
 
 section('Captures and cleanup (v2 slice 16)')
 

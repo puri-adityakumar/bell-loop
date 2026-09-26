@@ -349,7 +349,15 @@ export class LongQuietGame {
     this.renderer = options.createRenderer
       ? options.createRenderer(container)
       : new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
+    // ITERATION 2, PASS 6. The wire shader's width is a SCREEN-SPACE quantity
+    // (T8), so the view needs the size of the DEVICE buffer and not the size of
+    // the element: with the ratio capped here, a 1067 px window is a 1600 px
+    // buffer, and a wire given 1067 is drawn two thirds too thin at every
+    // distance — which is not a subtle falloff, it is a uniformly wrong width that
+    // still looks deliberate. One number, read twice (here and in `resize`), and
+    // the view never guesses it.
+    this.pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5)
+    this.renderer.setPixelRatio(this.pixelRatio)
     this.renderer.setSize(container.clientWidth || 800, container.clientHeight || 450, false)
     this.renderer.shadowMap.enabled = false
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -376,7 +384,12 @@ export class LongQuietGame {
     this.camera = new THREE.PerspectiveCamera(72, this._aspect(), 0.05, 260)
 
     this.objectives = placeObjectives(this.seed, 1)
-    this.streetView = new StreetView(this.scene, { seed: this.seed, objectives: this.objectives, loop: 1 })
+    this.streetView = new StreetView(this.scene, {
+      seed: this.seed,
+      objectives: this.objectives,
+      loop: 1,
+      resolution: this._bufferSize(),
+    })
 
     this._buildLights()
     this._applyDusk(0)
@@ -570,6 +583,26 @@ export class LongQuietGame {
     return (this.container.clientWidth || 800) / Math.max(1, this.container.clientHeight || 450)
   }
 
+  /**
+   * `_bufferSize` — the drawing buffer in DEVICE pixels, which is not the size of
+   * the element and never was.
+   *
+   * It exists because of one consumer: T8's screen-space wire ribbon. A shader
+   * that converts "3.4 pixels wide" into a clip-space offset needs to know how
+   * many pixels there are, and the number it needs is the buffer's, not the CSS
+   * width's. `setPixelRatio` is capped at 1.5 in the constructor, so the two
+   * differ by up to half — a factor of 1.5 on the width of every wire in the
+   * world, uniformly, at every distance, which is the hardest kind of wrong to
+   * see and the easiest to get right once.
+   *
+   * @returns {{x: number, y: number}} device pixels
+   */
+  _bufferSize() {
+    const w = this.container.clientWidth || 800
+    const h = this.container.clientHeight || 450
+    return { x: Math.round(w * this.pixelRatio), y: Math.round(h * this.pixelRatio) }
+  }
+
   resize() {
     if (this.disposed) return
     const w = this.container.clientWidth || 800
@@ -577,6 +610,14 @@ export class LongQuietGame {
     this.camera.aspect = w / Math.max(1, h)
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(w, h, false)
+    // ...and the wire follows, because a ribbon sized for the old buffer is a
+    // ribbon at the wrong width in the new one. It is the same number
+    // `setPixelRatio` multiplied, recomputed rather than remembered, so the
+    // shader and the renderer can never disagree about how big the buffer is.
+    if (this.streetView) {
+      const buffer = this._bufferSize()
+      this.streetView.setResolution(buffer.x, buffer.y)
+    }
   }
 
   // -------------------------------------------------------------------------

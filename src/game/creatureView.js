@@ -66,6 +66,46 @@ export const CREATURE_COLORS = Object.freeze({
 const SEGMENTS = Object.freeze({ limb: 6, torso: 8, head: 10, headHeight: 8 })
 
 /**
+ * EYE_RENDER_ORDER — the eye quad is the last transparent thing drawn in a frame,
+ * and this one number is what makes it so.
+ *
+ * ITERATION 2, PASS 6. The wire system is the first thing in this project that
+ * puts a large, near, DARK, `depthWrite: false` transparent surface between the
+ * lens and a creature standing thirty metres away. Three.js sorts the transparent
+ * queue back-to-front, so a cable two metres from the camera is drawn *after* an
+ * eye at thirty, and a silhouette at luma 17.6 paints straight over an additive
+ * quad at luma 226.
+ *
+ * The loss is not subtle and it was measured rather than guessed. On
+ * `creature-stalking.png` at the start of this pass, three spans crossed the head
+ * and cut one solid 9x7 eye — 62 lit pixels, fill 0.98, mean 226 — into an 8x1
+ * and an 8x4. Twenty-nine lit pixels between them, the brightest of them 186
+ * instead of 226. `creatureContrast` then reported `found: false`, "no eye quad
+ * anywhere in the frame", which is the one sentence about that picture that could
+ * not be less true: the creature was standing in the middle of it.
+ *
+ * So the eye is lifted out of the depth sort, and the lift is a decision rather
+ * than a patch: it is the SAME decision as `fog: false`, one layer further out.
+ * The eye is not a surface on the model, it is a *signal* — the one mark in a
+ * frame that is unfogged, distance-invariant and small, and `png-luma.mjs` has
+ * anchored the whole creature gate on precisely those three properties. A 2 px
+ * cable is allowed to be a silhouette against the sky; it is not allowed to be a
+ * silhouette against the thing the player has to be able to see.
+ *
+ * Additive blending is what makes this nearly free. The wire contributes luma
+ * 17.6 — very nearly black — so adding the eye *over* it lands within a couple of
+ * levels of adding it over anything else dark. The signal survives because the
+ * thing crossing it is a shadow, not a highlight.
+ *
+ * `depthTest` is deliberately left alone, and that is the half that keeps the
+ * claim honest. A render ORDER cannot defeat an opaque depth buffer, so an eye
+ * behind a house is still an eye behind a house and §8.3 remains a rule the AI
+ * enforces rather than one the renderer quietly waives. Only the transparent queue
+ * is reordered, and the only thing lifted out of it is a cable.
+ */
+const EYE_RENDER_ORDER = 1
+
+/**
  * CreatureView — one figure, added to the scene once and re-presented every frame.
  *
  * The scene graph is built for the four things the presentation actually moves and
@@ -225,6 +265,10 @@ export class CreatureView {
     for (const side of [-1, 1]) {
       const eye = new THREE.Mesh(quad, this.eyeMaterial)
       eye.position.set(side * S.eyeSpread, S.eyeHeight - S.headCentre, 0.02)
+      // Set per-mesh rather than on `this.eyes`, because `renderOrder` is read off
+      // the object three.js actually queues and a `Group` is never queued — the
+      // number on the group would be a comment.
+      eye.renderOrder = EYE_RENDER_ORDER
       this.eyes.add(eye)
     }
     this.head.add(this.eyes)

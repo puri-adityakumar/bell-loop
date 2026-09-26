@@ -65,10 +65,12 @@ import {
   WORLD_EXTENT,
   chunkAt,
   chunkFixtures,
+  districtOf,
   originFor,
   placeObjectives,
   reservedLots,
   roadAxisToWorld,
+  streetNodeId,
   streetNodeToWorld,
 } from './neighborhood.js'
 // The one import that is not geometry: §6.3's list of what blocks a sightline.
@@ -230,6 +232,45 @@ export const PALETTE = Object.freeze({
   entryLamp: 0x6b4520,
   headlight: 0xffe2a8,
   creature: 0x08070a,
+  // ITERATION 2, PASS 6 — STREET FURNITURE I
+  // -----------------------------------------
+  // BEFORE: nothing. There was no wire, no pole, no sign, no hydrant and no
+  // grate anywhere in the world, so the sky above the street was a flat amber
+  // field with a hard band at the horizon and nothing in it.
+  //
+  // AFTER, six entries. The rule every one of them obeys is D6 — the frame has
+  // four saturated things in it and this pass is not allowed to add a fifth — and
+  // the second rule is AESTHETIC-NOTES §4's: a surface is a *variation on a
+  // dark*, not a palette, because §12.1's silhouette rule needs every one of
+  // these to stay a dark shape against a sodium haze.
+  //
+  //   wire       0x14120f   luma 17.6  the darkest thing in the world after the
+  //                              creature, and it has to be: a wire is a
+  //                              silhouette and T8's whole argument is that a
+  //                              wire which fades with distance reads as depth.
+  //                              Against `skyStops[0]` (luma 89) that is a 5:1
+  //                              contrast, which is what makes the span legible
+  //                              against the amber rather than a smudge in it.
+  //   pole       0x2a2620   luma 38.0  weathered timber, one step above `roof`
+  //   poleArm    0x35302a   luma 47.5  the crossarm catches more sky than the
+  //                              shaft does, which is the whole of mechanism 1
+  //                              applied to a 9 m vertical
+  //   sign       0x4a463f   luma 70.2  the brightest furniture value, and still
+  //                              under half the sky: a sign face is painted
+  //                              retroreflective white and reads pale, and a
+  //                              *saturated* sign is the reference's habit that
+  //                              D6 inverts
+  //   hydrant    0x5a2a26   luma 55.6  the one warm accent here, and it is a
+  //                              desaturated oxide rather than a red, because a
+  //                              red hydrant is a fifth saturated thing
+  //   drain      0x1a181d   luma 23.8  a grate is a hole in the kerb, and a hole
+  //                              is darker than the surface around it
+  wire: 0x14120f,
+  pole: 0x2a2620,
+  poleArm: 0x35302a,
+  sign: 0x4a463f,
+  hydrant: 0x5a2a26,
+  drain: 0x1a181d,
 })
 
 /** §5.1: one portal per liminal structure, in PORTAL_IDS order. */
@@ -790,6 +831,374 @@ const LOT_PART_BUDGET = 40
 
 
 // ---------------------------------------------------------------------------
+// ITERATION 2, PASS 6 — STREET FURNITURE I
+//
+// AESTHETIC-NOTES §5's pass-6 plan puts the wire ribbon FIRST, "before anything
+// is placed on it", and gives the reason: "Poles without wires look like lamp
+// posts, which we already have 49 of." So the order in this block is the order
+// the pass was built in — the wire system (T7 spans, T8 ribbon), then the poles
+// that carry it, then the three small things that go on the ground under it.
+//
+// WHAT IS HERE, AND WHY IT IS ONE FILE AND NOT FOUR
+// -------------------------------------------------
+// A pole is nineteen instances across three pools, a sign is two across two, a
+// hydrant is four across one and a gully is six across two, and the wires are a
+// single `BufferGeometry` with a custom shader — nine new draw calls for the
+// whole pass (eight pools and the wire mesh), on a world that already spends 31.
+// The alternative (a `Group` per pole, a `Line` per span) is the ~4,600-object
+// scene graph the file header rules out, and a `LineSegments` per wire is worse
+// still because line width is 1 px on every desktop GL driver since 2013, which
+// is exactly the shimmer T8 exists to prevent.
+// ---------------------------------------------------------------------------
+
+/**
+ * Pole height, metres.
+ *
+ * BEFORE: n/a. AFTER: 9.2, and the number is a real one rather than a taste —
+ * `DESIGN.md` §4's scale table (quoted in AESTHETIC-NOTES mechanism 2) gives
+ * utility poles as 10-12 m, and a distribution pole carrying three spans on a
+ * 64 m block is at the low end of that. 9.2 rather than 10.0 because the tallest
+ * thing the wires have to clear is a 5.2 m house wall with a 0.34 m parapet
+ * (5.54 m) and a crossarm at 8.6 m leaves 3 m of sky under the top span, which
+ * is what makes the wires read as *wires over a street* rather than as a
+ * catenary in an empty field. `POLE_ARM_FRACTION` below is where the crossarm
+ * goes and the difference between the two is the 0.6 m of bare shaft above it,
+ * which is the silhouette detail mechanism 1 asks for.
+ */
+const POLE_HEIGHT = 9.2
+
+/** Where the crossarm sits, as a fraction of `POLE_HEIGHT`. A real arm is at 88-94%. */
+const POLE_ARM_FRACTION = 0.93
+
+/** Crossarm length, metres. A Japanese low-voltage arm is 1.6-2.0 m. */
+const POLE_ARM_LENGTH = 1.9
+
+/** Crossarm section, metres. Square timber, and 90 mm is what a 1.9 m arm is. */
+const POLE_ARM_THICKNESS = 0.09
+
+/** How far the two trunk insulators sit either side of the shaft, metres. */
+const POLE_INSULATOR_SPACING = 0.82
+
+/** Insulator size, metres. A pin insulator on an LV arm is 100-150 mm. */
+const POLE_INSURATOR_SIZE = 0.12
+
+/**
+ * How far a pole stands from the road centreline, metres.
+ *
+ * BEFORE: n/a. AFTER `STREET_HALF_WIDTH` (6) plus 1.0, which puts the shaft on
+ * the pavement rather than in the carriageway: the kerb face is at 6.4 and the
+ * walk runs to 9.4, so 7.0 is 600 mm in from the kerb — which is where a pole
+ * actually goes, because the kerb is where a van parks and the pole is the one
+ * thing on the corner that must not be hit. Deriving it as
+ * `STREET_HALF_WIDTH + POLE_KERB_SETBACK` rather than typing 7.0 is what keeps
+ * it correct if the street is ever widened.
+ */
+const POLE_KERB_SETBACK = 1.0
+
+/**
+ * Where a pole stands from the road centreline, in metres.
+ *
+ * BEFORE: n/a. AFTER `STREET_HALF_WIDTH` (6) + `POLE_KERB_SETBACK` (1.0) = 7.0,
+ * derived rather than typed so that widening the carriageway moves the poles with
+ * it. The kerb FACE is at 6.4 and the walk runs to 9.4, so 7.0 is 600 mm in from
+ * the kerb with 2.4 m of pavement behind it — which is where a pole actually
+ * stands, because the kerb line is where a van parks and the pole is the one
+ * thing on the corner that must not be hit.
+ */
+const POLE_STANDOFF = STREET_HALF_WIDTH + POLE_KERB_SETBACK
+
+/** Pole shaft diameter, metres. 190-250 mm for a distribution pole. */
+const POLE_DIAMETER = 0.22
+
+/**
+ * The two lower tiers' hardware, in metres.
+ *
+ * BEFORE: n/a — the pass had a crossarm and nothing under it. AFTER a shorter
+ * bracket carrying the secondary conductors and a stub hook for the telecom
+ * bundle, so the second and third tiers hang off SOMETHING. A wire that leaves a
+ * pole from mid-air is the tell that gives a wireframe away, and the bracket is
+ * two more instances per axis to not be it.
+ *
+ * The bracket is 1.1 m against the arm's 1.9 m, which is the real proportion: the
+ * secondary circuit drops to two conductors, so its bar is shorter, and a bar of
+ * the same length carrying fewer insulators is a bar with a gap in it.
+ */
+const POLE_BRACKET_LENGTH = 1.1
+const POLE_HOOK_LENGTH = 0.16
+
+/**
+ * Where the small furniture stands, in metres from the road centreline.
+ *
+ * The pavement runs from the kerb face (6.4) to the lot line (9.4), and its
+ * middle is 7.9. BEFORE: n/a. AFTER a sign at 7.3 and a hydrant at 8.5 — the sign
+ * at the kerb because a sign is read from a car, the hydrant at the back because
+ * a hydrant is not, and because two objects on the same corner at the same offset
+ * read as a set rather than as two things that happen to be there. AESTHETIC-NOTES
+ * §4's "a surface is a variation on a dark" is a placement rule here as much as a
+ * colour one: furniture in a row is a row.
+ */
+const FURNITURE_WALK_OFFSET = STREET_HALF_WIDTH + KERB_WIDTH + SIDEWALK_WIDTH / 2
+const SIGN_WALK_OFFSET = FURNITURE_WALK_OFFSET - 0.6
+const HYDRANT_WALK_OFFSET = FURNITURE_WALK_OFFSET + 0.6
+
+/**
+ * How far along the kerb a gully sits from the intersection, metres.
+ *
+ * BEFORE: n/a. AFTER 2.5 — a gully is at the kerb LOW POINT, which is never
+ * exactly in the corner because that is where the crossfall is highest.
+ */
+const DRAIN_ALONG = 2.5
+
+// ---------------------------------------------------------------------------
+// T7 — CATENARY SPANS
+// ---------------------------------------------------------------------------
+
+/**
+ * Samples per span, and the reason it is twelve.
+ *
+ * BEFORE: n/a — the wires were straight lines between poles, which is the one
+ * thing T7 says reads as a mistake: "a straight line between two poles reads as
+ * a mistake, and a sagging one reads as a span that has been there for thirty
+ * years." AFTER: a parabola, `p.y -= sag * 4t(1 - t)`, zero at both ends and
+ * `sag` at the midpoint.
+ *
+ * Twelve and not the reference's "~14 segments per span" because ours are 64 m
+ * apart and the reference's are about 20, and a parabola's faceting error goes
+ * as the cube of the step over the span — three samples fewer on a span three
+ * times as long is still finer curvature than the reference ever drew. Twelve
+ * is also the vertex multiplier below, because the number of vertices in the
+ * one buffer is `spans * (segments + 1) * 2` and every one of them is a corner
+ * of a ribbon quad.
+ */
+const CATENARY_SEGMENTS = 12
+
+/**
+ * THE THREE TIERS, in draw order — T7's three heights and three sag amounts.
+ *
+ * `sag` IS A FRACTION OF THE HORIZONTAL SPAN, not a metre count, and that is the
+ * load-bearing choice: it is what makes one number correct on a 64 m block edge
+ * and on the 49-79 m span the seam-crossing corners produce. 0.018 of 64 m is
+ * 1.15 m of drop and 0.018 of 30 m is 0.54 m. A fixed metre count is a wire that
+ * droops to the pavement on the short spans and barely bends on the long ones,
+ * which is the failure a fixed count produces and the reason the reference's own
+ * `sag` argument is a function of span length too. The base figure the pass was
+ * tuned against is the secondary row's 0.018 — BEFORE this pass there was no sag
+ * at all, and a wire with no sag is the one thing T7 says reads as a mistake.
+ *
+ * BEFORE: one wire at one height. AFTER: three, and they are not three copies
+ * of one line at three heights. They are three *circuits* with different
+ * physical behaviour, which is what "heavier trunk cables sag more than telecom"
+ * means:
+ *
+ *   trunk      8.51 m  sag 0.024  3 conductors on the crossarm: the heaviest
+ *                                   cable on the pole, and the one that droops
+ *                                   furthest
+ *   secondary   7.91 m  sag 0.018  2 conductors on a bracket below the arm
+ *   telecom     7.36 m  sag 0.011  1 bundle on its own hook: the lightest cable
+ *                                   and the straightest
+ *
+ * The heights step down 0.6 m and 0.55 m, which is a real arm-to-bracket
+ * spacing on a Japanese pole and is enough for the eye to separate three lines
+ * at 30 m through fog. The sags are strictly ordered trunk > secondary >
+ * telecom and `verify.mjs` asserts that ORDER out of the table rather than
+ * trusting this comment — it is the claim T7 actually makes, and a table whose
+ * ordering is only in prose is a table nothing checks.
+ *
+ * `arms` is the crossarm offset each conductor hangs at, in half-spacings of
+ * `POLE_INSULATOR_SPACING`: three trunk conductors on the arm at -1/0/+1, two
+ * secondary on a narrower bracket, one telecom on its own hook at the centre.
+ * Six wires per pole, and the count is asserted so a tier cannot quietly lose
+ * one.
+ */
+const WIRE_TIERS = Object.freeze([
+  Object.freeze({ name: 'trunk', y: 8.51, sag: 0.024, width: 0.052, arms: Object.freeze([-1, 0, 1]) }),
+  Object.freeze({ name: 'secondary', y: 7.91, sag: 0.018, width: 0.034, arms: Object.freeze([-1, 1]) }),
+  Object.freeze({ name: 'telecom', y: 7.36, sag: 0.011, width: 0.021, arms: Object.freeze([0]) }),
+])
+
+/**
+ * T7's last clause: "one span in five should be noticeably lower than its
+ * neighbours."
+ *
+ * BEFORE: every span identical. AFTER: a stream test per span, and the 1-in-5
+ * spans get `LOW_SPAN_SAG_MULT` times the drop. Without it the wires are a ruled
+ * grid, and a ruled grid is the most legible tell that a street was generated
+ * rather than built: real spans vary because the poles went up at different
+ * times and the ground under them has settled.
+ */
+const LOW_SPAN_ONE_IN = 5
+const LOW_SPAN_SAG_MULT = 1.7
+
+
+// ---------------------------------------------------------------------------
+// T8 — THE SCREEN-SPACE WIRE RIBBON
+// ---------------------------------------------------------------------------
+
+/**
+ * `WIRE_MIN_PX` and `WIRE_COVERAGE_FLOOR` — the minimum screen width, and the
+ * opacity floor for a wire too thin to reach it.
+ *
+ * BEFORE: n/a, there was no ribbon. AFTER 1.25 px and 0.18, and the reference
+ * gives "~1.15 px" and `clamp(pxWorld / uMinPx, 0.18, 1.0)`, so both are the
+ * reference's numbers with the width nudged a tenth of a pixel for a 72° field
+ * on a 1.5x-pixel-ratio buffer: at 1.0 px a wire is one sample wide and shimmers
+ * as the camera moves, and 1.25 px is the smallest width that still gets two
+ * samples on an axis-aligned span.
+ *
+ * This is a *screen-space* quantity and that is the whole of T8: "thin geometry
+ * is the classic way wires disappear at distance and shimmer up close; the
+ * reference's answer is to make width a screen-space quantity and let opacity
+ * carry sub-pixel geometry." A wire 200 m away is one pixel wide whatever its
+ * real diameter, a wire 2 m away is one pixel wide too, and neither aliases.
+ * The coverage fade is the other half of the trick: a wire whose real width is
+ * under the minimum is still drawn AT the minimum, but at partial opacity, so
+ * the amount of dark ink on the sky is right even when the geometry is not.
+ */
+const WIRE_MIN_PX = 1.25
+const WIRE_COVERAGE_FLOOR = 0.18
+
+/**
+ * `WIRE_MAX_PX` — the width cap, and the line the whole pass turns on.
+ *
+ * The wire vertex shader turns a wire's real diameter into a pixel width. It
+ * must divide by **clip-space `p.w`**, which in a perspective projection IS the
+ * view depth, and it must NOT divide by `-p.z`.
+ *
+ * `-p.z` is clip-space Z, and clip Z is a *non-linear* function of depth: it is
+ * the NDC depth rescaled by `w`, so dividing a world size by it divides by
+ * `depth * (a + b/depth)`. Worse, it goes NEGATIVE for any geometry nearer than
+ * the near plane's z-midpoint, and a negative divisor yields a negative pixel
+ * width, which `clamp()` then pins to this cap. Every wire in the world becomes
+ * a 13-28 px black band at coverage 1.0 — not a subtle artefact but a black
+ * grid ruled across the sky.
+ *
+ * The two halves of the fix are the two halves of ONE contract, and both are in
+ * the shader:
+ *
+ *   1. divide the pixel width by `p.w` (view depth), and
+ *   2. clip each segment against the near plane *before* projecting it, so a
+ *      wire behind the camera is removed rather than projected through it.
+ *
+ * The second is not optional once the first is done. A segment straddling the
+ * near plane has a `p.w` approaching zero at one end, so the width goes to
+ * infinity and the quad covers the screen; a segment entirely behind has a
+ * `p.w` that is *negative*, which is the same pinning bug from the other
+ * direction. Clipping first makes `p.w >= near > 0` for every vertex that
+ * survives, and the division is then safe by construction rather than by a
+ * second clamp.
+ *
+ * 3.4 px rather than a reference number, because a 0.05 m trunk conductor seen
+ * from the 0.05 m near plane is enormous and the cap is doing real work at the
+ * near end — wide enough to read as a cable up close, far short of the banding
+ * the wrong divisor produces.
+ *
+ * `verify.mjs` reads this file as text and pins both halves. The contract check
+ * is named 'the wire shader clips against the near plane', and the width
+ * computation is asserted to divide by `p.w` and never by `-p.z`.
+ */
+const WIRE_MAX_PX = 3.4
+
+/**
+ * Traffic sign, in metres — post, plate, and where the plate sits.
+ *
+ * BEFORE: n/a. AFTER a 2.55 m post carrying a 600 x 400 mm plate at 2.05 m.
+ * Both are real: a Japanese intersection sign goes on a 2.2-2.6 m post with the
+ * face at 1.9-2.2 m, sized to be readable from a car and not from a pedestrian's
+ * eyeline. The plate is one flat box and its face is `PALETTE.sign`, which is
+ * *paint* and not an emissive: a sign is a retroreflective surface that catches
+ * the sodium and returns it, and making it a light source would put it on T11's
+ * ladder, which has four rungs and no room for a fifth (D6).
+ */
+const SIGN_POST_HEIGHT = 2.55
+const SIGN_PLATE_Y = 2.05
+const SIGN_PLATE_W = 0.6
+const SIGN_PLATE_H = 0.4
+const SIGN_PLATE_T = 0.05
+const SIGN_POST_RADIUS = 0.045
+
+/**
+ * How many corners of each intersection carry a sign, a hydrant and a grate.
+ *
+ * BEFORE: n/a. AFTER two signs, a hydrant on roughly a third of corners and a
+ * gully on half — all three drawn from each intersection's own stream, so which
+ * corners are furnished is a property of the world rather than of build order.
+ *
+ * Two signs and not four because a sign on every corner of every intersection is
+ * a picket fence: D6 and §5's pass-7 note both say uniformity is what makes a
+ * generated street read as generated, and half the corners bare is what a real
+ * street looks like. The hydrant and the grate run at *different* rates on
+ * purpose — a gully is wherever the kerb has a low point, a hydrant is wherever
+ * the main is, and a street where both appear at the same frequency on the same
+ * corner reads as a set.
+ */
+const SIGNS_PER_INTERSECTION = 2
+const HYDRANT_ONE_IN = 3
+const DRAIN_ONE_IN = 2
+
+/**
+ * Hydrant, in metres.
+ *
+ * BEFORE: n/a. AFTER a 0.62 m barrel, a 0.16 m bonnet and two 0.1 m side caps. A
+ * Japanese above-ground hydrant is 0.5-0.7 m to the top of the bonnet, which is
+ * deliberately knee-height: it is street furniture you can see over, not
+ * something that blocks a sightline, and §6.3's occluder list is deliberately
+ * not extended to include it. `PALETTE.hydrant` is a desaturated oxide rather
+ * than a red, for the reason in the palette comment.
+ */
+const HYDRANT_BODY_H = 0.62
+const HYDRANT_BONNET_H = 0.16
+const HYDRANT_CAP_SIZE = 0.1
+const HYDRANT_BODY_RADIUS = 0.11
+
+/**
+ * Drain grate, in metres, and how far from the kerb face it sits.
+ *
+ * BEFORE: n/a. AFTER a 0.5 x 0.36 m frame with five bars, set into the gutter
+ * 0.2 m from the kerb face. A gully grating in Japan is 300-500 mm across the
+ * gully and sits at the low point, which is against the kerb; the bars are five
+ * because a grate with two bars is a slot and a grate with five is a grate. It
+ * is lifted `DRAIN_LIFT` above the road rather than the portal apron's 2 cm: a
+ * grate is *meant* to be flush, and a 2 cm proud grate is exactly the "floating
+ * object" the reference's own failure list names.
+ */
+const DRAIN_W = 0.5
+const DRAIN_D = 0.36
+const DRAIN_SETBACK = 0.2
+const DRAIN_BAR_COUNT = 5
+const DRAIN_BAR_T = 0.05
+const DRAIN_LIFT = 0.005
+/**
+ * The rim, as a FRACTION of the grate — and the reason the bars are cut to the
+ * rim's inner hole rather than laid across it.
+ *
+ * BEFORE: n/a (the grate was going to be a solid plate with bars on top, which
+ * is a biscuit tin). AFTER a real annulus — `makeFrameGeometry` again, the same
+ * one shape that is a window frame, a door surround, a parapet and now a gully
+ * rim — and the bars are `DRAIN_W * (1 - 2 * DRAIN_FRAME_BAR)` long so they seat
+ * inside it. A bar that overlapped the rim would be coplanar with it, and two
+ * coplanar faces 5 mm apart z-fight on a road that is the darkest surface in
+ * the frame.
+ */
+const DRAIN_FRAME_BAR = 0.1
+
+/**
+ * The four corners of an intersection, as (x, z) sign pairs.
+ *
+ * Ordered NW, NE, SE, SW so the three furniture kinds can each take a
+ * different corner and never fight for the same patch of pavement. This is the
+ * reference's `res` discipline (mechanism 5, "placement by reservation") in
+ * its smallest form: a corner is a resource, and this pass is the only thing in
+ * the codebase spending it.
+ */
+const CORNER_SIGNS = Object.freeze([
+  Object.freeze([-1, -1]), // 0 NW
+  Object.freeze([1, -1]), // 1 NE
+  Object.freeze([1, 1]), // 2 SE
+  Object.freeze([-1, 1]), // 3 SW
+])
+
+
+// ---------------------------------------------------------------------------
 // procedural textures — canvas, no downloads, and no path drawing
 // ---------------------------------------------------------------------------
 
@@ -1044,6 +1453,368 @@ export const SURFACE_SEEDS = Object.freeze({
   // rotating, so it must not be a function of any surface's.
   swirl: 0x5197,
 })
+
+
+// ---------------------------------------------------------------------------
+// T7 + T8 — the catenary and the screen-space wire ribbon
+// ---------------------------------------------------------------------------
+
+/**
+ * `catenary` — T7's span, sampled.
+ *
+ * A parabola, `p.y -= sag * 4t(1 - t)`, which is the reference's own curve
+ * (`geo.js` `catenary(a, b, sag, segments)`, "a parabola") and the reason a
+ * span reads as a span: it leaves both poles horizontally, which a straight line
+ * does not, and it hangs lowest in the middle, which nothing else on the pole
+ * does.
+ *
+ * `sag` is passed in METRES by the caller, which derives it from the tier's
+ * fraction times the horizontal distance, so the droop is proportional to the
+ * span rather than fixed. That derivation is why this function takes a number
+ * and not a fraction: the fraction is a property of the wire, the number is a
+ * property of the span, and conflating them is how a wire ends up dragging on
+ * the pavement at one end of a block and flying straight at the other.
+ *
+ * One array of `segments + 1` plain objects, allocated `spans * tiers` times at
+ * build time — a few thousand small objects for the whole world, once, before
+ * the first frame. A `Vector3` per sample would be the same count in a heavier
+ * type, and a reusable scratch vector would save nothing because the samples are
+ * consumed immediately and the caller needs the whole array.
+ *
+ * @param {{x:number,y:number,z:number}} a one end, world
+ * @param {{x:number,y:number,z:number}} b the other end, world
+ * @param {number} sag drop at the midpoint, metres (positive = hangs down)
+ * @param {number} [segments] samples; `CATENARY_SEGMENTS` by default
+ * @returns {{x:number,y:number,z:number}[]} `segments + 1` points, `a` to `b`
+ */
+function catenary(a, b, sag, segments = CATENARY_SEGMENTS) {
+  const points = []
+  for (let i = 0; i <= segments; i += 1) {
+    const t = i / segments
+    points.push({
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t - sag * 4 * t * (1 - t),
+      z: a.z + (b.z - a.z) * t,
+    })
+  }
+  return points
+}
+
+/**
+ * `makeWireGeometry` — EVERY SPAN IN THE WORLD, IN ONE BUFFER, ONE DRAW CALL.
+ *
+ * This is the load-bearing function of the pass. T8's cost note is "one shader,
+ * one draw call, 50-ish spans' worth of vertices", and the reason it can be one
+ * call is that a wire is not an object: it is a *strip* of quads, and a strip
+ * has no per-span state. 84 spans per wrapped copy (49 intersections, one span
+ * east and one south from each of the 42 that has a partner — the wrap is
+ * diagonal, so the last row and column have none) x 6 conductors x 12 segments
+ * is 1,008 quads, and all three copies is 3,024 quads — 6,048 triangles in ONE
+ * indexed `BufferGeometry` and ONE draw call, where a `LineSegments` per span
+ * would be 252 calls at a width of one pixel, and a `Group` per pole closer to
+ * the ~4,600-object scene graph the file header rules out. The `windowGlass`
+ * pool alone already draws 28k triangles.
+ *
+ * THE VERTEX LAYOUT, and why it is four attributes and not three
+ * -------------------------------------------------------------
+ * Each quad corner carries:
+ *
+ *   - `position` — the WORLD position of the catenary sample it belongs to, so
+ *     `modelViewMatrix` and the near-plane clip have something real to act on.
+ *   - `aEnd` — the world position of the OTHER sample of the same segment.
+ *   - `aSide` — `-1` or `+1`, which side of the ribbon this corner is. The
+ *     shader offsets it perpendicular to `position -> aEnd`.
+ *   - `aWidth` — the conductor's real diameter in METRES, carried per corner so
+ *     the three tiers have three thicknesses out of one draw call.
+ *
+ * `aEnd` and `aSide` are the whole trick. A ribbon built in world space has its
+ * thickness in METRES, and that is the thing T8 says is wrong: a 2 cm cable is
+ * a tenth of a pixel wide at 40 m and vanishes, and 400 px wide at 2 cm from the
+ * lens. By carrying the segment's other end and expanding perpendicular to it IN
+ * SCREEN SPACE, the width becomes a function of depth at the vertex, and one
+ * buffer built once at startup is correct from every camera position forever.
+ *
+ * The width is deliberately NOT baked into `position`. `position` says WHERE
+ * the wire is; the shader says how thick to draw it. That split is the difference
+ * between a ribbon and a mesh.
+ *
+ * @param {Array<{a: object, b: object, sag: number, width: number}>} spans
+ * @param {number} [segments] samples per span; `CATENARY_SEGMENTS` by default
+ * @returns {THREE.BufferGeometry} indexed, with `position` and the three ribbon
+ *   attributes, and a bounding sphere so anything that asks for one gets an
+ *   answer rather than reading a zero-radius sphere at the origin
+ */
+function makeWireGeometry(spans, segments = CATENARY_SEGMENTS) {
+  // Sized from the span list rather than grown by pushing, which is what keeps
+  // this one allocation per attribute instead of a doubling per push — and it is
+  // also how an empty world produces an empty buffer rather than a null one.
+  const quads = spans.length * segments
+  const corners = quads * 4
+  const positions = new Float32Array(corners * 3)
+  const ends = new Float32Array(corners * 3)
+  const sides = new Float32Array(corners)
+  const widths = new Float32Array(corners)
+  const index = new Uint32Array(quads * 6)
+
+  let corner = 0
+  let face = 0
+  for (const span of spans) {
+    const points = catenary(span.a, span.b, span.sag, segments)
+    for (let s = 0; s < segments; s += 1) {
+      const p = points[s]
+      const q = points[s + 1]
+      // Two triangles wound a-b-b and a-b-a, which puts the two `p` corners on
+      // one side and the two `q` corners on the other, so `aSide` alone is
+      // enough to open the ribbon and no second attribute is needed for it.
+      //
+      // The corner order is a RING around the quad — p, q, q, p — not an
+      // alternation, and the ring is what makes the index pairs below a fan of
+      // the quad's own diagonal rather than a stitch between two spans.
+      const quad = [p, q, q, p]
+      const quadSide = [-1, -1, 1, 1]
+      // ...so the "other sample" is NOT `k < 2 ? q : p`. That test reads the ring
+      // as an alternation and hands k=1 (a `q` corner) the point `q` and k=3 (a
+      // `p` corner) the point `p` — a zero-length segment on HALF the corners,
+      // 36,288 of 72,576 in this world. A zero-length segment has no direction,
+      // so the shader's `dir` falls back to a hardcoded `(1, 0)` and the ribbon
+      // is extruded along the screen's y axis rather than perpendicular to the
+      // wire: the edges tilt, the quads stop abutting, and neighbouring segments
+      // overlap. The pairing is written out as its own table, beside the corner
+      // order it belongs to, because these two arrays are one invariant and
+      // deriving one from the other's length is how they drift apart.
+      const quadOther = [q, p, p, q]
+      for (let k = 0; k < 4; k += 1) {
+        const at = corner * 3
+        positions[at] = quad[k].x
+        positions[at + 1] = quad[k].y
+        positions[at + 2] = quad[k].z
+        // `aEnd` is the OTHER sample of this segment: a corner on `p` carries
+        // `q`, a corner on `q` carries `p`. A per-corner lookup rather than a
+        // second pass, because the quad's ends do not alternate and a separate
+        // pass would have to remember which half of the quad it was in.
+        const other = quadOther[k]
+        ends[at] = other.x
+        ends[at + 1] = other.y
+        ends[at + 2] = other.z
+        sides[corner] = quadSide[k]
+        widths[corner] = span.width
+        corner += 1
+      }
+      // The vertex base of THIS quad — the value of `corner` before the four
+      // corners above were written, which is `corner - 4` after they were. It is
+      // NOT `face`: `face` counts INDICES (six per quad) and `corner` counts
+      // VERTICES (four per quad), so the two drift apart by two per quad and a
+      // base read off `face` points into a later quad's corners. Every triangle
+      // then spans three unrelated world positions and the buffer rasterises as
+      // a handful of screen-filling wedges rather than a wire — which is exactly
+      // what a wrong base looks like, and why this is a vertex cursor and not a
+      // shared counter with `face`.
+      const base = corner - 4
+      index[face] = base
+      index[face + 1] = base + 1
+      index[face + 2] = base + 2
+      index[face + 3] = base
+      index[face + 4] = base + 2
+      index[face + 5] = base + 3
+      face += 6
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('aEnd', new THREE.BufferAttribute(ends, 3))
+  geometry.setAttribute('aSide', new THREE.BufferAttribute(sides, 1))
+  geometry.setAttribute('aWidth', new THREE.BufferAttribute(widths, 1))
+  geometry.setIndex(new THREE.BufferAttribute(index, 1))
+  // `frustumCulled` is off on the mesh, so nothing reads this sphere at runtime —
+  // but it is still computed, so that anything which DOES ask (a future raycast
+  // check, three.js's own diagnostics) has a real answer.
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/**
+ * `WIRE_VERTEX_SHADER` — T8's screen-space expansion, and THE line the pass turns
+ * on.
+ *
+ * The contract, stated once here and asserted by name in `verify.mjs` as
+ * 'the wire shader clips against the near plane':
+ *
+ *   The pixel width divides by **clip-space `p.w`**, which in a perspective
+ *   projection is the view depth. It does NOT divide by `-p.z`.
+ *
+ * `-p.z` is clip-space Z, a non-linear function of depth, and it goes NEGATIVE
+ * for geometry in front of the near plane's z-midpoint. A negative divisor gives
+ * a negative pixel width, `clamp()` pins that to `uMaxPx`, and every wire in the
+ * world becomes a 13-28 px black band at coverage 1.0 — a ruled grid across the
+ * amber sky rather than a wire in it.
+ *
+ * The near-plane clip is the OTHER half of the same contract and is not optional
+ * once the divisor is right. A segment straddling the near plane has a `w`
+ * approaching zero at one end (the width goes to infinity and the quad covers
+ * the screen); a segment wholly behind has a `w` that is *negative* (the same
+ * pinning bug from the other direction). Clipping first makes `w >= near > 0`
+ * for every vertex that survives, so the division is safe by construction rather
+ * than by a second `clamp` papering over it.
+ *
+ * The near plane itself is RECOVERED from the projection matrix rather than
+ * restated as a literal. `world.js` owns the camera and its 0.05 m near plane;
+ * duplicating that number here is a second place for it to be wrong, and the
+ * camera is the thing being clipped against. For a standard perspective matrix
+ * `c = m[2][2] = -(f+n)/(f-n)` and `d = m[3][2] = -2fn/(f-n)`, so `d / (c - 1)`
+ * is exactly `n` — verified against a 72-degree, 0.05-to-260 camera.
+ */
+const WIRE_VERTEX_SHADER = /* glsl */`
+  attribute vec3 aEnd;
+  attribute float aSide;
+  attribute float aWidth;
+
+  uniform vec2 uResolution;
+  uniform float uMinPx;
+  uniform float uMaxPx;
+  uniform float uCovFloor;
+
+  varying float vCoverage;
+  #include <fog_pars_vertex>
+
+  void main() {
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vec4 mvEnd = modelViewMatrix * vec4(aEnd, 1.0);
+
+    // Recover the camera's own near plane, then CLIP AGAINST IT, in view space,
+    // before anything is projected. A point is in front of the camera when its
+    // view z is below -near.
+    float near = projectionMatrix[3][2] / (projectionMatrix[2][2] - 1.0);
+
+    // Wholly behind the near plane: collapse to a point. It has no area, so it
+    // rasterises nothing, and the wire cannot smear through the camera.
+    if (mvPosition.z > -near && mvEnd.z > -near) {
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      vCoverage = 0.0;
+      return;
+    }
+    // Straddling the near plane: shorten to the crossing point so BOTH ends
+    // finish in front of the camera. After this, every surviving vertex below has
+    // w >= near > 0, which is what makes the division safe.
+    if (mvPosition.z > -near) {
+      mvPosition.xyz = mix(mvPosition.xyz, mvEnd.xyz, (-near - mvPosition.z) / (mvEnd.z - mvPosition.z));
+    } else if (mvEnd.z > -near) {
+      mvEnd.xyz = mix(mvEnd.xyz, mvPosition.xyz, (-near - mvEnd.z) / (mvPosition.z - mvEnd.z));
+    }
+
+    vec4 clip = projectionMatrix * mvPosition;
+    vec4 clipEnd = projectionMatrix * mvEnd;
+
+    // THE LINE. Depth is clip.w — the view depth — and never -p.z.
+    float depth = clip.w;
+    vec2 ndc = clip.xy / depth;
+    vec2 ndcEnd = clipEnd.xy / clipEnd.w;
+    // Aspect-corrected through uResolution: without it a wire running along the
+    // street is 1.7x fatter on screen than one running across it at 16:9.
+    vec2 dir = (ndcEnd - ndc) * uResolution;
+    float len = length(dir);
+    dir = len > 1e-6 ? dir / len : vec2(1.0, 0.0);
+    vec2 normal = vec2(-dir.y, dir.x);
+
+    // The conductor's real width in pixels at THIS depth: a 52 mm trunk cable is
+    // 32 px wide at 1 m, 1.6 px at 20 m and 0.3 px at 100 m, which is the whole
+    // reason width has to be a screen-space quantity. Clamped up to the minimum
+    // so a distant wire does not vanish, and the shortfall is carried in
+    // coverage so it fades rather than aliases.
+    float worldPx = aWidth * uResolution.y * projectionMatrix[1][1] / (2.0 * depth);
+    float px = clamp(worldPx, uMinPx, uMaxPx);
+    vCoverage = clamp(worldPx / max(uMinPx, 1e-6), uCovFloor, 1.0);
+
+    // Pixel offset back into clip space. NDC spans a half-extent per axis, so
+    // one pixel is 2/resolution, and multiplying by w is what makes the offset
+    // depth-independent — the same w as the divisor above.
+    gl_Position = clip + vec4(normal * px * aSide * 2.0 / uResolution * depth, 0.0, 0.0);
+    #include <fog_vertex>
+  }
+`
+
+/**
+ * `WIRE_FRAGMENT_SHADER` — a wire is a silhouette, and nothing else.
+ *
+ * No lighting term, and that is the design rather than an omission. `PALETTE.wire`
+ * is luma 17.6 against a sky at 89, and that 5:1 contrast is the entire reason a
+ * span reads against the amber rather than as a smudge in it. A lit wire would
+ * put a fifth saturated thing in a frame D6 caps at four, and would stop being a
+ * silhouette, which is the only thing it is for.
+ *
+ * The fog mix is T8's depth argument: a wire that fades with distance is a wire
+ * that reads as depth, so the far spans dissolve into the haze rather than
+ * hanging over it at full strength.
+ */
+const WIRE_FRAGMENT_SHADER = /* glsl */`
+  uniform vec3 uColor;
+  varying float vCoverage;
+  #include <fog_pars_fragment>
+
+  void main() {
+    vec3 color = uColor;
+    float alpha = vCoverage;
+    #include <fog_fragment>
+    gl_FragColor = vec4(color, alpha);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`
+
+/**
+ * `makeWireMaterial` — T8's one shader, and the file's known-failure site.
+ *
+ * The two load-bearing lines are called out in the GLSL itself and not only in
+ * `WIRE_MAX_PX`'s comment:
+ *
+ *   1. `float depth = clip.w;` — the pixel width divides by **clip-space w**,
+ *      which in a perspective projection IS the view depth. It does NOT divide
+ *      by `-p.z`.
+ *   2. the near-plane clip, which is what makes (1) safe: the segment is
+ *      shortened against `z = -near` in VIEW space before it is projected, so
+ *      every surviving vertex has `w >= near > 0`.
+ *
+ * Everything else is T8's own recipe: expand perpendicular to the segment in
+ * screen space, clamp to a minimum pixel width, and carry the shortfall in
+ * coverage rather than letting a sub-pixel wire alias.
+ *
+ * Fog is on, and that is T8's other half — "in our fog this matters more, not
+ * less: a wire that fades with distance is a wire that reads as depth, and a
+ * wire that shimmers is a wire that reads as a bug." The `FogExp2` chunks are
+ * included by hand because this is a `ShaderMaterial` and would otherwise get no
+ * fog at all, which would leave the far wires hanging in the amber at full
+ * strength and make the sky look like a wireframe.
+ *
+ * @param {number} resolutionX drawing-buffer width in DEVICE pixels, which is
+ *   not the CSS width: `world.js` caps the pixel ratio at 1.5, so a 1067 px
+ *   window is a 1600 px buffer and a shader given the CSS width draws every wire
+ *   a third too thin
+ * @param {number} resolutionY drawing-buffer height in device pixels
+ * @returns {THREE.ShaderMaterial} transparent, depth-tested, fogged, unlit
+ */
+function makeWireMaterial(resolutionX, resolutionY) {
+  return new THREE.ShaderMaterial({
+    uniforms: THREE.UniformsUtils.merge([
+      THREE.UniformsLib.fog,
+      {
+        uResolution: { value: new THREE.Vector2(resolutionX, resolutionY) },
+        uMinPx: { value: WIRE_MIN_PX },
+        uMaxPx: { value: WIRE_MAX_PX },
+        uCovFloor: { value: WIRE_COVERAGE_FLOOR },
+        uColor: { value: new THREE.Color(PALETTE.wire) },
+      },
+    ]),
+    vertexShader: WIRE_VERTEX_SHADER,
+    fragmentShader: WIRE_FRAGMENT_SHADER,
+    transparent: true,
+    // A ribbon is a strip of quads, and which way a given quad faces depends on
+    // which side of the wire the camera is. DoubleSide is one flag rather than
+    // two buffers, and the wire is one-sided-symmetric by construction.
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    fog: true,
+  })
+}
 
 // ---------------------------------------------------------------------------
 // instancing
@@ -1452,6 +2223,20 @@ export class StreetView {
     this.lotParts = []
     this._time = 0
 
+    // ITERATION 2, PASS 6. The wire's width is a SCREEN-SPACE quantity, so the
+    // shader has to be told how many pixels the buffer has. It is the DEVICE
+    // buffer, not the CSS one: `world.js` caps the pixel ratio at 1.5, so a
+    // 1067 px window is a 1600 px buffer and a wire given the CSS width is drawn
+    // a third too thin — which is a third too thin at every distance, so it never
+    // reads as a deliberate width. `world.js` owns the number and hands it over
+    // here; `setResolution` takes it again on every resize, because a wire that
+    // keeps the resolution it was built with is a wire that is the wrong width in
+    // a resized window, and no shader can recover that.
+    this.resolution = {
+      x: options.resolution?.x ?? 1280,
+      y: options.resolution?.y ?? 720,
+    }
+
     this._materials = this._buildMaterials()
     this._buildRoad()
     this._buildChunkGeometry()
@@ -1654,6 +2439,40 @@ export class StreetView {
       // which inverts the hierarchy the ladder exists to state.
       entryLamp: this._glow(PALETTE.entryLamp),
       panel: this._material({ color: 0x26232b }),
+
+      // ITERATION 2, PASS 6 — five surfaces and one shader, and the six palette
+      // entries at the top of the file are what they are all built from.
+      //
+      // `pole` is the only large new surface in the world (147 shafts, 9.2 m
+      // each) and it is deliberately the second-darkest thing after the wire: a
+      // pole is a silhouette against the amber and the moment it is lighter than
+      // the buildings it stops being a pole and starts being a pillar.
+      pole: this._material({ color: PALETTE.pole, roughness: 0.95 }),
+      // The arm, a third of a step up the shaft, because it is the only part of
+      // the hardware with a top face and a top face is what the sodium reaches.
+      poleArm: this._material({ color: PALETTE.poleArm, roughness: 0.9 }),
+      // The pale furniture value, shared by the sign faces and the pin
+      // insulators, which are the same paint: a sign is retroreflective white
+      // and an insulator is white porcelain, and both are the lightest thing on
+      // the pole by a wide margin. One material for both, because they are one
+      // colour and a second material would be a second draw call for a value the
+      // palette already names.
+      painted: this._material({ color: PALETTE.sign, roughness: 0.62 }),
+      // The one warm note in the pass, and it is an oxide rather than a red
+      // because a saturated red hydrant would be a fifth saturated thing in a
+      // frame D6 caps at four.
+      hydrant: this._material({ color: PALETTE.hydrant, roughness: 0.7, metalness: 0.2 }),
+      // A gully rim is a hole in the kerb, and a hole is darker than the surface
+      // around it — so this is darker than the asphalt it is set into, not
+      // lighter, which is the opposite of what "metal grate" wants to be and the
+      // reason a grate reads at 40 m at all.
+      drain: this._material({ color: PALETTE.drain, roughness: 0.8, metalness: 0.25 }),
+      // The wire, and the only material in this file that is not a
+      // `MeshStandardMaterial`. T8 owns it because the width is computed in the
+      // vertex shader, and a `ShaderMaterial` therefore gets no fog unless the
+      // chunks are included by hand — which is the second half of the pass and
+      // the half that is easy to leave out.
+      wire: makeWireMaterial(this.resolution.x, this.resolution.y),
     }
   }
 
@@ -1911,6 +2730,60 @@ export class StreetView {
       CHUNKS * WRAP_COPIES.length + 8,
     )
 
+    // ITERATION 2, PASS 6 — the street furniture, and the capacities are T5's rule
+    // applied to something that is not per-lot: every number below is the MAXIMUM
+    // this pass can place, multiplied out, not the number it happens to place on
+    // this seed. 49 intersections x 3 copies = 147 poles; a pole is one shaft, two
+    // axes x (an arm, a bracket and a hook) and two axes x 6 insulators.
+    const nodes = GRID * GRID
+    const poles = nodes * WRAP_COPIES.length
+    // A pole is a POLE, not a lamp post: a round shaft, 190-250 mm across, which
+    // is the same primitive the lamp uses and the reason the two never get
+    // confused at 40 m. Eight sides, because a hexagon reads faceted against the
+    // sky and a cylinder reads as a pipe.
+    this.pools.poleShafts = this._streetPool(
+      names, 'poleShafts', new THREE.CylinderGeometry(0.5, 0.5, 1, 8), this._materials.pole, poles + 8,
+    )
+    // The arm, the secondary bracket and the telecom hook are one pool of one
+    // material for the same reason the frontage was split by KIND and not by
+    // size: they are the same colour, so splitting them would buy nothing and
+    // cost a draw call each. Three per axis, two axes.
+    this.pools.poleArms = this._streetPool(
+      names, 'poleArms', box(), this._materials.poleArm, poles * 6 + 8,
+    )
+    // Six conductors per arm (3 trunk + 2 secondary + 1 telecom), on both axes.
+    this.pools.poleInsulators = this._streetPool(
+      names, 'poleInsulators', box(), this._materials.painted, poles * 12 + 8,
+    )
+    // A sign is a post and a plate and the plate is a different material from the
+    // post — a sign is retroreflective paint and a post is galvanised steel, and
+    // that difference is the whole reason a sign is legible at 40 m.
+    this.pools.signPosts = this._streetPool(
+      names, 'signPosts', new THREE.CylinderGeometry(0.5, 0.5, 1, 6), this._materials.metal,
+      nodes * SIGNS_PER_INTERSECTION * WRAP_COPIES.length + 8,
+    )
+    this.pools.signPlates = this._streetPool(
+      names, 'signPlates', box(), this._materials.painted,
+      nodes * SIGNS_PER_INTERSECTION * WRAP_COPIES.length + 8,
+    )
+    // A hydrant is a barrel, a bonnet and two side caps: four instances of one
+    // cylinder, one pool, one draw call. A hydrant built out of boxes is a hydrant
+    // with the corners of a shipping crate.
+    this.pools.hydrants = this._streetPool(
+      names, 'hydrants', new THREE.CylinderGeometry(0.5, 0.5, 1, 8), this._materials.hydrant,
+      poles * 4 + 8,
+    )
+    // The gully: an annulus rim (the same `makeFrameGeometry` the window frame and
+    // the parapet use) and five bars, in two pools because the rim is a hole and
+    // the bars are cast iron.
+    this.pools.drainFrames = this._streetPool(
+      names, 'drainFrames', makeFrameGeometry(DRAIN_FRAME_BAR).rotateX(-Math.PI / 2),
+      this._materials.drain, poles + 8,
+    )
+    this.pools.drainBars = this._streetPool(
+      names, 'drainBars', box(), this._materials.metal, poles * DRAIN_BAR_COUNT + 8,
+    )
+
     this.buildChunks()
     // The lamps are built *before* the commit loop, and that order is the whole
     // reason this call is here rather than after it. `InstancePool.commit()` is
@@ -1921,6 +2794,13 @@ export class StreetView {
     // dark scene" rather than "a bug" is that the four dynamic point lights
     // `world.js` aims at `lampPositions` still work, because those come from the
     // data rather than the geometry.
+    // ...and the same rule, one pass later: the poles, the signs, the hydrants and
+    // the grates are instanced into the pools above and committed by the loop
+    // under this line, and the wires go into a geometry that is built here and
+    // therefore cannot be committed late. Eight pools and one mesh, all of it
+    // before the loop below — which is the whole of the pass's "nine draw calls"
+    // claim, and the reason it is a claim about POOLS rather than about objects.
+    this._buildStreetFurniture()
     this._buildLamps()
     for (const name of names) this.pools[name].commit()
     this.streetPools = names
@@ -2371,6 +3251,328 @@ export class StreetView {
         }
         // one canonical record per lamp, for the light pool `world.js` drives
         this.lampPositions.push({ x: lx, z: lz })
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // ITERATION 2, PASS 6 — street furniture I
+  //
+  // AESTHETIC-NOTES §5's plan builds the wire ribbon FIRST ("before anything is
+  // placed on it") and gives the reason: "Poles without wires look like lamp
+  // posts, which we already have 49 of." So the order in this block is the order
+  // the pass was built in, and it is also the order the methods are in.
+  // -------------------------------------------------------------------------
+
+  /**
+   * `_buildStreetFurniture` — every pole, wire, sign, hydrant and gully in the
+   * world, in that order, for all three wrapped copies.
+   *
+   * THE SEAM, and why no span crosses it
+   * -----------------------------------
+   * The obvious thing is to close the torus the way the poles do: the easternmost
+   * node's span goes to the next copy's node 0. The first version of this method
+   * did that and produced 438 m spans hanging 17 m into the road, because §3.1's
+   * wrap is a DIAGONAL one. The three copies are translated by `(±448, ±448)`
+   * together, not tiled, so the neighbour east of node 6 at x = +192 is node 0 of
+   * the next copy at x = +256 **and z + 448** — a span from there is a 438 m
+   * diagonal wire whose sag drops its middle 9.4 m BELOW the tarmac. The same is
+   * true of the z seam, where the neighbour is 448 m away in x. There is no
+   * third option, because the world is not a 3x3 tile and never was: `WRAP_COPIES`
+   * is a diagonal band, and the lot builder, the road strips and the lamp grid
+   * all accept that.
+   *
+   * So the run of wire stops at each copy's boundary, 64 m short of the
+   * intersection it would have reached, and at 64 m the fog has already taken it
+   * (visibility is 40-80 m across the dusk curve). A visible wire ending in a
+   * band 64 m away would be a bug; a wire dragging on the pavement in plain
+   * sight is worse, and one span in five is deliberately sagging 1.7x as low.
+   *
+   * `this.wireSpans` is published rather than discarded: `verify-world.mjs` reads
+   * the sag of every span out of it and re-derives the tiers, and a check that
+   * could only read the geometry back would be a tautology.
+   *
+   * @returns {void}
+   */
+  _buildStreetFurniture() {
+    this.wireSpans = []
+    this.polePositions = []
+    for (const copy of WRAP_COPIES) {
+      for (let ax = 0; ax < GRID; ax += 1) {
+        for (let az = 0; az < GRID; az += 1) {
+          const pole = this._poleAt(ax, az, copy)
+          this._addPole(pole)
+          if (copy === 0) {
+            this.polePositions.push({ x: pole.x, z: pole.z, ax, az })
+            // A collider, and no occluder. A 220 mm shaft is something the player
+            // walks into; it is NOT something that hides a creature, because a
+            // sightline broken by a pole is a sightline broken by a fence. One
+            // canonical copy, like every other collider in this file.
+            this._collider(pole.x, pole.z, POLE_DIAMETER, POLE_DIAMETER, 'pole')
+          }
+          // One span east and one south per node, and the last row and column of
+          // nodes have no partner — see the header. The arm axis is 1 for the
+          // east span and 0 for the south one, so the conductors are offset
+          // PERPENDICULAR to their own run and a span's three wires stay
+          // parallel instead of fanning.
+          if (ax < GRID - 1) this._addSpan(pole, this._poleAt(ax + 1, az, copy), 1, this._isLowSpan(ax, az, 0))
+          if (az < GRID - 1) this._addSpan(pole, this._poleAt(ax, az + 1, copy), 0, this._isLowSpan(ax, az, 1))
+          this._addIntersectionFurniture(ax, az, copy)
+        }
+      }
+    }
+    const wire = new THREE.Mesh(makeWireGeometry(this.wireSpans), this._materials.wire)
+    wire.name = 'wires'
+    // T8 says so, and the reasoning is worth keeping: the geometry is a
+    // screen-space expansion, its world-space bounds are the bounds of the whole
+    // 1,344 m world, and the camera is essentially always inside them — so
+    // per-frame culling work buys nothing and a stale sphere is a way to lose
+    // the entire wire system in one frame.
+    wire.frustumCulled = false
+    this.group.add(wire)
+    this.wireMesh = wire
+  }
+
+  /**
+   * `_poleAt` — where the pole on one corner of one intersection stands, in the
+   * drawn copy.
+   *
+   * WHICH corner is the district's decision and not the seed's: `districtOf`
+   * splits the map four ways and the pole corner walks the four corners in the
+   * order the districts are numbered. It is "per district" in the literal sense
+   * the checklist asks for, and it has to be a function of the district rather
+   * than of a stream, because a pole that moved when the run's fixture seed
+   * moved would put 9.2 m of overhead geometry somewhere new on every reset —
+   * and nothing in this pass except the fixtures is allowed to move between
+   * loops.
+   *
+   * @param {number} ax avenue axis, wrapped
+   * @param {number} az street axis, wrapped
+   * @param {number} copy the wrapped copy, one of `WRAP_COPIES`
+   * @returns {{x: number, z: number}} the pole's foot, in the drawn copy
+   */
+  _poleAt(ax, az, copy) {
+    const [sx, sz] = CORNER_SIGNS[districtOf(ax, az)]
+    const node = streetNodeToWorld(streetNodeId(ax, az))
+    return {
+      x: node.x + sx * POLE_STANDOFF + copy * WORLD_EXTENT,
+      z: node.z + sz * POLE_STANDOFF + copy * WORLD_EXTENT,
+    }
+  }
+
+  /**
+   * `_addPole` — one shaft, two axes of hardware, and nothing else.
+   *
+   * TWO arms rather than the one the plan asks for, and the reason is a wire
+   * leaving from mid-air. Every node carries a span east and a span south, and a
+   * single arm can only be perpendicular to ONE of them: the conductors of the
+   * other run would leave the insulators on the same side of the arm, so the
+   * three trunk wires of an avenue span would be staggered ALONG the span by
+   * 0.82 m each rather than side by side across it. At 64 m that is nearly
+   * invisible — but "nearly" is the definition of a wireframe tell, and a second
+   * bar per axis is three more instances on a pole that already has eighteen.
+   *
+   * The arm sits at `POLE_HEIGHT * POLE_ARM_FRACTION` = 8.556, whose underside is
+   * 8.511, and the top tier's conductors are at 8.51. Those numbers meeting there
+   * is not a coincidence to be maintained by hand: the tier table is written to
+   * that arm, which is why the arm is at 93% of the shaft and not at a round 90%.
+   *
+   * @param {{x: number, z: number}} pole the pole's foot, in the drawn copy
+   * @returns {void}
+   */
+  _addPole(pole) {
+    this.pools.poleShafts.place(pole.x, POLE_HEIGHT / 2, pole.z, POLE_DIAMETER, POLE_HEIGHT, POLE_DIAMETER)
+    const armY = POLE_HEIGHT * POLE_ARM_FRACTION
+    for (let axis = 0; axis < 2; axis += 1) {
+      // `yaw` is the only rotation `place` composes, so an arm along z is the
+      // same box turned 90 degrees rather than a second geometry.
+      const yaw = axis === 0 ? 0 : Math.PI / 2
+      this.pools.poleArms.place(pole.x, armY, pole.z, POLE_ARM_LENGTH, POLE_ARM_THICKNESS, POLE_ARM_THICKNESS, yaw)
+      // The bracket and the hook hang UNDER their own conductors rather than
+      // being folded into the arm above them, because the tiers are 0.6 m and
+      // 0.55 m apart and nothing 9 m up reads as one fitting.
+      for (const [tier, length] of [[WIRE_TIERS[1], POLE_BRACKET_LENGTH], [WIRE_TIERS[2], POLE_HOOK_LENGTH]]) {
+        const y = tier.y - POLE_INSURATOR_SIZE / 2 - POLE_ARM_THICKNESS / 2
+        this.pools.poleArms.place(pole.x, y, pole.z, length, POLE_ARM_THICKNESS, POLE_ARM_THICKNESS, yaw)
+      }
+      // Six insulators per arm, three of them carrying the trunk tier. They hang
+      // BELOW the conductor by their own size, so the wire leaves the TOP of the
+      // insulator and the insulator's top is the arm's underside — which is what
+      // makes `WIRE_TIERS`' heights and `POLE_ARM_FRACTION` one fact rather than
+      // three numbers that have to be kept in agreement by hand.
+      for (const tier of WIRE_TIERS) {
+        for (const step of tier.arms) {
+          const off = step * POLE_INSULATOR_SPACING
+          this.pools.poleInsulators.place(
+            pole.x + (axis === 0 ? off : 0),
+            tier.y - POLE_INSURATOR_SIZE / 2,
+            pole.z + (axis === 0 ? 0 : off),
+            POLE_INSURATOR_SIZE, POLE_INSURATOR_SIZE, POLE_INSURATOR_SIZE,
+          )
+        }
+      }
+    }
+  }
+
+  /**
+   * `_addSpan` — the six conductors hanging between two poles, as spans.
+   *
+   * T7's rule that the sags are NOT all equal is two rules deep: the three tiers
+   * each carry their own fraction of the span (`WIRE_TIERS[].sag`, strictly
+   * ordered trunk > secondary > telecom), and this span is itself one of the
+   * 1-in-`LOW_SPAN_ONE_IN` that hangs `LOW_SPAN_SAG_MULT` times lower. The second
+   * rule is the one that stops a ruled grid: three tiers at three heights is
+   * already a grid, and a grid with no variation in it is the most legible tell
+   * that a street was generated rather than built.
+   *
+   * The sag is derived from the HORIZONTAL distance rather than typed in metres,
+   * which is what makes one number correct on a 64 m block edge and on the
+   * 49-79 m span the seam-crossing corner offsets produce. `CATENARY_SAG` is the
+   * middle tier's figure and it lives on the table; the fraction here is per tier.
+   *
+   * @param {{x: number, z: number}} from this pole's foot
+   * @param {{x: number, z: number}} to the far pole's foot
+   * @param {number} armAxis 0 for an arm along x (a span running north-south),
+   *   1 for an arm along z (a span running east-west) — the conductors are
+   *   offset along the arm and therefore PERPENDICULAR to their own run, so a
+   *   span's three wires stay parallel instead of fanning
+   * @param {boolean} low this span is the 1-in-5 that hangs lower
+   * @returns {void}
+   */
+  _addSpan(from, to, armAxis, low) {
+    const run = Math.hypot(to.x - from.x, to.z - from.z)
+    for (const tier of WIRE_TIERS) {
+      for (const step of tier.arms) {
+        const off = step * POLE_INSULATOR_SPACING
+        const ox = armAxis === 0 ? off : 0
+        const oz = armAxis === 0 ? 0 : off
+        this.wireSpans.push({
+          a: { x: from.x + ox, y: tier.y, z: from.z + oz },
+          b: { x: to.x + ox, y: tier.y, z: to.z + oz },
+          sag: tier.sag * run * (low ? LOW_SPAN_SAG_MULT : 1),
+          width: tier.width,
+          tier: tier.name,
+        })
+      }
+    }
+  }
+
+  /**
+   * `_isLowSpan` — T7's "one span in five should be noticeably lower than its
+   * neighbours", as a roll on a stream of its own.
+   *
+   * THREE streams and not one: the corner furniture, the east spans and the south
+   * spans each open a different region of the 32-bit mix, so consuming a draw
+   * here cannot shift which corners carry a sign. `streamAt` takes chunk
+   * coordinates and the offsets are `GRID` apart, so the three regions cannot
+   * collide for any `GRID >= 2`.
+   *
+   * @param {number} ax avenue axis
+   * @param {number} az street axis
+   * @param {number} axis 0 for the east span, 1 for the south one
+   * @returns {boolean} true for the 1-in-`LOW_SPAN_ONE_IN`
+   */
+  _isLowSpan(ax, az, axis) {
+    const rng = streamAt(this.seed, ax, az + (axis + 1) * GRID)
+    return Math.floor(rng() * LOW_SPAN_ONE_IN) === 0
+  }
+
+
+  /**
+   * `_addIntersectionFurniture` — two signs, maybe a hydrant, maybe a gully, on
+   * the corners the pole did not take.
+   *
+   * `CORNER_SIGNS` is a reservation table and this is the reservation: a corner
+   * is a resource, the pole has first call on one, and the rest are dealt out in
+   * a fixed order to the sign, the sign, the hydrant and — outside the corner
+   * entirely, because a gully is in the road — the gully. `SIGNS_PER_INTERSECTION`
+   * is two and not four because a sign on every corner of every intersection is a
+   * picket fence, and half the corners bare is what a real street looks like.
+   *
+   * The hydrant and the grate run at DIFFERENT rates (`HYDRANT_ONE_IN` 3,
+   * `DRAIN_ONE_IN` 2) on purpose: a gully is wherever the kerb has a low point and
+   * a hydrant is wherever the main is, and a street where both appear at the same
+   * frequency on the same corner reads as a set.
+   *
+   * The stream is consumed in a fixed order — two signs (which consume no
+   * draws), then the hydrant, then the gully, then the gully's kerb — so
+   * changing what sits on a corner cannot silently move the next thing along.
+   *
+   * @param {number} ax avenue axis
+   * @param {number} az street axis
+   * @param {number} copy the wrapped copy, one of `WRAP_COPIES`
+   * @returns {void}
+   */
+  _addIntersectionFurniture(ax, az, copy) {
+    const [px, pz] = CORNER_SIGNS[districtOf(ax, az)]
+    const node = streetNodeToWorld(streetNodeId(ax, az))
+    const rng = streamAt(this.seed, ax, az)
+    const free = CORNER_SIGNS.filter(([sx, sz]) => sx !== px || sz !== pz)
+    let corner = 0
+    const at = (offset) => {
+      const [sx, sz] = free[corner % free.length]
+      corner += 1
+      return {
+        x: node.x + sx * offset + copy * WORLD_EXTENT,
+        z: node.z + sz * offset + copy * WORLD_EXTENT,
+      }
+    }
+    for (let sign = 0; sign < SIGNS_PER_INTERSECTION; sign += 1) {
+      const spot = at(SIGN_WALK_OFFSET)
+      this.pools.signPosts.place(spot.x, SIGN_POST_HEIGHT / 2, spot.z, SIGN_POST_RADIUS * 2, SIGN_POST_HEIGHT, SIGN_POST_RADIUS * 2)
+      // The plate faces the INTERSECTION, not the street: a sign readable only
+      // from a car is a sign a player on the pavement never sees, and a corner's
+      // sign is at an angle to both streets by construction. `atan2(dx, dz)`
+      // because `place` yaws the plate about Y with its face along local +z.
+      this.pools.signPlates.place(
+        spot.x, SIGN_PLATE_Y, spot.z,
+        SIGN_PLATE_W, SIGN_PLATE_H, SIGN_PLATE_T,
+        Math.atan2(node.x - spot.x, node.z - spot.z),
+      )
+      if (copy === 0) this._collider(spot.x, spot.z, SIGN_POST_RADIUS * 2, SIGN_POST_RADIUS * 2, 'sign')
+    }
+    // The hydrant goes at the BACK of the walk, on the last free corner: a
+    // sign is read from a car at the kerb and a hydrant is not read at all.
+    if (Math.floor(rng() * HYDRANT_ONE_IN) === 0) {
+      const [hx, hz] = free[free.length - 1]
+      const x = node.x + hx * HYDRANT_WALK_OFFSET + copy * WORLD_EXTENT
+      const z = node.z + hz * HYDRANT_WALK_OFFSET + copy * WORLD_EXTENT
+      this.pools.hydrants.place(x, HYDRANT_BODY_H / 2, z, HYDRANT_BODY_RADIUS * 2, HYDRANT_BODY_H, HYDRANT_BODY_RADIUS * 2)
+      this.pools.hydrants.place(x, HYDRANT_BODY_H + HYDRANT_BONNET_H / 2, z, HYDRANT_BODY_RADIUS * 1.7, HYDRANT_BONNET_H, HYDRANT_BODY_RADIUS * 1.7)
+      // Two side caps, on the corner's own x, so they point along the pavement
+      // rather than into the road.
+      for (const side of [-1, 1]) {
+        this.pools.hydrants.place(
+          x + side * (HYDRANT_BODY_RADIUS + HYDRANT_CAP_SIZE), HYDRANT_BODY_H * 0.7, z,
+          HYDRANT_CAP_SIZE, HYDRANT_CAP_SIZE, HYDRANT_CAP_SIZE * 1.6,
+        )
+      }
+      if (copy === 0) this._collider(x, z, HYDRANT_BODY_RADIUS * 2, HYDRANT_BODY_RADIUS * 2, 'hydrant')
+    }
+    // The gully, in the road against one of the two kerbs and `DRAIN_ALONG` from
+    // the corner — a gully is at the kerb's low point and the corner is where the
+    // crossfall is highest, so it is never exactly in the corner. The rim's
+    // centre is BELOW the road so its top face finishes flush: a gully that sits
+    // proud is the floating-object failure the reference's own list names.
+    if (Math.floor(rng() * DRAIN_ONE_IN) === 0) {
+      const [sx, sz] = CORNER_SIGNS[(districtOf(ax, az) + 1) % CORNER_SIGNS.length]
+      const alongZ = Math.floor(rng() * 2) === 0
+      const gutter = STREET_HALF_WIDTH + KERB_WIDTH - DRAIN_SETBACK
+      const x = node.x + sx * (alongZ ? gutter : DRAIN_ALONG) + copy * WORLD_EXTENT
+      const z = node.z + sz * (alongZ ? DRAIN_ALONG : gutter) + copy * WORLD_EXTENT
+      const yaw = alongZ ? Math.PI / 2 : 0
+      this.pools.drainFrames.place(x, DRAIN_LIFT - 0.03, z, DRAIN_W, 0.06, DRAIN_D, yaw)
+      // Five bars, cut to the rim's inner hole so they seat inside it instead of
+      // lying across it — see `DRAIN_FRAME_BAR`.
+      const inner = DRAIN_D * (1 - 2 * DRAIN_FRAME_BAR)
+      const pitch = inner / DRAIN_BAR_COUNT
+      const length = DRAIN_W * (1 - 2 * DRAIN_FRAME_BAR)
+      for (let bar = 0; bar < DRAIN_BAR_COUNT; bar += 1) {
+        const across = -inner / 2 + pitch * (bar + 0.5)
+        this.pools.drainBars.place(
+          x + (yaw === 0 ? 0 : across), DRAIN_LIFT - 0.02, z + (yaw === 0 ? across : 0),
+          length, 0.04, DRAIN_BAR_T,
+        )
       }
     }
   }
@@ -3009,6 +4211,26 @@ export class StreetView {
   }
 
   /**
+   * `setResolution` — the wire shader's `uResolution`, in DEVICE pixels.
+   *
+   * A public method rather than a property because a resize is a *thing that
+   * happens*, and T8's whole claim is that a wire's width is a screen-space
+   * quantity: a buffer that is 1,280 px wide and a buffer that is 2,560 px wide
+   * want different pixel offsets for the same cable, and a wire that keeps the
+   * resolution it was built with is half a pixel wide in the second one and
+   * twice as wide in the first. `world.js` owns the number, passes it at
+   * construction, and passes it again here.
+   *
+   * @param {number} x drawing-buffer width, device pixels
+   * @param {number} y drawing-buffer height, device pixels
+   * @returns {void}
+   */
+  setResolution(x, y) {
+    this.resolution = { x, y }
+    this._materials.wire.uniforms.uResolution.value.set(x, y)
+  }
+
+  /**
    * setHeadlights — §10.3.
    *
    * The car is dark and unremarkable from Act I, and this is the only thing that
@@ -3076,6 +4298,11 @@ export class StreetView {
       if (Array.isArray(material)) material.forEach((entry) => entry.dispose())
       else material.dispose()
     }
+    // The wire mesh is not a pool — it is one geometry built by hand — so it is
+    // the one thing in this method the loop above cannot reach. Without this line
+    // a hot reload leaks a 3 MB buffer per mount, and §15's teardown check counts
+    // `this.textures` rather than the wire because the wire arrived later.
+    if (this.wireMesh) this.wireMesh.geometry.dispose()
     this.pools = []
     this.textures = []
   }

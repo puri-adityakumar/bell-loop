@@ -12,8 +12,8 @@
   "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.57 Safari/537.36",
   "browser": "HeadlessChrome/154.0.8037.57",
   "node": "v26.7.0",
-  "started": "2026-09-26T17:27:23.770Z",
-  "ms": 564841,
+  "started": "2026-09-26T22:48:28.836Z",
+  "ms": 654437,
   "captured": 14,
   "failed": 0,
   "captures": [
@@ -27,10 +27,10 @@
       "file": "benchmark/screenshots/title.png",
       "minLit": 0.035,
       "luma": {
-        "lit": 0.4826605902777778,
-        "litPct": 48.27,
-        "mean": 38.018,
-        "max": 196
+        "lit": 0.4903515625,
+        "litPct": 49.04,
+        "mean": 39.379,
+        "max": 205
       },
       "status": "captured",
       "state": {
@@ -41,7 +41,7 @@
           "height": 720
         },
         "steps": 2,
-        "ms": 4643,
+        "ms": 6079,
         "phase": "start",
         "paused": false,
         "simFrozen": false,
@@ -60,7 +60,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 4643
+      "ms": 6079
     },
     {
       "id": "street",
@@ -72,10 +72,10 @@
       "file": "benchmark/screenshots/street.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8492165798611111,
-        "litPct": 84.92,
-        "mean": 76.304,
-        "max": 225
+        "lit": 0.83205078125,
+        "litPct": 83.21,
+        "mean": 74.461,
+        "max": 249
       },
       "status": "captured",
       "state": {
@@ -86,7 +86,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 9937,
+        "ms": 14283,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -105,7 +105,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 9937
+      "ms": 14283
     },
     {
       "id": "hammer-located",
@@ -117,10 +117,10 @@
       "file": "benchmark/screenshots/hammer-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.26420355902777776,
-        "litPct": 26.42,
-        "mean": 45.764,
-        "max": 239
+        "lit": 0.2284743923611111,
+        "litPct": 22.85,
+        "mean": 42.417,
+        "max": 238
       },
       "status": "captured",
       "state": {
@@ -131,7 +131,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 15895,
+        "ms": 16212,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -150,7 +150,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 15895
+      "ms": 16212
     },
     {
       "id": "hammer-awakening",
@@ -162,9 +162,9 @@
       "file": "benchmark/screenshots/hammer-awakening.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.2115277777777778,
-        "litPct": 21.15,
-        "mean": 43.531,
+        "lit": 0.22682291666666668,
+        "litPct": 22.68,
+        "mean": 42.109,
         "max": 236
       },
       "status": "captured",
@@ -176,7 +176,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 28832,
+        "ms": 28621,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -195,7 +195,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 28832
+      "ms": 28621
     },
     {
       "id": "portal-located",
@@ -207,9 +207,9 @@
       "file": "benchmark/screenshots/portal-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.41628038194444444,
-        "litPct": 41.63,
-        "mean": 47.135,
+        "lit": 0.4139908854166667,
+        "litPct": 41.4,
+        "mean": 45.782,
         "max": 218
       },
       "status": "captured",
@@ -221,7 +221,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 15117,
+        "ms": 20676,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -240,7 +240,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 15117
+      "ms": 20676
     },
     {
       "id": "portal-shutdown",
@@ -252,9 +252,9 @@
       "file": "benchmark/screenshots/portal-shutdown.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8841644965277777,
-        "litPct": 88.42,
-        "mean": 33.187,
+        "lit": 0.8839995659722222,
+        "litPct": 88.4,
+        "mean": 33.35,
         "max": 189
       },
       "status": "captured",
@@ -266,7 +266,7 @@
           "height": 720
         },
         "steps": 3,
-        "ms": 14881,
+        "ms": 19624,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -285,7 +285,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 14881
+      "ms": 19624
     },
     {
       "id": "creature-stalking",
@@ -297,9 +297,9 @@
       "file": "benchmark/screenshots/creature-stalking.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.30727430555555557,
-        "litPct": 30.73,
-        "mean": 44.602,
+        "lit": 0.33959635416666667,
+        "litPct": 33.96,
+        "mean": 44.841,
         "max": 253
       },
       "status": "captured",
@@ -311,7 +311,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 25158,
+        "ms": 29303,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -330,7 +330,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 25158
+      "ms": 29303
     },
     {
       "id": "creature-chasing",
@@ -342,10 +342,10 @@
       "file": "benchmark/screenshots/creature-chasing.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.93150390625,
-        "litPct": 93.15,
-        "mean": 47.594,
-        "max": 249
+        "lit": 0.9308680555555555,
+        "litPct": 93.09,
+        "mean": 47.039,
+        "max": 250
       },
       "status": "captured",
       "state": {
@@ -356,7 +356,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 38481,
+        "ms": 23861,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -375,7 +375,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 38481
+      "ms": 23861
     },
     {
       "id": "banish",
@@ -387,10 +387,10 @@
       "file": "benchmark/screenshots/banish.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8260438368055556,
-        "litPct": 82.6,
-        "mean": 73.441,
-        "max": 221
+        "lit": 0.8077777777777778,
+        "litPct": 80.78,
+        "mean": 70.833,
+        "max": 247
       },
       "status": "captured",
       "state": {
@@ -401,7 +401,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 28747,
+        "ms": 34070,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -420,7 +420,7 @@
         "fade": 0,
         "banished": 1
       },
-      "ms": 28747
+      "ms": 34070
     },
     {
       "id": "capture-reset",
@@ -432,10 +432,10 @@
       "file": "benchmark/screenshots/capture-reset.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8365559895833333,
-        "litPct": 83.66,
-        "mean": 75.938,
-        "max": 221
+        "lit": 0.8320399305555556,
+        "litPct": 83.2,
+        "mean": 73.949,
+        "max": 249
       },
       "status": "captured",
       "state": {
@@ -446,7 +446,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 39174,
+        "ms": 47066,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -465,7 +465,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 39174
+      "ms": 47066
     },
     {
       "id": "finale-headlights",
@@ -477,10 +477,10 @@
       "file": "benchmark/screenshots/finale-headlights.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9455034722222222,
-        "litPct": 94.55,
-        "mean": 42.215,
-        "max": 245
+        "lit": 0.9336002604166667,
+        "litPct": 93.36,
+        "mean": 41.431,
+        "max": 247
       },
       "status": "captured",
       "state": {
@@ -491,7 +491,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 81088,
+        "ms": 89944,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -510,7 +510,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 81088
+      "ms": 89944
     },
     {
       "id": "win",
@@ -522,9 +522,9 @@
       "file": "benchmark/screenshots/win.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.09924913194444444,
-        "litPct": 9.92,
-        "mean": 15.695,
+        "lit": 0.10197482638888888,
+        "litPct": 10.2,
+        "mean": 15.54,
         "max": 196
       },
       "status": "captured",
@@ -536,7 +536,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 73078,
+        "ms": 106173,
         "phase": "won",
         "paused": false,
         "simFrozen": false,
@@ -555,7 +555,7 @@
         "fade": 0.6,
         "banished": 0
       },
-      "ms": 73078
+      "ms": 106173
     },
     {
       "id": "responsive",
@@ -567,10 +567,10 @@
       "file": "benchmark/screenshots/responsive.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9298204527712725,
-        "litPct": 92.98,
-        "mean": 64.767,
-        "max": 222
+        "lit": 0.9363631928181109,
+        "litPct": 93.64,
+        "mean": 67.109,
+        "max": 249
       },
       "status": "captured",
       "state": {
@@ -581,7 +581,7 @@
           "height": 854
         },
         "steps": 4,
-        "ms": 7651,
+        "ms": 12999,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -600,7 +600,7 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 7651
+      "ms": 12999
     },
     {
       "id": "pause",
@@ -612,9 +612,9 @@
       "file": "benchmark/screenshots/pause.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.6796592881944444,
-        "litPct": 67.97,
-        "mean": 46.036,
+        "lit": 0.68046875,
+        "litPct": 68.05,
+        "mean": 46.09,
         "max": 196
       },
       "status": "captured",
@@ -626,7 +626,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 15765,
+        "ms": 16779,
         "phase": "playing",
         "paused": true,
         "simFrozen": true,
@@ -645,17 +645,17 @@
         "fade": 0,
         "banished": 0
       },
-      "ms": 15765
+      "ms": 16779
     }
   ],
   "luma": {
     "floor": 6,
-    "mean": 61.884,
+    "mean": 61.704,
     "tightest": {
       "id": "win",
-      "litPct": 9.92,
+      "litPct": 10.2,
       "floor": 6,
-      "margin": 3.92
+      "margin": 4.2
     }
   }
 }

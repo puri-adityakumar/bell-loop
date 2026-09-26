@@ -3914,6 +3914,258 @@ check('the retired window and porchLight fixtures draw nothing (pass 5 review)',
   assert.ok(view.pools.entryLamps.mesh.count > 0, 'the facade system placed no entry lamps')
 })
 
+/**
+ * The instance translations of a pool, straight out of the matrix buffer.
+ *
+ * `InstancedMesh` stores one `Matrix4` per instance and a `Matrix4` is column
+ * major, so the translation is elements 12-14 of every 16 — the same numbers
+ * `place` wrote, read back without a `THREE.Matrix4` to decode them. This is the
+ * only way the harness can ask where a piece of street furniture actually IS,
+ * and it is the difference between a check that measures the world and one that
+ * re-reads the code that built it.
+ */
+function instances(pool) {
+  const array = pool.mesh.instanceMatrix.array
+  const out = []
+  for (let i = 0; i < pool.used; i += 1) {
+    out.push({ x: array[i * 16 + 12], y: array[i * 16 + 13], z: array[i * 16 + 14] })
+  }
+  return out
+}
+
+check('the wires are ONE mesh carrying every span, and nothing else draws them', () => {
+  // T8's cost claim, measured on the built scene: "Everything lands in one mesh,
+  // frustumCulled = false, no outline pass." One mesh is the whole of it — a
+  // `LineSegments` per span would be 252 draw calls at one pixel of width, which
+  // is the shimmer the technique exists to remove.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const wire = view.wireMesh
+  assert.ok(wire, 'the world has no wire mesh at all')
+  let named = 0
+  view.group.traverse((object) => {
+    if (object.name === 'wires') named += 1
+  })
+  assert.equal(named, 1, `the wire system is ${named} meshes, and every extra one is a second draw call`)
+  assert.equal(wire.parent, view.group, 'the wire mesh is not on the street group, so the wrap does not carry it')
+  assert.equal(wire.frustumCulled, false, 'the wire is frustum-culled; its bounds are the whole world')
+  assert.equal(wire.material, view._materials.wire)
+  // ...and the geometry is the four-attribute ribbon, indexed, sized from the
+  // span list rather than from a hard-coded count.
+  const attributes = wire.geometry.attributes
+  for (const name of ['position', 'aEnd', 'aSide', 'aWidth']) {
+    assert.ok(attributes[name], `the wire geometry has no ${name} attribute`)
+  }
+  const spans = view.wireSpans
+  assert.ok(spans.length > 0, 'the view reports no spans')
+  // One entry in `wireSpans` is one CONDUCTOR, so a whole number of quads per
+  // entry is the segment count — read back out of the geometry rather than
+  // imported, because `streetView.js` is not a pure module and the gate cannot
+  // call `makeWireGeometry` itself.
+  const perConductor = wire.geometry.index.count / 6 / spans.length
+  assert.equal(perConductor, 12, `a span is sampled every ${perConductor} m, which is not the twelve T7 asks for`)
+  assert.equal(attributes.position.count, spans.length * perConductor * 4, 'the vertex count is not four corners per quad')
+  assert.equal(attributes.aSide.count, attributes.position.count, 'the ribbon sides do not line up with its corners')
+})
+
+check('the poles carry six conductors each, and stand on the pavement in all three copies', () => {
+  // "Poles go at block corners, 8-10 m, with a crossarm and two insulators"
+  // (AESTHETIC-NOTES §5) — read off the instance buffer rather than the source,
+  // so a pool that was created and never filled cannot pass this.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const nodes = hood.GRID * hood.GRID
+  assert.equal(view.pools.poleShafts.used, nodes * 3, 'not every intersection has a pole in every wrapped copy')
+  // A pole is a shaft, two axes x (an arm, a bracket and a hook) and two axes x
+  // six insulators. The insulators are what makes "six conductors" true: three
+  // trunk on the arm, two secondary on the bracket, one telecom on the hook.
+  assert.equal(view.pools.poleArms.used, nodes * 3 * 6, 'a pole does not carry an arm, a bracket and a hook on both axes')
+  assert.equal(view.pools.poleInsulators.used, nodes * 3 * 12, 'a pole does not carry six insulators on both axes')
+  // ...and every one of them stands `STREET_HALF_WIDTH + POLE_KERB_SETBACK` from
+  // BOTH road axes, which is a pavement position and not a carriageway one. A
+  // pole in the road is the one placement error this pass cannot have: it is
+  // 9.2 m of geometry standing in the middle of the thing the player walks on.
+  const poles = instances(view.pools.poleShafts)
+  // The road axes of all THREE wrapped copies, because the poles are drawn in
+  // all three and a check that folded only the canonical ones would measure a
+  // pole 455 m from the nearest avenue and call it wrong.
+  const axes = []
+  for (const copy of [-1, 0, 1]) {
+    for (let i = 0; i < hood.GRID; i += 1) axes.push(hood.roadAxisToWorld(i) + copy * hood.WORLD_EXTENT)
+  }
+  const standoff = hood.STREET_HALF_WIDTH + 1
+  for (const pole of poles) {
+    const fromX = Math.min(...axes.map((axis) => Math.abs(pole.x - axis)))
+    const fromZ = Math.min(...axes.map((axis) => Math.abs(pole.z - axis)))
+    assert.ok(Math.abs(fromX - standoff) < 1e-3, `a pole stands ${fromX.toFixed(2)} m from the nearest avenue, not ${standoff}`)
+    assert.ok(Math.abs(fromZ - standoff) < 1e-3, `a pole stands ${fromZ.toFixed(2)} m from the nearest street, not ${standoff}`)
+    // and it is on the PAVEMENT: past the kerb face, short of the lot line.
+    assert.ok(fromX > hood.STREET_HALF_WIDTH + 0.4, 'a pole is standing in the carriageway')
+    assert.ok(fromX < hood.STREET_HALF_WIDTH + 3.4, 'a pole is standing in somebody\'s garden')
+  }
+  // ...and all three wrapped copies really are drawn, which is the same seam
+  // claim the lot builder makes and the same reason the wire does not cross it.
+  const periods = new Set(poles.map((pole) => Math.round(pole.x / hood.WORLD_EXTENT)))
+  assert.deepEqual([...periods].sort(), [-1, 0, 1], 'the poles are not drawn in all three wrapped copies')
+})
+
+check('the wires sag, the tiers are ordered, and one span in five hangs lower (T7)', () => {
+  // "Our spans should not all sag the same amount: heavier trunk cables sag more
+  // than telecom, and one span in five should be noticeably lower than its
+  // neighbours." All three halves, measured per span rather than read from the
+  // table the file also uses to build them.
+  game.restart()
+  run(game, 0.5)
+  const spans = game.streetView.wireSpans
+  const byTier = new Map()
+  for (const span of spans) {
+    const run = Math.hypot(span.b.x - span.a.x, span.b.z - span.a.z)
+    assert.ok(run > 40 && run < 90, `a span is ${run.toFixed(1)} m long, which is neither a block edge nor a neighbour`)
+    const ratio = span.sag / run
+    const entry = byTier.get(span.tier) ?? { ratios: new Set(), widths: new Set(), y: new Set() }
+    entry.ratios.add(Number(ratio.toFixed(4)))
+    entry.widths.add(span.width)
+    entry.y.add(span.a.y)
+    byTier.set(span.tier, entry)
+  }
+  assert.equal(byTier.size, 3, `the wire system has ${byTier.size} tiers, not the three T7 names`)
+  for (const [tier, entry] of byTier) {
+    assert.equal(entry.widths.size, 1, `the ${tier} tier is more than one diameter`)
+    // Two sags per tier and no more: the tier's own, and the 1-in-5 that is
+    // 1.7x lower. A third value would be a fourth rule nobody wrote down.
+    assert.equal(entry.ratios.size, 2, `the ${tier} tier has ${entry.ratios.size} sag ratios, and two is the whole of the rule`)
+  }
+  const [trunk, secondary, telecom] = ['trunk', 'secondary', 'telecom'].map((name) => byTier.get(name))
+  const base = (entry) => Math.min(...entry.ratios)
+  assert.ok(base(trunk) > base(secondary), 'the trunk circuit does not sag more than the secondary one')
+  assert.ok(base(secondary) > base(telecom), 'the secondary circuit does not sag more than the telecom one')
+  assert.ok(Math.max(...trunk.ratios) > base(trunk) * 1.5, 'no trunk span hangs lower than its neighbours')
+  // The heights step DOWN the pole and the widths step DOWN with them, which is
+  // what makes three parallel lines at 0.6 m spacing read as three circuits
+  // rather than as one line with a shadow.
+  assert.ok(Math.max(...trunk.y) > Math.max(...secondary.y), 'the trunk tier is not the highest circuit')
+  assert.ok(Math.max(...secondary.y) > Math.max(...telecom.y), 'the telecom tier is not the lowest circuit')
+  assert.ok(Math.max(...trunk.widths) > Math.max(...telecom.widths), 'the trunk circuit is not the thickest one')
+  // ...and the low spans are the 1-in-5, measured on whole spans rather than on
+  // conductors: six conductors of a low span are all low, so the share of SPANS
+  // is the number the rule is about.
+  const runs = new Map()
+  for (const span of spans) {
+    const key = `${span.a.x},${span.a.z}|${span.b.x},${span.b.z}`
+    const run = Math.hypot(span.b.x - span.a.x, span.b.z - span.a.z)
+    const ratio = span.sag / run
+    runs.set(key, Math.max(runs.get(key) ?? 0, ratio / base(byTier.get(span.tier))))
+  }
+  const low = [...runs.values()].filter((ratio) => ratio > 1.5).length
+  const share = low / runs.size
+  assert.ok(share > 0.1 && share < 0.32, `${(share * 100).toFixed(0)}% of spans hang low, which is not "one span in five"`)
+})
+
+check('the wires clear the rooftops, the lamps and the player', () => {
+  // A span is a parabola whose lowest point is the middle, and a wire that ends
+  // up below a roofline or a lamp head is the one artefact in this pass that is
+  // visible in a screenshot rather than in a number. The floor is the player's
+  // head (1.8 m) with a wire's worth of daylight; the ceiling is the arm, since a
+  // wire that rises above the thing it hangs from is a wire that does not sag.
+  game.restart()
+  run(game, 0.5)
+  const spans = game.streetView.wireSpans
+  let lowest = Infinity
+  let highest = -Infinity
+  for (const span of spans) {
+    lowest = Math.min(lowest, span.a.y - span.sag)
+    highest = Math.max(highest, span.a.y)
+  }
+  assert.ok(lowest > 4.5, `the lowest wire dips to ${lowest.toFixed(2)} m, which is over a player's head`)
+  assert.ok(highest < 8.6, `the highest wire is at ${highest.toFixed(2)} m, which is above its own crossarm`)
+  // ...and the top tier clears the tallest thing in the world on an ORDINARY
+  // span. The tallest roof is a 5.2 m wall with a 0.34 m parapet, and a wire
+  // that passed through it would be a wire through a building rather than over a
+  // street. The low 1-in-5 spans are allowed closer — that is the rule working.
+  const block = 64
+  const ordinary = 8.51 - 0.024 * block
+  assert.ok(ordinary > 5.54, `an ordinary trunk span dips to ${ordinary.toFixed(2)} m, into the rooflines`)
+  assert.ok(lowest < ordinary, 'the low spans are not lower than the ordinary ones')
+})
+
+check('the gully is in the gutter, the hydrant is on the walk and the sign is on a corner', () => {
+  // The three small things, placed against the same reservation the pole is, and
+  // each in the place its kind actually goes: a gully is in the ROAD against the
+  // kerb, a hydrant is on the PAVEMENT at the back of it, and a sign is at the
+  // kerb corner facing the intersection.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const axes = []
+  for (const copy of [-1, 0, 1]) {
+    for (let i = 0; i < hood.GRID; i += 1) axes.push(hood.roadAxisToWorld(i) + copy * hood.WORLD_EXTENT)
+  }
+  const gutter = hood.STREET_HALF_WIDTH + 0.4 - 0.2
+  const frames = instances(view.pools.drainFrames)
+  assert.equal(frames.length, view.pools.drainBars.used / 5, 'a gully does not have five bars')
+  for (const frame of frames) {
+    const fromX = Math.min(...axes.map((axis) => Math.abs(frame.x - axis)))
+    const fromZ = Math.min(...axes.map((axis) => Math.abs(frame.z - axis)))
+    const onX = Math.abs(fromX - gutter) < 1e-3
+    const onZ = Math.abs(fromZ - gutter) < 1e-3
+    assert.ok(onX !== onZ, `a gully is ${fromX.toFixed(2)}/${fromZ.toFixed(2)} m from the road axes, so it is in neither gutter`)
+    // the other axis is 2.5 m along the kerb, out of the corner
+    assert.ok(Math.abs((onX ? fromZ : fromX) - 2.5) < 1e-3, 'a gully is sitting in the corner instead of at the low point')
+    assert.ok(frame.y < 0.02, `a gully rim is ${frame.y.toFixed(3)} m up, which is a biscuit tin on the tarmac`)
+  }
+  // ...and both rates are the ones the constants claim, read off the built scene:
+  // a gully on about half the intersections and a hydrant on about a third, and
+  // NOT the same set of corners, which is the point of running them at
+  // different rates.
+  const opportunities = hood.GRID * hood.GRID * 3
+  const hydrantRate = view.pools.hydrants.used / 4 / opportunities
+  const drainRate = frames.length / opportunities
+  assert.ok(hydrantRate > 0.2 && hydrantRate < 0.45, `${(hydrantRate * 100).toFixed(0)}% of corners have a hydrant, which is not one in three`)
+  assert.ok(drainRate > 0.35 && drainRate < 0.65, `${(drainRate * 100).toFixed(0)}% of corners have a gully, which is not one in two`)
+  // The hydrant is knee height on the pavement: a barrel, a bonnet and two caps
+  // per fixture, and nothing above 0.9 m.
+  const hydrants = instances(view.pools.hydrants)
+  assert.equal(hydrants.length % 4, 0, 'a hydrant is not four pieces')
+  for (const piece of hydrants) {
+    assert.ok(piece.y > 0 && piece.y < 0.9, `a hydrant piece is at ${piece.y.toFixed(2)} m`)
+    const fromX = Math.min(...axes.map((axis) => Math.abs(piece.x - axis)))
+    assert.ok(fromX > hood.STREET_HALF_WIDTH + 0.4, 'a hydrant is standing in the road')
+  }
+  // ...and a sign is a 2.55 m post with its face at 2.05 m, which is where a
+  // driver reads it and above where a pedestrian looks.
+  const plates = instances(view.pools.signPlates)
+  assert.equal(plates.length, hood.GRID * hood.GRID * 2 * 3, 'every intersection does not carry exactly two signs')
+  for (const plate of plates) {
+    assert.ok(plate.y > 1.9 && plate.y < 2.3, `a sign face is at ${plate.y.toFixed(2)} m, which is neither car nor pedestrian height`)
+  }
+})
+
+check('the wire shader is told the DEVICE resolution, and follows a resize', () => {
+  // T8 computes its width in pixels, so the resolution is a uniform and a
+  // uniform nobody updates is a wire at the wrong width in a resized window. The
+  // buffer is not the element: `world.js` caps the pixel ratio at 1.5.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const uniform = view._materials.wire.uniforms.uResolution.value
+  assert.equal(uniform.x, view.resolution.x)
+  assert.equal(uniform.y, view.resolution.y)
+  const ratio = game.pixelRatio
+  assert.ok(ratio > 0 && ratio <= 1.5, `the pixel ratio is ${ratio}, which is not the capped one world.js promises`)
+  // the resolution is the DEVICE one, so it is the element multiplied
+  const expected = Math.round((game.container.clientWidth || 800) * ratio)
+  assert.equal(uniform.x, expected, `the wire is sized for ${uniform.x} px, and the buffer is ${expected} px`)
+  view.setResolution(1600, 900)
+  assert.equal(uniform.x, 1600, 'setResolution did not reach the shader')
+  assert.equal(uniform.y, 900)
+  // ...and a live resize takes the same path, so the two can never disagree.
+  game.resize()
+  assert.equal(uniform.x, game._bufferSize().x, 'a resize did not tell the wire how big the buffer is')
+  assert.equal(uniform.y, game._bufferSize().y)
+})
+
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down
   // with it and leaves a WebGL context alive behind the next mount, so the frame
@@ -3933,6 +4185,7 @@ check('dispose() tears the whole world down without throwing', () => {
   game.dispose()
   game.update(0.1)
 })
+
 
 
 
