@@ -1807,49 +1807,81 @@ function creatureScript() {
   quiet('banished', 120, 60)
   quiet('gone', 60, 60)
   quiet('re-emergence', 1, 60, { reemerge: true })
-  // a second Act II, heard at 3 m, and this time it does become a chase
+  // a second Act II, heard at 3 m, and this time it does become a chase — released
+  // the one way §6.3 allows, which is by going quiet and letting the meter bleed,
+  // because every phase after it is only reachable from STALK and REPOSITION
   gait('heard at three metres', 'sprint', 3, 3, SPRINT_STRIDE_FRAMES, 300)
-  // the finale, mid-chase (§6.1, §10.2): it stops searching and simply knows
-  quiet('third portal', 1, 3, { finale: true })
-  quiet('enraged knowledge', 240, 30)
-  // §10.2: the hammer still works in the finale, it just does not wait
-  quiet('swing in the finale', 1, 1.5, { swing: true })
-  quiet('banished in the finale', 120, 60)
-  quiet('flat re-emergence', 1, 60, { reemerge: true })
-  // and the enrage edge again, out of a stalk rather than out of a chase
-  quiet('third portal from a stalk', 1, 40, { finale: true })
-  quiet('swing to put it back to sleep', 1, 1.5, { swing: true })
-  quiet('banished again', 120, 60)
-  quiet('third re-emergence', 1, 60, { reemerge: true })
-  // the last three edges, all of them out of REPOSITION: it is the state the
-  // design spends the most prose on and the one a careless refactor loses
+  quiet('breaking contact again', 4, 40)
+  quiet('silence again', 300, 40)
+  // the search, worked out and given up on, twice more: REPOSITION is the state
+  // the design spends the most prose on and the one a careless refactor loses.
+  // Each portal is heard and then answered with silence, because a chase hides
+  // every other state behind it and §6.3 is the only way out of one.
   gait('hunting again', 'portal', 8, 8, SHUTDOWN_FRAMES, 120)
+  quiet('quiet after the portal', 300, 40)
   quiet('out of options', 1, 8, { searchExhausted: true })
-  quiet('the last portal', 1, 8, { finale: true })
-  quiet('swing in the finale again', 1, 1.5, { swing: true })
-  quiet('banished once more', 120, 60)
-  quiet('fourth re-emergence', 1, 60, { reemerge: true })
+  quiet('new origin again', 1, 8, { searchPosition: { x: -60, z: 8 } })
   gait('hunting again', 'portal', 8, 8, SHUTDOWN_FRAMES, 120)
+  quiet('quiet again', 300, 40)
   quiet('out of options again', 1, 8, { searchExhausted: true })
+  // §7.4 out of REPOSITION: the hammer works from every hunting state, and this
+  // is the one a careless refactor would forget because nothing else lands here
   quiet('swing while searching', 1, 2, { swing: true })
   quiet('banished', 120, 60)
-  quiet('fifth re-emergence', 1, 60, { reemerge: true })
+  quiet('re-emergence', 1, 60, { reemerge: true })
   gait('hunting again', 'portal', 8, 8, SHUTDOWN_FRAMES, 120)
+  quiet('quiet once more', 300, 40)
+  // the meter is brought up *before* the search is given up on, so that the creature
+  // is still working out where you were when it commits — §6.2's meter does not
+  // care which of the two hunting states it is in, and REPOSITION is where a chase
+  // is entered from when the search is what gave the thing its last fix on you
+  gait('heard again', 'sprint', 3, 3, SPRINT_STRIDE_FRAMES, 150)
   quiet('out of options once more', 1, 8, { searchExhausted: true })
-  gait('it finds the street', 'sprint', 2, 2, SPRINT_STRIDE_FRAMES, 300)
-  // §8.2, and the only way to reach DORMANT without a hammer in the air: thirteen
-  // seconds of unbroken pursuit at 6 m. The meter never dips, so nothing else can
-  // end this chase, and at CHASE_MAX_SECONDS the creature gives it up and is gone.
-  gait('a chase that will not end', 'sprint', 6, 6, SPRINT_STRIDE_FRAMES, 780)
+  gait('heard while it searches', 'sprint', 3, 3, SPRINT_STRIDE_FRAMES, 300)
+  // §8.2, and the only way to reach DORMANT without a hammer in the air: twelve
+  // seconds of unbroken pursuit. The meter never dips, so nothing else can end
+  // this chase, and at CHASE_MAX_SECONDS the creature gives it up and is gone.
+  gait('a chase that will not end', 'sprint', 6, 6, SPRINT_STRIDE_FRAMES, 900)
   quiet('silence while it is gone', 120, 60)
   quiet('re-emergence after the phase-out', 1, 60, { reemerge: true })
   gait('it finds the street again', 'sprint', 2, 2, SPRINT_STRIDE_FRAMES, 300)
-  // the last swing of the run, thrown mid-chase with the creature in view. This
-  // is the only way a CHASE reaches STAGGER: break the sightline on the swing
-  // frame and the meter drops out of the chase on that same frame instead.
+  // a swing thrown mid-chase with the creature in view. This is the only way a
+  // CHASE reaches STAGGER: break the sightline on the swing frame and the meter
+  // drops out of the chase on that same frame instead.
   quiet('swing in the chase', 1, 1.5, { swing: true, seen: true, sightDistance: 1.5 })
   quiet('banished at the end', 120, 60)
+  quiet('re-emergence after the last banish', 1, 60, { reemerge: true })
+  // §10.1: the third portal, mid-chase, and the last phase of the run. The flag
+  // is run-long (§10.5 — "a `finale: true` flag, not a new PHASE"), which is why
+  // every edge above had to be taken before this frame: the script used to shut
+  // the third portal in the middle of Act II and go on hunting afterwards, and
+  // the balance simulation is what made that impossible to leave in. Everything
+  // from here is the finale — ENRAGED, and the edges that exist only because
+  // §10.2 suspends the ladder rather than the banish.
+  quiet('the third portal', 1, 3, { finale: true })
+  quiet('enraged knowledge', 240, 30)
+  quiet('swing in the finale', 1, 1.5, { swing: true })
+  quiet('banished in the finale', 120, 60)
+  quiet('flat re-emergence', 1, 60, { reemerge: true })
+  quiet('swing in the finale again', 1, 1.5, { swing: true })
+  quiet('banished once more', 120, 60)
+  quiet('fourth re-emergence', 1, 60, { reemerge: true })
+  quiet('it knows where you are', 240, 30)
+  quiet('swing in the finale once more', 1, 1.5, { swing: true })
+  quiet('banished the last time', 120, 60)
   return script
+}
+
+/**
+ * The three ways into §10.2's ENRAGED, one frame each, run from a chosen state.
+ *
+ * §10.5's flag is run-long, so the long script above can only ever take whichever
+ * of the three enrage edges it happens to be standing in when the third portal
+ * shuts — and it is standing in a chase, so the other two need asking for
+ * explicitly. This is what `runCreatureScript`'s `start` argument is for.
+ */
+function finaleEntryScript() {
+  return [{ at: 0, label: 'third portal', frame: { distance: 30, finale: true } }]
 }
 
 /** A sighting that ends: the one Act I exit the run above does not need. */
@@ -2297,12 +2329,26 @@ test('the hammer pickup is the only awakening (§7.2)', () => {
   const faded = runCreatureScript(sightingScript())
   assert.deepEqual([...faded.edges], ['telegraph>dormant'])
   assert.equal(faded.creature.awareness, 0)
-  // and DORMANT only re-emerges when the path layer says so
+  // and DORMANT only re-emerges when the path layer says so — *and* the awakening
+  // has tolled. §8.1 is a promise about Act I, and slice 15's balance simulation
+  // broke it here: an apparition that had been dismissed came back as a STALKER,
+  // a stalker hunts, and a hunter captures, so a player who ran at the thing
+  // before the hammer could be caught sixteen times in a phase the design says
+  // cannot kill you. The awakening is a state for exactly that reason.
   const still = beast.creatureStep(faded.creature, DT, { distance: 60, sounds: [] })
   assert.equal(still.to, 'dormant')
-  const back = beast.creatureStep(faded.creature, DT, { distance: 60, reemerge: true, sounds: [] })
+  const refused = beast.creatureStep(faded.creature, DT, { distance: 60, reemerge: true, sounds: [] })
+  assert.equal(refused.to, 'dormant', '§8.1: nothing comes back as a hunter before the hammer')
+  assert.equal(refused.creature.reemergenceCount, 0, '§11.2: nothing comes back at all')
+  assert.equal(refused.creature.awakened, false)
+  // the same frame, after the toll: §8.3 — a distance the world chooses, and
+  // nothing it knew before
+  const woken = beast.creatureStep(faded.creature, DT, { distance: 60, hammerPickup: true, sounds: [] })
+  assert.equal(woken.creature.awakened, true, '§7.2: the toll is the awakening')
+  const back = beast.creatureStep(woken.creature, DT, { distance: 60, reemerge: true, sounds: [] })
   assert.equal(back.to, 'stalk', '§8.3: it comes back, at a distance the world chooses')
   assert.equal(back.creature.reemergenceCount, 1)
+  assert.equal(back.creature.awareness, 0)
 })
 
 test('REPOSITION asks for a new origin and gives up when the meter empties', () => {
@@ -2376,7 +2422,15 @@ test('the finale edge cannot fire into or out of Act I (§6.1, §10.2)', () => {
 })
 
 test('every documented transition is real, and every real transition is documented', () => {
-  const observed = new Set([...runCreatureScript(creatureScript()).edges, ...runCreatureScript(sightingScript()).edges])
+  const observed = new Set([
+    ...runCreatureScript(creatureScript()).edges,
+    ...runCreatureScript(sightingScript()).edges,
+    // §10.5: the flag is run-long, so the two enrage edges the long script
+    // cannot reach are asked for from their own states
+    ...runCreatureScript(finaleEntryScript(), beast.createCreature({ state: 'stalk' })).edges,
+    ...runCreatureScript(finaleEntryScript(), beast.createCreature({ state: 'reposition' })).edges,
+    ...runCreatureScript(finaleEntryScript(), beast.createCreature({ state: 'chase', awareness: 1 })).edges,
+  ])
   const documented = new Set(beast.TRANSITIONS.map((row) => `${row.from}>${row.to}`))
   for (const edge of documented) {
     assert.ok(observed.has(edge), `TRANSITIONS documents ${edge}, which the machine never does. Observed: ${[...observed].join(' ')}`)
@@ -2540,12 +2594,12 @@ test('the scripted run tells the §6 and §7 story without breaking a rule', () 
     }
   }
   // §9.1: a banish does not advance the capture counter, and this run never
-  // caught anybody at all. Six banishes, six re-emergences: one of them after the
-  // §8.2 phase-out rather than after a swing. The run ends banished.
+  // caught anybody at all. Six banishes, six re-emergences, and one of the six is
+  // the §8.2 phase-out's rather than a swing's — the run ends on its last banish.
   assert.ok(run.history.every((row) => row.captured === false), 'the scripted player was caught')
   assert.equal(run.creature.reemergenceCount, 6, 'six re-emergences for six banishes')
   // §10.2: the finale takes the knowledge away for good
-  const finale = at('third portal')
+  const finale = at('the third portal')
   assert.equal(finale.to, 'enraged')
   const afterFinale = run.history.filter((row) => row.at > finale.at)
   assert.ok(afterFinale.length > 0)
@@ -2677,22 +2731,47 @@ test('in a wrapping world, far means nothing (the wrap the pathing rests on)', (
     }
   }
   // snapping is done on the torus, so a point ten kilometres outside the world
-  // resolves to the node its wrapped twin does
+  // resolves to the node its wrapped twin does.
+  //
+  // SLICE 15: these spots are WORLD positions, which is the frame `nodeId` and
+  // `nearestIntersection` read — the player's body never wraps, so a live caller
+  // never has a canonical one to give. They used to be read as canonical, which is
+  // the mistake the balance simulation found: differencing a world coordinate
+  // against the canonical node table lets `wrapDelta` fold the frame offset away
+  // along with the wrap, and the answer comes back three blocks out. So the
+  // distance is now measured in the canonical frame, which is where the node table
+  // lives, and the fold itself is pinned by the loop underneath.
   for (const spot of REEMERGE_SPOTS) {
     const there = beast.nearestIntersection(spot)
     const wrapped = beast.nearestIntersection({ x: spot.x + hood.WORLD_EXTENT * 3, z: spot.z - hood.WORLD_EXTENT * 5 })
     assert.equal(wrapped, there, 'a point outside the world must resolve like its wrapped twin')
     // and it really is the closest node, measured the short way round
+    const canonical = { x: hood.canonicalCoord(spot.x), z: hood.canonicalCoord(spot.z) }
     let best = Infinity
     for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
       const node = hood.streetNodeToWorld(id)
-      best = Math.min(best, Math.hypot(beast.wrapDelta(spot.x, node.x), beast.wrapDelta(spot.z, node.z)))
+      best = Math.min(best, Math.hypot(beast.wrapDelta(canonical.x, node.x), beast.wrapDelta(canonical.z, node.z)))
     }
     assert.ok(best <= hood.BLOCK, `snapped ${best.toFixed(1)} m from the nearest node`)
   }
-  // a point on an intersection snaps to itself, and a node id stays a node id
-  assert.equal(beast.nearestIntersection(hood.intersectionToWorld(3, 5)), hood.streetNodeId(3, 5))
-  assert.equal(beast.nearestIntersection(hood.intersectionToWorld(-4, 9)), hood.streetNodeId(3, 2), 'and folds')
+  // a point on an intersection snaps to itself, and a node id stays a node id.
+  // The intersection is named canonically and handed over in the player's frame,
+  // which is the one crossing the whole seam story turns on: `worldPointOf` and
+  // `canonicalCoord` are inverses inside the window, and a node is a torus point,
+  // so every intersection resolves to itself from *any* copy of the world.
+  for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
+    const here = hood.worldPointOf(hood.streetNodeToWorld(id))
+    assert.equal(beast.nearestIntersection(here), id, `node ${id} does not resolve to itself`)
+    for (const periods of [-2, -1, 1, 3]) {
+      const elsewhere = {
+        x: here.x + hood.WORLD_EXTENT * periods,
+        z: here.z - hood.WORLD_EXTENT * periods,
+      }
+      assert.equal(beast.nearestIntersection(elsewhere), id, `node ${id} moved ${periods} periods and stopped being itself`)
+    }
+  }
+  assert.equal(beast.nearestIntersection(hood.intersectionToWorld(3, 5)), hood.streetNodeId(6, 1), 'and a canonical point handed over unfolded lands three blocks north-east, which is the bug')
+  assert.equal(beast.nearestIntersection(hood.worldPointOf(hood.intersectionToWorld(-4, 9))), hood.streetNodeId(3, 2), 'while its world copy folds to the node itself')
   assert.equal(beast.nodeId(11), 11)
   assert.equal(beast.nodeId(-1), 48, 'a negative node id folds like a negative coordinate')
   assert.equal(beast.nearestIntersection(null), 0, 'and no question is a question about node 0')
@@ -2771,14 +2850,22 @@ test('REPOSITION asks for a new street, never the one it just left (§6.1)', () 
   assert.ok(hood.STREET_ADJ[from].includes(blind.id))
   assert.equal(blind.hopsToTarget, null)
   assert.notEqual(beast.searchOrigin({ from, avoid, seed: 7 }).id, toward)
-  assert.equal(beast.searchOrigin({ from: hood.intersectionToWorld(3, 3), seed: 7 }).from, 24, 'a position is accepted too')
+  assert.equal(beast.searchOrigin({ from: hood.worldPointOf(hood.intersectionToWorld(3, 3)), seed: 7 }).from, 24, 'a position is accepted too')
   assert.equal(beast.nodeId(4.9), 4, 'and a fractional id is floored, not used as an index')
 })
 
 test('re-emergence is never near and never in sight (§8.3)', () => {
   assert.equal(beast.reemergeNode({}), null, 'no player, no placement')
   // §8.3 in two halves, and both are checked against a world that actually has
-  // houses in it: the literal fixture pass, not a synthetic occluder
+  // houses in it: the literal fixture pass, not a synthetic occluder.
+  //
+  // SLICE 15: the spots are WORLD positions — the player's body never wraps, so
+  // that is the frame `reemergeNode` is handed, and it now folds them itself. The
+  // two comparisons below that cross the frame do the same fold explicitly, because
+  // `distanceBetween` and `canSee` are pure geometry with no opinion about frames
+  // and will happily measure 448 m of nothing. `worldPointOf` and `canonicalCoord`
+  // are inverses, so the folded player and the returned placement are the same
+  // numbers the function used.
   const world = hood.fixturePass(1337, 1)
   assert.ok(world.fixtures.length > 200, `only ${world.fixtures.length} fixtures to hide behind`)
   const seen = new Set()
@@ -2787,6 +2874,7 @@ test('re-emergence is never near and never in sight (§8.3)', () => {
     for (let count = 0; count < 8; count += 1) {
       for (const spot of REEMERGE_SPOTS) {
         const player = { ...spot }
+        const folded = { x: hood.canonicalCoord(spot.x), z: hood.canonicalCoord(spot.z), yaw: spot.yaw }
         const placement = beast.reemergeNode({
           playerPosition: player,
           occluders: world.fixtures,
@@ -2796,7 +2884,7 @@ test('re-emergence is never near and never in sight (§8.3)', () => {
         const label = `seed ${seed}, re-emergence ${count}, player at ${spot.x},${spot.z}`
         // 1. the distance floor, and it is graph distance from the *player's* node
         assert.ok(placement.hops >= beast.REEMERGE_MIN_GRAPH_DISTANCE, `${label}: only ${placement.hops} hops away`)
-        tightest = Math.min(tightest, beast.distanceBetween(player, placement.position))
+        tightest = Math.min(tightest, beast.distanceBetween(folded, placement.position))
         // 2. never in line of sight, against the real occluders — and the level
         //    that decided it, so a rule that quietly stopped applying is visible
         assert.equal(placement.level, 'sight', `${label}: hid behind the distance floor instead of a house`)
@@ -2804,7 +2892,7 @@ test('re-emergence is never near and never in sight (§8.3)', () => {
         // and the player cannot see it at any range §11.1 ever offers
         for (let tier = 0; tier < beast.RAMP_TABLE.length; tier += 1) {
           assert.equal(
-            beast.canSee(player, { ...placement.position, yaw: 0 }, {
+            beast.canSee(folded, { ...placement.position, yaw: 0 }, {
               range: beast.detectionRange(tier, count),
               occluders: world.fixtures,
             }),
@@ -2943,11 +3031,27 @@ test('both axes compose, and neither can outrun the player (§8.6)', () => {
   assert.equal(beast.creatureSpeed(99, 0), beast.SPEED_CEILING)
   assert.equal(beast.creatureSpeed(-4, 0), beast.RAMP_TABLE[0].speed)
   assert.equal(beast.detectionRange(NaN, NaN), beast.RAMP_TABLE[0].sight)
-  // the axes are additive rather than one blended difficulty, and two and a half
-  // re-emergences is worth one tier of §11.1 — which is the whole reason §11.2 can
-  // be modelled separately from the progress axis at all
+  // the axes are additive rather than one blended difficulty, and they stay in a
+  // fixed ratio to each other — which is the whole reason §11.2 can be modelled
+  // separately from the progress axis at all. The ratio is *derived*, from
+  // §11.1's own table and the tuned step, and not written down: slice 15 retuned
+  // AGGRESSION_SPEED_STEP from 0.25 to 0.45 because at a quarter of a metre per
+  // re-emergence a tier-2 creature walked at 3.4 m/s against a 3.6 m/s walk and could
+  // not cross a street in §8.2's twelve-second window, which made the whole of
+  // Act II unlosable. Hardcoding the old ratio here is how a tuning pass would
+  // have been told it was illegal; deriving it is how the tuning pass stays
+  // legal and the relationship stays asserted.
+  const tierSteps = [
+    beast.RAMP_TABLE[1].speed - beast.RAMP_TABLE[0].speed,
+    beast.RAMP_TABLE[2].speed - beast.RAMP_TABLE[1].speed,
+  ]
+  assert.ok(Math.abs(tierSteps[0] - tierSteps[1]) < 1e-9, '§11.1 is linear in the tier, and the finale is the only row that is not')
   assert.equal(beast.creatureSpeed(0, 3), beast.RAMP_TABLE[0].speed + 3 * beast.AGGRESSION_SPEED_STEP)
-  assert.ok(Math.abs(beast.RAMP_TABLE[1].speed - beast.RAMP_TABLE[0].speed - 2.4 * beast.AGGRESSION_SPEED_STEP) < 1e-9)
+  // the two axes are commensurate, and the ratio is a real one: a tier of §11.1
+  // is worth `tierSteps[0] / AGGRESSION_SPEED_STEP` re-emergences, so §11.2's ladder
+  // is a slower climb than §11.1's and the player can out-pace the second axis
+  // with the first
+  assert.ok(beast.AGGRESSION_SPEED_STEP > 0 && beast.AGGRESSION_SPEED_STEP <= tierSteps[0], 'a tier is worth at least one re-emergence')
   assert.equal(beast.creatureSpeed(2, 40), beast.SPEED_CEILING, 'and eventually the ceiling, and only then')
   assert.equal(beast.detectionRange(2, 40), beast.RAMP_TABLE[2].sight + 40 * beast.AGGRESSION_SIGHT_STEP, 'range is uncapped')
 })
@@ -3047,7 +3151,10 @@ test('a banish does not advance the capture counter (§9.2)', () => {
 test('a removal takes what it knew with it (§7.4, §8.3)', () => {
   // §7.4: a connected swing is a *full removal*, not a stagger. Anything the
   // creature had worked out goes with it, or "full" is a word and not a rule.
-  let creature = beast.createCreature({ state: 'chase', awareness: 1, banishCount: 2 })
+  // `awakened` because this is an Act II creature: §7.2's toll has rung, and the
+  // re-emergence below is the one that matters. §8.1's pre-awakening case — a
+  // dismissed apparition that never comes back — is asserted in §7.2's own check
+  let creature = beast.createCreature({ state: 'chase', awareness: 1, banishCount: 2, awakened: true })
   creature = { ...creature, lastSeen: { x: 4, z: 4 }, lastHeard: { x: 5, z: 5 } }
   const hit = beast.creatureStep(creature, DT, { distance: 2, swing: true })
   assert.equal(hit.to, 'stagger', 'the recoil is not the removal')

@@ -64,6 +64,7 @@ import {
   WORLD_EXTENT,
   chunkAt,
   chunkFixtures,
+  originFor,
   placeObjectives,
   reservedLots,
   roadAxisToWorld,
@@ -350,32 +351,21 @@ function atDepth(frame, offset, depth) {
  * eastern edge of block `GRID - 1`, which is exactly one period wide.
  *
  * It is NOT `[-WORLD_EXTENT / 2, +WORLD_EXTENT / 2]`. The fold window and the
- * draw window are 32 m out of step with each other, because the block grid runs
+ * draw window are 192 m out of step with each other, because the block grid runs
  * from the first road axis to one block past the last one. Snapping the world to
- * `round(x / WORLD_EXTENT) * WORLD_EXTENT` therefore leaves a 32 m band along the
+ * `round(x / WORLD_EXTENT) * WORLD_EXTENT` therefore leaves a 192 m band along the
  * western edge in which the player is standing in the one part of the tile that
- * draws no blocks at all — a strip of bare asphalt with the neighbourhood 32 m
+ * draws no blocks at all — a strip of bare asphalt with the neighbourhood 192 m
  * behind them. Deriving the window from the module's own numbers is the fix, and
  * `verify.mjs` asserts the player's folded position is inside it in all four
  * directions.
- */
-const WINDOW_MIN = roadAxisToWorld(0)
-
-/**
- * originFor — the period offset of the wrapped copy that contains world position
- * `x`.
  *
- * The window is `[WINDOW_MIN, WINDOW_MIN + WORLD_EXTENT)`, so the copy containing
- * `x` is the one whose local coordinate `x - origin` lands inside it, and the
- * period index follows from that. Everything about this function is the
- * `WINDOW_MIN` in the numerator: the obvious `round(x / WORLD_EXTENT) *
- * WORLD_EXTENT` is 32 m out, and the error is invisible everywhere except the one
- * strip of the tile where it matters.
+ * Slice 15 moved the window itself: it is `neighborhood.js`'s `CANONICAL_ORIGIN`
+ * and `originFor` now, because the balance simulation needed the same fold in a
+ * pure module and two definitions of "which copy is the player in" is two chances
+ * to be 192 m out. This file's `recentre` and `worldOf` are the view layer's half of
+ * the contract and nothing else defines it.
  */
-function originFor(x) {
-  const periods = Math.floor((x - 2 * WINDOW_MIN) / WORLD_EXTENT)
-  return WINDOW_MIN + periods * WORLD_EXTENT
-}
 
 /**
  * StreetView — everything you can see that is not the creature.

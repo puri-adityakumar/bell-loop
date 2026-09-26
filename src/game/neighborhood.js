@@ -149,6 +149,86 @@ export function districtOf(cx, cz) {
 /** Half the world extent, metres. */
 export const WORLD_HALF = WORLD_EXTENT / 2
 
+/**
+ * THE CANONICAL WINDOW, AND WHY IT IS NOT [-224, +224]
+ * ---------------------------------------------------
+ * Everything in this file speaks CANONICAL metres: the seven road axes sit at
+ * -192..+192 and every anchor, fixture and block centre is a canonical number.
+ * The *drawn* copy of the map is that canonical map translated by a whole-period
+ * offset, and the copy the player is standing in is chosen so that the player's
+ * canonical coordinate lands in
+ *
+ *     [CANONICAL_ORIGIN, CANONICAL_ORIGIN + WORLD_EXTENT)  =  [-192, +256)
+ *
+ * which is a half-period window, not a symmetric one. The asymmetry is forced by
+ * the grid: seven axes at 64 m spacing span 384 m, so the eighth axis — the one the
+ * wrap closes on — is at +256, and a window of [-224, +224) would cut it in half.
+ *
+ * This matters because canonical coordinates and *world* coordinates (the ones the
+ * player's body carries, which never wrap) are a half-period apart, and every
+ * distance between the two has to be folded *in one frame* or it is silently wrong
+ * by three blocks. `canonicalCoord` is that fold, and it is the only definition of
+ * it in the codebase.
+ */
+export const CANONICAL_ORIGIN = (wrap(0, GRID) - (GRID - 1) / 2) * BLOCK
+
+/**
+ * originFor — the period offset of the wrapped copy that contains world position
+ * `x`: the number a caller adds to a canonical coordinate to draw it where the
+ * player is.
+ *
+ * The `CANONICAL_ORIGIN` in the numerator is the whole function. The obvious
+ * `round(x / WORLD_EXTENT) * WORLD_EXTENT` is 192 m out, because the window is
+ * anchored at -192 rather than at 0, and a floor instead of a round puts the seam
+ * 64 m the wrong way round in exactly one direction — the seam would then be
+ * visible in one direction only, which is the bug this function exists to prevent.
+ */
+export function originFor(x) {
+  const periods = Math.floor((x - 2 * CANONICAL_ORIGIN) / WORLD_EXTENT)
+  return CANONICAL_ORIGIN + periods * WORLD_EXTENT
+}
+
+/**
+ * canonicalCoord — a world coordinate in the canonical frame.
+ *
+ * `x - originFor(x)` is the local coordinate of whichever copy is drawn around `x`,
+ * and it is a pure function of `x`, so a caller holding only a world position can
+ * put it in the same frame as the node table without asking the view layer where it
+ * put the world. That is what `creature.js` needs, and what it did without: the
+ * balance simulation in `verify-world.mjs` found `nearestIntersection` answering
+ * three blocks away from the truth for 8,395 of 8,208 sampled world positions,
+ * because it differenced world coordinates against canonical ones and let
+ * `wrapDelta` fold the frame offset away along with the wrap.
+ */
+export function canonicalCoord(x) {
+  return x - originFor(x)
+}
+
+/**
+ * worldPointOf — a canonical point in the frame the player is in, which is the
+ * frame every *live* caller of `creature.js` holds a position in.
+ *
+ * It is `p + CANONICAL_ORIGIN`, because a canonical point is *drawn* at
+ * `p + origin` and the origins are `CANONICAL_ORIGIN` plus whole periods; and it
+ * inverts `canonicalCoord` for every point inside the canonical window, which is
+ * what makes the seam testable from either side. (The sign is the whole function:
+ * the obvious `p - CANONICAL_ORIGIN` produces a coordinate one block north of the
+ * point it claims to be, which reads as a plausible number.)
+ *
+ * It exists because the two frames have to be nameable from both sides:
+ * `creature.js` reads world positions (`nodeId`, `nearestIntersection`,
+ * `streetRoute`, `reemergeNode`'s player) and answers in canonical ones
+ * (`reemergeNode`'s placement, `streetNodeToWorld`), and a caller that starts from
+ * an anchor, a spawn or a node has to cross over without re-deriving the offset.
+ * One definition, in the module that owns the wrap.
+ *
+ * @param {{x:number,z:number}} canonical
+ * @returns {{x:number,z:number}} the same torus point, in world coordinates
+ */
+export function worldPointOf(canonical) {
+  return { x: canonical.x + CANONICAL_ORIGIN, z: canonical.z + CANONICAL_ORIGIN }
+}
+
 /** Folded world coordinate of road axis `index` (avenue x, or street z). */
 export function roadAxisToWorld(index) {
   return (wrap(index, GRID) - (GRID - 1) / 2) * BLOCK

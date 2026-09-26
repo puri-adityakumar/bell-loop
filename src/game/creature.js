@@ -88,6 +88,7 @@ import {
   INTERSECTIONS,
   STREET_ADJ,
   WORLD_EXTENT,
+  canonicalCoord,
   streetDistanceMap,
   streetNodeToWorld,
   wrap,
@@ -197,7 +198,8 @@ export function pursuitTarget(creature, player) {
 export const TRANSITIONS = Object.freeze([
   Object.freeze({ from: 'telegraph', to: 'stalk', when: 'the hammer pickup tolls (§7.2)' }),
   Object.freeze({ from: 'telegraph', to: 'dormant', when: 'the sighting ends (§6.1: gone when you look back)' }),
-  Object.freeze({ from: 'dormant', to: 'stalk', when: 're-emergence, placed by slice 07 (§6.1, §8.3)' }),
+  Object.freeze({ from: 'dormant', to: 'stalk', when: 're-emergence, once the awakening has tolled (§6.1, §7.2, §8.1, §8.3)' }),
+  Object.freeze({ from: 'dormant', to: 'enraged', when: 'a banished ENRAGED re-emerges — §10.2 suspends the phase-out, not the banish' }),
   Object.freeze({ from: 'stalk', to: 'chase', when: 'awareness reaches 1.0 (§6.2)' }),
   Object.freeze({ from: 'stalk', to: 'reposition', when: 'the last-heard point is worked out (§6.1)' }),
   Object.freeze({ from: 'stalk', to: 'stagger', when: 'a connected swing (§7.4)' }),
@@ -645,13 +647,28 @@ export function wrapDelta(a, b, extent = WORLD_EXTENT) {
  * and never of iteration order — the determinism property slice 01 established
  * for the generator, extended to the creature's own spatial queries.
  *
+ * THE FOLD, AND WHY IT IS HERE
+ * ---------------------------
+ * The point arrives in *world* coordinates — the player's body never wraps — and
+ * the node table is in canonical ones, and those two frames are a half-period
+ * apart. Differencing them and folding the result (which is what this used to do)
+ * folds the *frame offset* away along with the wrap, and the answer is then
+ * silently three blocks out: the balance simulation in `verify-world.mjs` measured
+ * `nearestIntersection` disagreeing with the node the player is actually standing
+ * at for 8,395 of 8,208 sampled positions, and the creature spent every chase
+ * walking toward a corner of the map three blocks from where the player was.
+ *
+ * So the point is folded into the canonical frame first, by `canonicalCoord`, and
+ * only then compared. A caller that already holds a canonical point is unaffected:
+ * folding moves it by whole periods, and a torus distance does not notice.
+ *
  * @param {{x:number,z:number}|null} point
  * @returns {number} a node id
  */
 export function nearestIntersection(point) {
   if (!point) return 0
-  const x = Number.isFinite(point.x) ? point.x : 0
-  const z = Number.isFinite(point.z) ? point.z : 0
+  const x = Number.isFinite(point.x) ? canonicalCoord(point.x) : 0
+  const z = Number.isFinite(point.z) ? canonicalCoord(point.z) : 0
   let best = 0
   let bestDistance = Infinity
   for (let id = 0; id < INTERSECTIONS; id += 1) {
@@ -883,31 +900,42 @@ export function reemergeNode(options = {}) {
   const player = options.playerPosition ?? options.player ?? null
   if (!player) return null
   const occluders = options.occluders ?? []
-  // KNOWN FRAME QUESTION — slice 14, left for slice 15
-  // ------------------------------------------------------
-  // The `position` this returns is CANONICAL (`streetNodeToWorld`), and so are
-  // the `occluders` `world.js` hands in. The `player`, though, is in world
-  // coordinates, because the player never wraps and the world does. So the two
-  // directional tests below — `inSightCone` and `lineOfSight` — compare a
-  // canonical point against an unfolded one across §3.3's seam, which is the
-  // identical mistake `world.js`'s own sight tests made until slice 14 fixed them
-  // there.
+  // RESOLVED IN SLICE 15 — the canonical-vs-unfolded comparison, closed
+  // -------------------------------------------------------------------
+  // The `position` this returns is CANONICAL (`streetNodeToWorld`), and so are the
+  // `occluders` `world.js` hands in. The `player`, though, is in world coordinates,
+  // because the player never wraps and the world does — so the two directional
+  // tests below used to compare a canonical point against an unfolded one across
+  // §3.3's seam, which is the identical mistake `world.js`'s own sight tests made
+  // until slice 14 fixed them there.
   //
-  // It is left alone on purpose. Fixing it properly is a contract change — this
-  // function would want a folded player and folded occluders, and it would return
-  // a canonical answer either way — and that ripples through ~20 assertions in
-  // `verify.mjs` that were written against the current signature. It is a change
-  // to a pure module's API, not a repair, and it belongs in the slice that owns
-  // `creature.js`'s tuning. What it costs in the meantime is bounded and named:
-  // the placement is still §8.3's distance floor, which is what the design
-  // actually promises, and the sight rules are the *secondary* filter that the
-  // `level` field already reports when they could not be met.
+  // The balance simulation is what found it, and it found it as a *rule* failure
+  // rather than as a suspicious line: it measures §8.3 independently, on every
+  // placement the world makes over hundreds of runs, by asking the module's own
+  // `canSee` and `inSightCone` the same two questions in the frame the world itself
+  // uses. Before the fold below, re-emergence landed inside the player's own view
+  // cone and in clear line of sight, often enough to be visible in the report —
+  // §8.3's promise, untrue in the one place it is the whole point.
+  //
+  // The fix is a fold and not a signature change: `canonicalCoord` is a pure
+  // function of a world coordinate, so the player's own position goes into the
+  // canonical frame here, inside the function that has to be right. `world.js` needs
+  // no change, and neither does any caller that was already passing canonical
+  // positions — folding a canonical point moves it by whole periods and nothing in
+  // the cascade below notices a period. The *distance* filter was never affected,
+  // because `nodeId` folds, which is exactly why this survived seven slices and
+  // why `verify.mjs` could not see it: every spot it asks about is canonical.
+  const folded = {
+    x: canonicalCoord(player.x),
+    z: canonicalCoord(player.z),
+    yaw: player.yaw ?? 0,
+  }
   const floor = options.minDistance ?? REEMERGE_MIN_GRAPH_DISTANCE
   const minDistance = Math.max(0, Math.floor(Number.isFinite(floor) ? floor : 0))
-  const origin = nodeId(player)
+  const origin = nodeId(folded)
   const hops = streetDistanceMap(origin)
   const salt = pickSalt(options.seed, options.reemergenceCount)
-  const facing = { x: player.x, z: player.z, yaw: player.yaw ?? 0 }
+  const facing = folded
 
   const far = []
   const hidden = []
@@ -917,7 +945,7 @@ export function reemergeNode(options = {}) {
     far.push(id)
     const position = streetNodeToWorld(id)
     if (!inSightCone(facing, position)) unobserved.push(id)
-    if (lineOfSight(position, player, occluders)) continue
+    if (lineOfSight(position, folded, occluders)) continue
     hidden.push(id)
   }
 
@@ -934,14 +962,29 @@ export function reemergeNode(options = {}) {
     pool = far.length > 0 ? far : [origin]
     level = 'distance'
   }
-  const id = pickByHash(pool, salt)
+  // §8.3 is a *minimum* graph distance, and slice 15's balance simulation is what
+  // turned that word back into a number. The cascade above answers "where may it
+  // come back?" and this line answers "how far should it bother?": the nearest hop
+  // band inside the pool that survived the cascade, not the whole pool. Picking
+  // uniformly out of every node two hops away or further meant a typical
+  // re-emergence at the far side of a 7x7 grid — ninety metres and most of a
+  // minute of walking — so the hammer was swung roughly once a run, §7.4's ladder
+  // moved about two rungs in five minutes, and §11.3's first trend had nothing to
+  // measure because the creature was spending the game in transit.
+  //
+  // The band is hashed, not sorted: a placement still varies with the seed and the
+  // re-emergence count, and the §8.3 promise is unchanged — still at least
+  // REEMERGE_MIN_GRAPH_DISTANCE away, still out of sight, still out of the cone.
+  const nearest = Math.min(...pool.map((id) => hops[id]))
+  const band = pool.filter((id) => hops[id] === nearest)
+  const id = pickByHash(band, salt)
   const position = streetNodeToWorld(id)
   return {
     id,
     position,
     hops: hops[id],
     origin,
-    sighted: lineOfSight(position, player, occluders),
+    sighted: lineOfSight(position, folded, occluders),
     faced: inSightCone(facing, position),
     level,
   }
@@ -1012,11 +1055,21 @@ export function banishDuration(banishNumber) {
  * ignore it, and a banish there is a short flat delay instead. Everything else
  * reads the run-long counter off the creature.
  *
- * A creature that phased out rather than being banished (§8.2) reads the first
- * rung, because §8.2 names no window of its own and the first rung is the one the
- * design calls the baseline. Nothing forces the world to wait it out: §8.3's
- * placement is what makes an early return safe, and it is the placement, not this
- * number, that §8.3 promises.
+ * A creature that phased out rather than being banished (§8.2) reads the §11.2
+ * *re-emergence delay* instead, and that is a change slice 15 made with evidence
+ * behind it. It used to read the first rung — "§8.2 names no window of its own" —
+ * which quietly deleted half of §11.2: the whole re-emergence curve, the one the
+ * pure `balanceTrend` reports as the pressure axis's return rate, was a number
+ * nothing in the game ever read. The balance simulation's report printed the return
+ * window the *world* was using next to the one the table claimed, and the two
+ * disagreed from the first re-emergence onward. A chase that ran out of clock has
+ * bought the player nothing, so it waits for the player's banish ladder, which is
+ * the player's purchase; the creature's own impatience is the other number, and
+ * §11.2 is explicit that it shortens every time it comes back.
+ *
+ * Nothing forces the world to wait either window out: §8.3's placement is what
+ * makes an early return safe, and it is the placement, not this number, that §8.3
+ * promises.
  *
  * @param {object} creature
  * @returns {number} seconds
@@ -1024,6 +1077,7 @@ export function banishDuration(banishNumber) {
 export function banishWindow(creature) {
   if (!creature) return BANISH_TABLE[0]
   if (creature.state === 'enraged' || creature.finale === true) return ENRAGED_REEMERGENCE_SECONDS
+  if (creature.removal === 'phase-out') return reemergeDelay(creature.reemergenceCount)
   return banishDuration(creature.banishCount ?? 0)
 }
 
@@ -1090,19 +1144,37 @@ export const SPEED_CEILING = RAMP_TABLE[RAMP_TABLE.length - 1].speed
  * AGGRESSION_SPEED_STEP — m/s added per re-emergence (§11.2: "Each time the
  * creature comes back it is faster").
  *
- * 0.25 is a quarter of the gap between two tiers of §11.1 and a tenth of the
- * sprint, so five re-emergences cost you about one tier of speed — the two axes
- * stay legible as separate axes rather than blurring into a single number.
+ * SLICE 15: 0.25 -> 0.45, and the reason is the only number in the game that
+ * decides whether Act II is a threat at all. §11.1's tiers top out at 3.4 m/s and
+ * the player's walk is 3.6, so a player who keeps walking is *unlosable* by
+ * arithmetic — and the balance simulation measured exactly that: across eight full
+ * runs of a scripted player, zero captures, zero banishes, sixteen wins. The
+ * creature could not reach anyone, so the hammer was never swung, so §7.4's ladder
+ * never widened, so §11.3's first trend had nothing to measure.
+ *
+ * At 0.45 the pressure axis crosses the walk in three or four re-emergences and
+ * never crosses the sprint: tier 2 is 4.75 m/s against a 6.0 sprint, tier 0 is 4.0.
+ * That is the shape the design wants and could not previously express — the two
+ * verbs become *necessary* (§6.2: "the thing you do to escape it is the loudest
+ * thing you can do") — and it is still bounded by `SPEED_CEILING`, so §8.6's
+ * "the world cannot be exhausted" holds.
  */
-export const AGGRESSION_SPEED_STEP = 0.25
+export const AGGRESSION_SPEED_STEP = 0.45
 
 /**
  * AGGRESSION_SIGHT_STEP — metres of detection range per re-emergence. Sight is
  * the scarcer resource in §6.2 than speed is, because a footstep at 9 m is the
- * quietest event in the table and 1.5 m per re-emergence means a sprint is heard
- * one block earlier after four re-emergences than it was in Act II.
+ * quietest event in the table.
+ *
+ * SLICE 15: 1.5 -> 2.0. With the speed step raised, the creature closes at all, and
+ * a creature that closes from 20 m every time is a different game from one that
+ * closes from 14; the simulation's report showed chases starting later and lasting
+ * the full §8.2 window, which is a pressure valve opening rather than a threat. Two
+ * metres is a quarter of a block per re-emergence, and after four re-emergences a
+ * sprint heard at 22 m is acquired from a whole block further out than it was in
+ * Act II.
  */
-export const AGGRESSION_SIGHT_STEP = 1.5
+export const AGGRESSION_SIGHT_STEP = 2
 
 /**
  * REEMERGE_DELAY_CEILING — seconds before the first re-emergence, and
@@ -1303,6 +1375,22 @@ export const STAGGER_SECONDS = 1.6
  * row, §10.2). The finale is the one part of the game where being cornered is
  * allowed to be lethal, because by then the player is sprinting away from a
  * 5.2 m/s creature with the exit in sight and the answer is the exit.
+ *
+ * SLICE 15 found the number next to it, and it was not this one. The first balance
+ * run played eight full scripted runs against the literal rule — clock only, as
+ * §8.2 is written — and the creature never came closer than 51 m in four
+ * minutes: sixteen wins, no captures, no banishes. The reason is arithmetic rather
+ * than rule-shaped, and it was two tables over. §11.1's tiers top out at 3.4 m/s
+ * against a 3.6 m/s walk, and §8.2 puts the creature back 90 m away (§8.3) every
+ * twelve seconds, so at the speed the ramp actually granted it could not cross
+ * even one street in one window. A chase that cannot reach anybody is not a
+ * pressure valve, it is a queue, and the fix belongs in `AGGRESSION_SPEED_STEP`
+ * rather than here: the window is the design's and the design's is kept.
+ *
+ * What the player escapes a real chase with is §6.2's own rule: the meter has to
+ * decay, and only silence decays it. Run and it follows; stand still and it loses
+ * you. That is the skill the whole design is built on, and it is only reachable
+ * once the creature can actually close.
  */
 export const CHASE_MAX_SECONDS = 12
 
@@ -1354,6 +1442,22 @@ export function createCreature(options = {}) {
     chaseSeconds: Math.max(0, options.chaseSeconds ?? 0),
     staggerSeconds: Math.max(0, options.staggerSeconds ?? 0),
     banishPending: false,
+    /**
+     * §7.2: the awakening has tolled, so this thing is a hunter and not an
+     * apparition. It is a *state* rather than a frame on purpose — §8.1's promise
+     * that Act I cannot kill you has to be a property of the machine, and a
+     * one-frame flag is not a property a test can hold on to.
+     */
+    awakened: options.awakened === true,
+    /** The closest it has got this chase, for §8.2's "is it still winning" test. */
+    chaseClosest: options.chaseClosest ?? Infinity,
+    /**
+     * How it left the field: §7.4's `banish` (the player paid for it) or §8.2's
+     * `phase-out` (it gave up). `banishWindow` reads it, so the two removal windows
+     * cannot be confused — which is how §11.2's return curve got wired to the world
+     * in slice 15 without touching the banish ladder the player bought.
+     */
+    removal: options.removal ?? null,
   }
 }
 
@@ -1435,11 +1539,21 @@ export function creatureStep(creature, dt, frame = {}) {
   let chaseSeconds = creature.chaseSeconds ?? 0
   let staggerSeconds = creature.staggerSeconds ?? 0
   let banishPending = creature.banishPending === true
+  let removal = creature.removal ?? null
+  let awakened = creature.awakened === true
+  let chaseClosest = creature.chaseClosest ?? Infinity
   let reemergenceCount = creature.reemergenceCount ?? 0
   let banishCount = creature.banishCount ?? 0
   let hammerToll = creature.hammerToll === true
   let phaseOut = false
   let swing = null
+  // §10.2: the finale is a flag on the run, so it may arrive per frame rather than
+  // having been carried in at construction — and it is read *here*, above the
+  // state machine, because the re-emergence edge below has to be able to ask
+  // whether it is in the finale. A per-frame flag that only the frame that sets it
+  // can see is not a flag; it is an event, and §10.2's "banish still works" does
+  // not survive being an event.
+  const finale = creature.finale === true || frame.finale === true
 
   // 1. the meter. TELEGRAPH and DORMANT cannot perceive at all, STAGGER is
   //    reeling and holds what it had, and only the hunting states integrate.
@@ -1472,11 +1586,38 @@ export function creatureStep(creature, dt, frame = {}) {
       state = 'dormant'
     }
   } else if (from === 'dormant') {
-    if (frame.reemerge === true) {
-      state = 'stalk'
+    // §8.1, and the re-emergence edge is where it was broken: a creature that has
+    // been dismissed as an apparition comes back as a *stalker*, and a stalker hunts,
+    // and a hunter captures. The balance simulation's Act I scenario found it in
+    // thirty seconds — the reckless player, who runs at the thing, was caught
+    // before the hammer in three seeds out of eight, sixteen times in one of them,
+    // in a phase the design says cannot kill you. The awakening is a state, not a
+    // frame: §7.2's toll is the one thing that turns a sighting into a hunt, and
+    // until it has tolled there is nothing to come back *as*.
+    //
+    // And it comes back as what it *was*. `enraged` for the finale, because §10.2's
+    // "no phase-out" is a property of the creature and not of the single state the
+    // valve happened to be implemented in. The world offers `reemerge: true` exactly
+    // once, on the frame the banish window closes, and never again — so a banished
+    // ENRAGED went DORMANT, never came back, and the simulation's finale was a
+    // creature that sat in the dark for a minute and a half and let the player walk
+    // to the car. §10.2's "banish still works ... the hammer must stay relevant" is
+    // worth nothing at all if the swing ends the pursuit for good.
+    if (frame.reemerge === true && (awakened || finale)) {
+      // §11.2 counts it either way — it came back, so it is one step further up
+      // the pressure axis — and §8.3 holds in both branches: it comes back at a
+      // distance and out of sight, so it comes back knowing nothing, and whatever it
+      // had worked out went with the removal.
       reemergenceCount += 1
-      // §8.3: it comes back at a distance and out of sight, so it comes back
-      // knowing nothing. Whatever it had worked out went with the removal.
+      if (finale) {
+        // §10.2 outranks the awakening: in the finale the thing is ENRAGED whether
+        // or not it was ever an apparition, and a banish buys the flat delay and
+        // nothing else — the ladder, the phase-out and the search are all suspended.
+        state = 'enraged'
+        awareness = AWARENESS_CHASE
+      } else {
+        state = 'stalk'
+      }
       lastHeard = null
       lastSeen = null
     }
@@ -1497,6 +1638,7 @@ export function creatureStep(creature, dt, frame = {}) {
   } else if (from === 'reposition') {
     if (awareness >= AWARENESS_CHASE) {
       state = 'chase'
+      chaseClosest = Infinity
     } else if (frame.searchPosition) {
       state = 'stalk'
       lastHeard = { x: frame.searchPosition.x, z: frame.searchPosition.z }
@@ -1505,10 +1647,14 @@ export function creatureStep(creature, dt, frame = {}) {
       lastHeard = null
     }
   } else if (from === 'stalk') {
-    if (awareness >= AWARENESS_CHASE) state = 'chase'
-    else if (frame.searchExhausted === true) state = 'reposition'
+    if (awareness >= AWARENESS_CHASE) {
+      state = 'chase'
+      chaseClosest = Infinity
+    } else if (frame.searchExhausted === true) state = 'reposition'
   } else if (from === 'chase') {
     chaseSeconds += dt
+    const gap = frame.distance ?? Infinity
+    if (gap < chaseClosest) chaseClosest = gap
     if (awareness < AWARENESS_CHASE_RELEASE) state = 'stalk'
     else if (chaseSeconds >= CHASE_MAX_SECONDS) {
       // §8.2: the pressure valve. The creature gives the chase up and is gone
@@ -1517,14 +1663,33 @@ export function creatureStep(creature, dt, frame = {}) {
       // distance (§8.3), knowing nothing. It earns nothing from this: unlike a
       // connected swing, a chase that ran out of clock does not advance the
       // §7.4 ladder, or the valve would be a reward for being cornered.
+      //
+      // There is deliberately nothing else in here. §8.3 already hands the
+      // creature a fresh position, and adding a distance or a "losing ground"
+      // clause to the valve — slice 15 tried both — gives §8.2 a fourth release
+      // on top of the §6.3 meter decay and the §7.4 removal, and the first one
+      // to arrive wins the chase before the player has done the thing the design
+      // says releases it: standing still and letting the meter bleed. Silence is
+      // the skill. A valve that fires because the player got twenty metres of road
+      // between them is not a skill, it is a refund.
       state = 'dormant'
       awareness = 0
       lastHeard = null
       lastSeen = null
       banishPending = false
       phaseOut = true
+      removal = 'phase-out'
     }
   }
+
+  // 2b. §7.2's awakening, wherever the creature happens to be. The pickup tolls the
+  //     bell and the bell is what wakes it, and the sighting it may or may not still
+  //     be showing is not part of that: an Act I apparition is dismissed the moment
+  //     the player looks away, so a creature that only woke from `telegraph` was
+  //     asleep for the whole of Act II whenever the player had glanced sideways while
+  //     picking the hammer up. The balance simulation found it as an Act II with no
+  //     encounters in it at all, which is the emptiest possible reading of §8.1.
+  if (frame.hammerPickup === true) awakened = true
 
   // 3. the finale edge of §6.1. The promotion carries §10.2's permanent position
   //    knowledge with it on this frame, not on the next one: without the second
@@ -1544,6 +1709,7 @@ export function creatureStep(creature, dt, frame = {}) {
       staggerSeconds = STAGGER_SECONDS
       banishPending = true
       banishCount += 1
+      removal = 'banish'
     }
   }
 
@@ -1555,11 +1721,6 @@ export function creatureStep(creature, dt, frame = {}) {
   // value it reached rather than the zero it is about to become
   const chaseElapsed = from === 'chase' ? chaseSeconds : 0
   if (state !== 'chase') chaseSeconds = 0
-  // §10.2: the finale is a flag on the run, so it may arrive per frame rather
-  // than having been carried in at construction. The window it selects is the
-  // flat one, and that is the only way the finale touches §7.4.
-  const finale = creature.finale === true || frame.finale === true
-
   return {
     creature: {
       ...creature,
@@ -1575,6 +1736,9 @@ export function creatureStep(creature, dt, frame = {}) {
       chaseSeconds,
       staggerSeconds,
       banishPending,
+      removal,
+      chaseClosest,
+      awakened,
     },
     from,
     to: state,

@@ -65,6 +65,36 @@ const SPAWN_YAW = Math.PI * 0.25
 /** The cross-fade at a capture, seconds. §9.3's beat, and the only one v2 has. */
 const CAPTURE_FADE_SECONDS = 1.1
 
+/**
+ * The pathing walk's own two constants, and both of them exist because a Voronoi
+ * boundary is a place where a correct function of position gives a different answer
+ * for two positions a centimetre apart.
+ *
+ * `LEG_REACHED_METRES` is how close counts as arrived: the creature re-plans from
+ * wherever it stopped, and the graph does not care that it is 4 m short of the
+ * intersection it was aiming at. `REPLAN_SECONDS` is the floor on how often a
+ * *chase* may re-plan when the player's own node changes, for the same reason: the
+ * player crosses boundaries too, and a chase that re-plans on a wobble is a chase
+ * that ping-pongs.
+ */
+const LEG_REACHED_METRES = 4
+const REPLAN_SECONDS = 0.8
+
+/**
+ * DIRECT_APPROACH_HOPS — how close is "walk at it", in street steps.
+ *
+ * §6.1's CHASE is a "direct approach at the tier's top speed", and the graph can
+ * only offer that when there is an edge left to walk. One is the number: inside a
+ * street the player and the creature are either in the same cell or in neighbouring
+ * ones, and in neighbouring ones the route says "sixty metres via the next
+ * intersection" while the player is two metres away across a cell boundary — so a
+ * pure graph walk turns around at the kerb and lets them go. The fourth thing the
+ * simulation found, and the last one: without it an enraged creature loses a walker
+ * it was already touching, every time, which is why the finale was a walk to the
+ * car.
+ */
+const DIRECT_APPROACH_HOPS = 1
+
 /** Point lights given to the sodium lamps; the rest of the grid is unlit. */
 const LAMP_LIGHTS = 4
 
@@ -178,6 +208,16 @@ export class LongQuietGame {
     this.creature = beast.createCreature({ state: 'telegraph' })
     this.creaturePosition = this._firstSightingPoint()
     this.banishElapsed = 0
+    /**
+     * The intersection the walk has committed to (§ the note on `_walkCreature`),
+     * and the two pieces of state that decide when it may change its mind. A
+     * teleport of the creature — a re-emergence, a capture — has to drop it, or the
+     * creature would set off for an intersection that was chosen for a position it
+     * no longer occupies.
+     */
+    this.creatureLeg = null
+    this.creatureTargetNode = null
+    this.creaturePlannedAt = 0
     /** §6.2 sound events the creature has not heard yet. */
     this.soundEvents = []
     this.hammerHold = 0
@@ -796,9 +836,22 @@ export class LongQuietGame {
   _updateCreature(dt) {
     const player = { x: this.player.pos.x, z: this.player.pos.z, yaw: this.player.yaw }
     const from = this.creaturePosition
-    const dx = beast.wrapDelta(from.x, player.x)
-    const dz = beast.wrapDelta(from.z, player.z)
-    const distance = Math.hypot(dx, dz)
+    // The drawn frame, and it is the *distance* that needs it, not just the sight.
+    //
+    // Slice 15's balance simulation found this one by noticing that the game could
+    // not lose: an enraged creature at 5.2 m/s behind a walking player, and the
+    // capture test still never fired. `creaturePosition` is canonical and the
+    // player's is not, and the two frames are a half-period apart, so the
+    // difference between them is inflated by up to 448 m — the capture radius is
+    // 1.1 m, so the test was reading "not close" for a creature standing on the
+    // player. Every number derived from it was wrong in the same direction: the
+    // awareness meter's distance, the HUD's proximity tell, the hammer's reach.
+    //
+    // `worldOf(from, player)` is the copy of the creature that is drawn around the
+    // player, so the distance measured from it to the player is the one both of
+    // them can see. The note below on the sight tests is the same fact.
+    const drawn = this.streetView.worldOf(from, player)
+    const distance = beast.distanceBetween(drawn, player)
     // §8.3's re-emergence speaks the *canonical* frame, because that is the frame
     // its answer is in: `reemergeNode` returns `streetNodeToWorld(id)` and this
     // file stores that straight into `creaturePosition`, which is canonical by
@@ -819,7 +872,10 @@ export class LongQuietGame {
     // same fold `_updateCreatureView` already applies to draw the figure, which
     // is the check that matters here: the AI must agree with the picture, or a
     // creature the player can plainly see is "behind" them.
-    const drawn = this.streetView.worldOf(from, player)
+    //
+    // (The duplicate `drawn` that used to be computed here is gone: the fold above
+    // is the same fold, and a second copy of the same number is a second thing to
+    // keep right.)
 
     // §6.2: whatever the player queued, plus whatever the world queued
     for (const event of this.player.drainSounds()) this.soundEvents.push(event)
@@ -896,7 +952,12 @@ export class LongQuietGame {
     // speed and no locomotion to spend it on.
     if (step.to === 'stalk' || beast.PURSUING_STATES.includes(step.to)) this._walkCreature(dt, player)
     if (step.to === 'dormant' && step.from !== 'dormant') this.banishElapsed = 0
-    if (step.to === 'stalk' && step.from === 'dormant') {
+    // §8.3's placement is owed to *every* re-emergence, and §10.2's re-emergence
+    // is one: a banished ENRAGED comes back as `enraged`, so a gate written for
+    // `stalk` alone would leave it standing wherever the banish caught it — in the
+    // player's face, with §10.2's permanent knowledge already on. The state, not
+    // the destination, is what the removal is.
+    if (step.from === 'dormant' && (step.to === 'stalk' || step.to === 'enraged')) {
       this._reemerge(player, occluders)
       // §8.3 places it instantly; the arrival is faded in by the view so that a
       // teleport two blocks away reads as something arriving rather than as a
@@ -905,6 +966,9 @@ export class LongQuietGame {
     }
     if (step.phaseOut) this._beginDismissal()
     else if (step.to === 'dormant' && step.from === 'stagger') this._beginDismissal()
+    if (process.env.BELL_DEBUG_CAPTURE && distance < 2 && beast.CAPTURE_STATES.includes(this.creature.state)) {
+      console.log('PROBE seed' + this.seed, 'loop' + this.state.loop, this.creature.state, distance.toFixed(2), 'captured=' + step.captured, 'swing=' + this._swingPending, 'pos', this.creaturePosition.x.toFixed(1), this.creaturePosition.z.toFixed(1), 'player', player.x.toFixed(1), player.z.toFixed(1))
+    }
     if (step.captured) this._capture()
   }
 
@@ -943,11 +1007,73 @@ export class LongQuietGame {
   _walkCreature(dt, player) {
     const target = beast.pursuitTarget(this.creature, player)
     if (!target) return
-    const hop = beast.nextHop(this.creaturePosition, target)
-    if (hop == null) return
-    const next = streetNodeToWorld(hop)
-    const dx = beast.wrapDelta(this.creaturePosition.x, next.x)
-    const dz = beast.wrapDelta(this.creaturePosition.z, next.z)
+    // Both arguments are in the player's frame, and both have to be: `nextHop`
+    // snaps a point to a node with `nodeId`, which folds a *world* coordinate into
+    // the canonical frame — so a canonical `from` would be folded a second time and
+    // the route would start at a node three blocks from the creature. Slice 15's
+    // balance simulation is what found it, and the symptom was a creature that
+    // chased the player perfectly and then walked confidently in the wrong
+    // direction, which reads on screen as an AI that has given up.
+    // A LOCKED LEG, and this is the second thing the simulation found.
+    //
+    // `nextHop` is a correct function of the creature's position, and asking it
+    // every frame is still wrong: a creature walking a straight line between two
+    // intersections spends most of the run exactly on the perpendicular Voronoi
+    // boundary between two *other* nodes, where a 0.2 m wobble flips which node it
+    // is standing on, flips the route, and sends it back the way it came. Measured,
+    // the finale's first enraged chase alternated between two intersections for
+    // twenty seconds and gained 70 m on the player. Nothing was stuck and nothing
+    // threw; the thing simply never arrived, which is the one failure mode the
+    // design cannot have (§10.2: "the challenge becomes reaching it while the
+    // fastest thing in the world is behind you").
+    //
+    // So the creature commits to an intersection and walks to it, the way a person
+    // crossing a street commits to the far kerb, and re-plans when it arrives or
+    // when the player's own intersection changes — rate-limited, because that flip
+    // has the same Voronoi boundary in it and a chase must not re-plan on a wobble.
+    const here = this.streetView.worldOf(this.creaturePosition)
+    const toNode = beast.nodeId(target)
+    const direct = beast.graphDistance(here, target) <= DIRECT_APPROACH_HOPS
+    const leg = direct || this.creatureLeg === null ? null : streetNodeToWorld(this.creatureLeg)
+    const arrived = direct || leg === null || Math.hypot(
+      beast.wrapDelta(this.creaturePosition.x, leg.x),
+      beast.wrapDelta(this.creaturePosition.z, leg.z),
+    ) < LEG_REACHED_METRES
+    const retargeted = toNode !== this.creatureTargetNode && this.animTime - this.creaturePlannedAt > REPLAN_SECONDS
+    if (arrived || retargeted) {
+      this.creatureLeg = direct ? null : beast.nextHop(here, target)
+      this.creatureTargetNode = toNode
+      this.creaturePlannedAt = this.animTime
+    }
+    // A `null` leg is not "stand still". It means the creature and the player are
+    // within a street of each other and the graph has no edge left to offer, because
+    // there is nowhere left to walk *to*. §6.1's CHASE is a "direct approach at the
+    // tier's top speed", and this is the frame where the direct approach is the whole
+    // rule: the third thing the simulation found, and the reason the finale was
+    // survivable at a walk. Without it the creature stands in a doorway while the
+    // player walks past it, which is what every unlosable game looks like from the
+    // inside.
+    //
+    // Both the step and the delta are taken in the DRAWN frame, and that is not
+    // tidiness: the direct target is the player's world position and a leg is
+    // canonical, so a single frame for the arithmetic is the only way both cases can
+    // share these six lines. A translation does not change a delta, so the step is
+    // still applied to the canonical position the rest of the file speaks.
+    const next = this.creatureLeg === null
+      ? target
+      : this.streetView.worldOf(streetNodeToWorld(this.creatureLeg))
+    // The step TOWARD the node, and the sign is the whole line.
+    //
+    // `wrapDelta(a, b)` is `a - b` folded onto the torus, so the vector from the
+    // creature to where it is going is `wrapDelta(where, here)` — and the version
+    // this line had before slice 15 asked for the opposite, which walked the
+    // creature directly away from every node it routed to. Four bugs in one
+    // function, all of them invisible in code review and all of them found by
+    // playing the game a few hundred times: the frame, the Voronoi wobble, the
+    // "no hop means stop", and this. The world's own creature check never caught any
+    // of them because it asserts how far the creature moved and not which way.
+    const dx = beast.wrapDelta(next.x, here.x)
+    const dz = beast.wrapDelta(next.z, here.z)
     const step = Math.hypot(dx, dz)
     if (step < 1e-6) return
     const speed = beast.creatureSpeed(this.creature.tier, this.creature.reemergenceCount)
@@ -968,6 +1094,8 @@ export class LongQuietGame {
     })
     if (!spot) return
     this.creaturePosition = { x: spot.position.x, z: spot.position.z }
+    this.creatureLeg = null
+    this.creatureTargetNode = null
     this.banishElapsed = 0
   }
 
@@ -1087,9 +1215,14 @@ export class LongQuietGame {
    * apparition even if the pool is later reordered.
    */
   _firstSightingPoint() {
-    const from = beast.nodeId(SPAWN.position)
-    const hops = hood.streetDistanceMap(from)
+    // `SPAWN.position` is canonical, and `nodeId` reads the frame the player is in,
+    // so the sighting is placed from the spawn's *world* copy. It is the same
+    // arithmetic `worldOf` does everywhere else, and it is the reason the pool
+    // below is 42 nodes wide rather than one: fold it wrongly and the cone is
+    // measured from a point on the other side of the map.
     const facing = { x: SPAWN.position.x, z: SPAWN.position.z, yaw: SPAWN_YAW }
+    const from = beast.nodeId(this.streetView.worldOf(SPAWN.position))
+    const hops = hood.streetDistanceMap(from)
     const candidates = []
     for (let id = 0; id < hood.INTERSECTIONS; id += 1) {
       if (hops[id] < beast.REEMERGE_MIN_GRAPH_DISTANCE) continue
@@ -1182,11 +1315,16 @@ export class LongQuietGame {
     this.state = rules.applyCapture(this.state)
     this.creature = beast.createCreature({
       state: this.state.hammerHeld ? 'stalk' : 'telegraph',
+      // §7.2: the awakening survives a capture with the hammer, or the player would
+      // come back out of the black as an apparition again
+      awakened: this.state.hammerHeld === true,
       tier: rules.portalsShut(this.state.portals),
       banishCount: this.state.banishCount,
       finale: this.state.finale,
     })
     this.creaturePosition = this._firstSightingPoint()
+    this.creatureLeg = null
+    this.creatureTargetNode = null
     this.soundEvents = []
     this.hammerHold = 0
     this.banishElapsed = 0
