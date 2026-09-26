@@ -7,7 +7,7 @@ variant: default
 branch: cline/space-bunny-alpha
 base_branch: main
 base_commit: 3ccd9f89185200423ec62d5f794c6a7570067ce3
-status: draft
+status: deployed
 run_count: 1
 pass_count: 16
 task_calls: 0
@@ -45,8 +45,7 @@ sees. Slices 10–15 added the capture loop, audio, HUD, the finale, and a
 balance simulation; slice 16 deleted v1, added the capture harness
 (`tools/capture.mjs`, `capture/`, `src/game/capture.js`), and produced the
 fourteen-frame gallery. Final gate: **184/184 pure checks, 43/43 world checks,
-build pass**. Deployment is **PENDING** — no URL is claimed, and `status` stays
-`draft` until one exists.
+build pass**. Deployed to https://bell-loop.vercel.app (production, 2026-09-26).
 
 ## Stats
 
@@ -72,7 +71,7 @@ build pass**. Deployment is **PENDING** — no URL is claimed, and `status` stay
 | World checks | 43/43 |
 | Build | pass |
 | Captures | 14/14, mean luma 46.237% |
-| Deployment | PENDING |
+| Deployment | https://bell-loop.vercel.app |
 
 ## Workflow
 
@@ -206,9 +205,8 @@ npm run dev
 
 ## Known debt
 
-- **Deployment is PENDING.** Blocked on Aditya's Vercel auth; no URL, no
-  catalog row, and `status` stays `draft` until a deployment actually exists.
-  Nothing in this README claims one.
+- **Deployed:** https://bell-loop.vercel.app (Vercel production, project
+  `bell-loop`, team `project-by-aditya`).
 - **No token or timing ledger was available to the agent runtime.** Token, cost,
   wall-time and active-time fields are recorded as `0` because the schema
   requires integers and no counter was readable. `0` here means **unrecorded**,

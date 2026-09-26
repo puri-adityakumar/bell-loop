@@ -863,3 +863,9 @@ and the honest fix was to stop claiming it.
 - Slice 07's open questions are now **measured**, not asserted: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m), `AGGRESSION_SPEED_STEP` = 0.45, `AGGRESSION_SIGHT_STEP` = 2.0, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s. The only one of the six that moved this slice is the delay floor, and it moved back to where it was.
 - **Slice 13's warning turned out to matter more than it looked.** It said the §11.3 number to watch is `CAPTURE_RADIUS / (SPRINT - tier speed)` — 1.4 s of clean sprinting in the finale — and that is exactly the margin the finale runs on. It is asserted, and no tuning pass pushed a tier past the sprint.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.
+
+## Slice 16 close-out (orchestrator)
+- Cline finished all 16 slice tasks but crashed on the final log write ("Editor input too large"); work was intact in tree. Orchestrator verified gate (184/184 pure, 43/43 world, build pass), committed `bede4ed` feat(v2): slice 16 - captures, cleanup, result card, pushed.
+- Deployed to Vercel production from `cline/space-bunny-alpha` via CLI (team project-by-aditya): https://bell-loop.vercel.app — verified HTTP 200 serving the app.
+- README result card updated: status draft→deployed, deployment URL filled, known-debt deployment entry resolved.
+- All 16/16 slices complete. FREE MODELS ONLY throughout (Space Bunny Alpha, $0.00).
