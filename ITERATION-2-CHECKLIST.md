@@ -42,7 +42,7 @@ Hard rules for every pass:
   (https://github.com/Kenton-GMI/sakuragaoka-station): what makes its streets
   read as places. Write AESTHETIC-NOTES.md: concrete techniques to port
   (procedural only) + what we deliberately keep different (darker, emptier).
-- [x] `PASS 5: Building depth.` Inset windows with emissive variance (some lit
+- [DONE] `PASS 5: Building depth.` Inset windows with emissive variance (some lit
   warm, most dark), door recesses + steps, roofline silhouettes (parapets, AC
   boxes), wall-mounted entry lamps. Buildings stop being flat extrusions.
 - [x] `PASS 6: Street furniture I.` Telephone/power poles with catenary wires
