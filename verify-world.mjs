@@ -69,6 +69,14 @@ import assert from 'node:assert/strict'
 // this harness needs the pure half of the audio module. It is a pure module per
 // §15.1, which is the property that makes this import possible at all.
 import { routeAudio } from './src/game/audio.js'
+// iteration 2, pass 3: the first Three.js import in this harness, and the reason
+// is that the portal gate's claim is a claim about a *scene graph* — "a camera on
+// the §16.5.5 stand-off hits the gate first, and not the shell in front of it" —
+// which has an answer to be had from a raycast and no answer at all in a string
+// in a source file. The world built here is the real one (`streetView.js` imports
+// Three.js itself and always has), so the only thing being stubbed here is the
+// 2D canvas and the renderer, neither of which a raycast touches.
+import * as THREE from 'three'
 
 // ---------------------------------------------------------------------------
 // minimal DOM stubs (only what world.js + player.js touch)
@@ -1640,10 +1648,23 @@ check('the third portal and only the third opens the finale', () => {
     assert.equal(view.light.intensity, 0, `${entry.id} is still throwing light`)
     assert.equal(view.light.visible, false, `${entry.id}'s lamp is still on`)
     assert.equal(
-      view.ring.material,
+      view.rim.material,
       game.streetView._materials.portalDead,
-      `${entry.id} is still wearing the live material`,
+      `${entry.id} is still wearing the live material on its rim`,
     )
+    // ...and the disc, which is the bigger half of the gate after iteration 2,
+    // pass 3 and the half a screenshot of a shut portal is mostly made of. This
+    // line is the mutation test for the rebuild: deleting the disc assignment in
+    // `setPortalShut` left the whole suite green before, because nothing between
+    // the verb and the hole was being looked at.
+    assert.equal(
+      view.disc.material,
+      game.streetView._materials.portalCoreDead,
+      `${entry.id}'s hole is still lit from behind`,
+    )
+    for (const layer of view.swirl) {
+      assert.equal(layer.visible, false, `${entry.id}'s swirl is still turning in a dead portal`)
+    }
     for (const other of game.streetView.portals) {
       if (shut.includes(other.id)) continue
       assert.equal(other.shut, false, `${other.id} went dark without being shut`)
@@ -3143,6 +3164,197 @@ check('§8.1: the recklessly sprinting player cannot be caught before the hammer
   }
 })
 
+
+/**
+ * Rec. 709 relative luminance, 0-255, of a live material's colour.
+ *
+ * The same formula as pass 1's `relLuma` in `verify.mjs`, read off a
+ * `THREE.Color` instead of out of a source file. `getHex()` converts the
+ * material's working-space colour back to sRGB first, so the number here is the
+ * same number pass 1's palette pins are made of and the two sections are
+ * comparable rather than merely similar.
+ */
+function materialLuma(material) {
+  const hex = material.color.getHex()
+  return 0.2126 * ((hex >> 16) & 0xff) + 0.7152 * ((hex >> 8) & 0xff) + 0.0722 * (hex & 0xff)
+}
+
+check('the portal is a hole with a lit lip, not a halo (iteration 2, pass 3)', () => {
+  // §12.2's cold light, read off the real scene graph of all three shells. The
+  // complaint pass 3 answers is visible in one line of §16.5.5: a 16 cm cyan
+  // hoop with the lit inside of the shed showing through the middle of it.
+  game.restart()
+  run(game, 0.5)
+  for (const portal of game.streetView.portals) {
+    const where = `${portal.id} (${portal.structure})`
+    const disc = portal.disc.geometry.parameters
+    const rim = portal.rim.geometry.parameters
+    // the shape: a disc, and a torus sitting on its edge
+    assert.equal(portal.disc.geometry.type, 'CircleGeometry', `${where} has no disc in its opening`)
+    assert.equal(portal.rim.geometry.type, 'TorusGeometry', `${where} has no lip`)
+    assert.equal(disc.radius, rim.radius, `${where}'s lip is not on the edge of its hole`)
+    // the lip is a lip: BEFORE the tube was 0.08 on a 0.78 radius (10.3%), and
+    // a band that thick is a ring no matter what is behind it
+    assert.ok(rim.tube / rim.radius < 0.06, `${where}'s lip is ${((rim.tube / rim.radius) * 100).toFixed(1)}% of the radius — that is a hoop again`)
+    // the hole is behind its own lip, in the gate's frame, which is the reading:
+    // something a little way *into* the doorway with an edge standing in front
+    assert.ok(portal.disc.position.z < 0, `${where}'s hole is proud of its own lip`)
+    // and the four parts are *in the scene graph*, which is not the same claim as
+    // being on the record and is the one §16.1's mutation run caught the gate
+    // missing: a disc that is built, named, stored on the portal and measured by
+    // every other assertion in this check is still not drawn, because a mesh off
+    // the graph is a perfectly good object. `parent` is the only thing that
+    // separates the two.
+    assert.equal(portal.gate.parent, portal.root, `${where}'s gate is not on its own root`)
+    for (const [label, mesh] of [['hole', portal.disc], ['lip', portal.rim], ...portal.swirl.map((layer, index) => [`swirl ${index}`, layer])]) {
+      assert.equal(mesh.parent, portal.gate, `${where}'s ${label} is not in the gate, so it is not in the world`)
+    }
+    // ...and it is a hole: near-black, where the lip is the same cyan it has
+    // always been. §12.2 is unchanged — this is the *cold family* still being
+    // the only cold light in the game, not a second lamp.
+    assert.ok(
+      materialLuma(portal.disc.material) < materialLuma(portal.rim.material) * 0.12,
+      `${where}'s hole is ${((materialLuma(portal.disc.material) / materialLuma(portal.rim.material)) * 100).toFixed(1)}% of its lip's luma — a dark lamp, not a hole`,
+    )
+    assert.equal(portal.rim.material.fog, false, `${where}'s lip fogs out, so §4's long-range tell is gone at 40 m`)
+    assert.equal(portal.disc.material.fog, false, `${where}'s hole fades to the fog colour with distance, which is the one thing a hole must not do`)
+    // the swirl: two layers, both strictly inside the hole, both additive, both
+    // in the lip's own colour — one family, four meshes, one texture
+    assert.equal(portal.swirl.length, 2, `${where} has ${portal.swirl.length} swirl layers, not two`)
+    const depths = portal.swirl.map((layer) => layer.position.z)
+    for (const [index, layer] of portal.swirl.entries()) {
+      assert.equal(layer.geometry.type, 'CircleGeometry', `${where}'s layer ${index} is not a disc`)
+      assert.ok(
+        layer.geometry.parameters.radius < disc.radius,
+        `${where}'s layer ${index} is wider than the hole it turns in, so it draws an edge the hole does not have`,
+      )
+      assert.equal(layer.material.transparent, true, `${where}'s layer ${index} is opaque`)
+      assert.equal(layer.material.depthWrite, false, `${where}'s layer ${index} occludes the layer under it`)
+      assert.equal(layer.material.blending, THREE.AdditiveBlending, `${where}'s layer ${index} paints over the hole instead of adding to it`)
+      assert.equal(
+        layer.material.color.getHex(),
+        portal.rim.material.color.getHex(),
+        `${where}'s layer ${index} is not the lip's light, so the opening has two colours in it`,
+      )
+      assert.ok(depths[index] > portal.disc.position.z, `${where}'s layer ${index} is behind its own hole`)
+      assert.ok(depths[index] < 0, `${where}'s layer ${index} is proud of its own lip`)
+    }
+    assert.notEqual(depths[0], depths[1], `${where}'s two layers are coincident, so one of them is a decal`)
+    // and the two are the same texture, which is what makes the pair read as one
+    // thing at two scales rather than as two things
+    assert.equal(portal.swirl[0].material, portal.swirl[1].material, `${where} built its swirl in two materials`)
+  }
+})
+
+check('the swirl turns on the world clock, slowly, and stops when the portal is shut', () => {
+  game.restart()
+  run(game, 0.5)
+  const street = game.streetView
+  const portal = street.portals[0]
+  // half a second of the real world clock, which is what `capture.js` would also
+  // have advanced between two of its frames
+  const before = portal.swirl.map((layer) => layer.rotation.z)
+  const beforeScale = portal.gate.scale.x
+  run(game, 0.5)
+  const after = portal.swirl.map((layer) => layer.rotation.z)
+  const turned = after.map((value, index) => value - before[index])
+  for (const [index, delta] of turned.entries()) {
+    assert.notEqual(delta, 0, `${portal.id}'s layer ${index} stood still through half a second of the world`)
+    // slow enough to outlast the verb: §5.3's shutdown is a held breath, and a
+    // layer that came all the way round inside one would be a machine
+    assert.ok(Math.abs(delta) < 0.35 * 0.5, `${portal.id}'s layer ${index} turned ${delta.toFixed(3)} rad in 0.5 s — that is machinery, not a hole`)
+  }
+  // and against itself: two layers turning the same way read as one disc with a
+  // pattern painted on it, which is exactly what pass 3 was not asked to build
+  assert.notEqual(Math.sign(turned[0]), Math.sign(turned[1]), `${portal.id}'s two layers turn the same way`)
+  // the gate breathes with them, as one object — BEFORE pass 3 the ring swelled
+  // alone and there was nothing else in the opening to breathe with it
+  assert.notEqual(portal.gate.scale.x, beforeScale, `${portal.id}'s gate is not breathing any more`)
+  assert.ok(
+    Math.abs(portal.gate.scale.x - portal.gateScale) < 0.04,
+    `the gate is scaled ${portal.gate.scale.x.toFixed(3)} against its structure's own ${portal.gateScale} — the swell is not folded in`,
+  )
+  // §5.3: a shut portal is inert, and "inert" is a claim about motion, not about
+  // a material. This is the check the material assertions cannot make.
+  assert.equal(street.setPortalShut(portal.id, true), true)
+  const dead = portal.swirl.map((layer) => layer.rotation.z)
+  const deadScale = portal.gate.scale.x
+  run(game, 0.5)
+  for (const [index, layer] of portal.swirl.entries()) {
+    assert.equal(layer.rotation.z, dead[index], `${portal.id}'s layer ${index} is still turning in a dead portal`)
+    assert.equal(layer.visible, false, `${portal.id}'s layer ${index} is still drawn in a dead portal`)
+  }
+  assert.equal(portal.gate.scale.x, deadScale, `${portal.id}'s gate is still breathing after the shutdown`)
+  // and §5.3 is one-way *for the run*, not for the view layer: `restart()` is
+  // the one caller that un-shuts, and it has to put the motion back too, or a
+  // second loop photographs dead spirals in a live hole
+  assert.equal(street.setPortalShut(portal.id, false), true)
+  run(game, 0.5)
+  for (const [index, layer] of portal.swirl.entries()) {
+    assert.notEqual(layer.rotation.z, dead[index], `${portal.id}'s layer ${index} never came back`)
+    assert.equal(layer.visible, true, `${portal.id}'s layer ${index} never came back lit`)
+  }
+})
+
+check('a camera on the §16.5.5 stand-off sees the hole, and not through it', () => {
+  // The one check in this file that asks a question only a scene graph can
+  // answer. §16.5.5's two portal views stand 4.5 m and 2.2 m out on the
+  // structure's own `facing`, so 4.5 m is the furthest and is the number that
+  // has to work. If a shell is in front of its own gate — which it was for the
+  // phone box, whose cube is solid and whose ring was sealed inside it at the
+  // origin — then the first thing in this ray is a metal wall, and the capture
+  // is a photograph of the *absence* of a portal, which is the failure the
+  // shed's lintel comment records having already happened to the shed once.
+  //
+  // Nothing in the *street* is tested for occlusion, and that is not a gap:
+  // `capture.js`'s own `place()` refuses any stand-off a fixture blocks, and
+  // §3.6 rule 3 reserves the middle third of a lot, which is where these anchors
+  // are. This checks the part that was never checked — the portal's own geometry
+  // against itself.
+  game.restart()
+  run(game, 0.5)
+  // The one thing a real renderer would have done for us, and the reason this
+  // check needed a line of its own: a stubbed `render()` never calls
+  // `updateMatrixWorld`, so in this harness every mesh's world matrix is still
+  // the identity unless something asks for it. `getWorldPosition` below fixes
+  // the *gate's* chain and leaves the disc, the lip and the two swirl layers
+  // behind, which is why the ray came back empty until this line.
+  game.scene.updateMatrixWorld(true)
+  for (const portal of game.streetView.portals) {
+    const where = `${portal.id} (${portal.structure})`
+    const target = portal.gate.getWorldPosition(new THREE.Vector3())
+    const from = target.clone().add(new THREE.Vector3(portal.facing.x, 0, portal.facing.z).multiplyScalar(4.5))
+    const ray = new THREE.Raycaster(from, target.clone().sub(from).normalize(), 0, 4.6)
+    const hits = ray.intersectObject(portal.root, true)
+    assert.ok(hits.length > 0, `${where}: there is nothing at all between a camera on the stand-off and the gate`)
+    const first = hits[0].object
+    assert.ok(
+      [portal.disc, portal.rim, ...portal.swirl].includes(first),
+      `${where}: the first thing a camera sees is ${first.name || first.type}, not the gate — the shell is in front of its own opening`,
+    )
+    // ...and it stops at the opening rather than at the far side of the
+    // structure: the gate plane is 4.5 m out and the lip is 2.8 cm of tube on it
+    assert.ok(
+      4.4 < hits[0].distance && hits[0].distance < 4.55,
+      `${where}: the camera is stopped ${hits[0].distance.toFixed(2)} m out, which is not the gate plane at 4.50 m`,
+    )
+    // The three openings are three different sizes, which is §5.1's list being
+    // worth having — and each one is bounded by something real. The shed's hole
+    // is *wider* than the 1.3 m doorway, so the frame crops it and the frame is
+    // the doorway's. The phone box's is *narrower* than the 1.1 m face it is
+    // stuck to, or the booth becomes a disc with a booth behind it. The shelter's
+    // is free-standing at full size, because a shelter is open on three sides and
+    // there is nothing there to crop it — which is exactly the difference between
+    // the three shells that §5.1's list is for.
+    const across = portal.disc.geometry.parameters.radius * 2 * portal.gate.scale.x
+    const bounds = { shed: [1.3, Infinity], busShelter: [0, Infinity], phoneBox: [0, 1.1] }
+    const [low, high] = bounds[portal.structure]
+    assert.ok(
+      across > low && across < high,
+      `${where}'s hole is ${across.toFixed(2)} m across, outside the (${low}, ${high}) its shell can hold`,
+    )
+  }
+})
 
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down

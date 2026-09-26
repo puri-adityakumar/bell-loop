@@ -148,6 +148,17 @@ export const PALETTE = Object.freeze({
   carBody: 0x241f28,
   portal: 0x3ad6d6,
   portalDead: 0x0b2b2b,
+  // The core of the portal, iteration 2, pass 3.
+  //
+  // BEFORE: nothing — the portal was a bare `TorusGeometry` of `PALETTE.portal`
+  // with nothing behind it, so every camera that looked through the hoop saw the
+  // lit interior of the shed beyond and the hoop read as a halo hung in a gap.
+  // AFTER: `portalCore` is a near-black disc for the hole to *be a hole in*, at
+  // 7.4% of the rim's Rec. 709 luma, and `portalCoreDead` is the same disc after
+  // §5.3, darker and colder than the live one — a light going out leaves a blue
+  // hole, not a warm one.
+  portalCore: 0x04100f,
+  portalCoreDead: 0x050b0d,
   sodium: 0xffa54a,
   // The bounce (iteration 2, pass 2): sodium that has come back off the road.
   // A paler, less saturated amber than `sodium` on purpose — light that has
@@ -167,8 +178,9 @@ export const PORTAL_STRUCTURES = Object.freeze(['shed', 'busShelter', 'phoneBox'
  * The three shells are not three copies of one box and the difference is the
  * whole reason a camera has to be told: the shed is walled front and back and
  * gapped on its +X flank, the bus shelter has a back panel at -Z and nothing at
- * +Z, and the phone box is a closed cube the ring reads through. Standing
- * "north of the portal" therefore photographs the back of two of the three, and
+ * +Z, and the phone box is a closed cube — so its gate has to be *on the front
+ * of it*, which `PORTAL_GATE_OFFSET` is what says. Standing "north of the
+ * portal" therefore photographs the back of two of the three, and
  * the §16.5.5 capture did exactly that — a flat black panel with a cyan sliver
  * under its roofline, measured at 0.33% lit.
  *
@@ -242,6 +254,136 @@ const LAMP_POOL_RIM = 0.82
  * which is the measurement the two portal captures are actually judged on.
  */
 const PORTAL_APRON_DIAMETER = 7
+
+// ---------------------------------------------------------------------------
+// the gate — iteration 2, pass 3
+//
+// Seven numbers, in one block, because none of them means anything read alone:
+// a disc is not a hole without a rim on its edge, and a rim is not a lip
+// without a disc for the eye to measure it against.
+//
+// THE COMPLAINT, in the one sentence the §16.5.5 frame shows: the portal was a
+// 16 cm-thick cyan hoop floating in a doorway with the lit interior of the shed
+// visible straight through the middle of it. That is a *halo*. §12.2's cold
+// light is supposed to be an opening, and an opening is a hole with a lit edge.
+// The gate is now a near-black disc, a thin lip of cyan on that disc's edge,
+// and a slow spiral turning inside the hole.
+// ---------------------------------------------------------------------------
+
+/**
+ * Radius of the core disc, metres.
+ *
+ * BEFORE `0.78`, a literal inside the ring's `TorusGeometry` — and that was the
+ * *outer* edge, so the hoop measured 1.56 m across a 1.3 m doorway. AFTER
+ * `0.72`, which is still wider than the doorway on purpose: the shed's two flank
+ * panels leave z in (-0.65, 0.65) open, so a 0.72 m disc is cropped at the sides
+ * and the frame is the doorway's, not the disc's. The gate asserts that
+ * containment, because a disc with a margin round it inside a door is a
+ * porthole hung in a wall.
+ */
+const PORTAL_CORE_RADIUS = 0.72
+
+/**
+ * Radius of the rim's tube, metres — a lip, not a hoop.
+ *
+ * BEFORE `0.08`, a 16 cm band, which is 10.3% of the disc's radius. AFTER
+ * `0.028`, a 5.6 cm band at 3.9%, on a disc that is the same size in the
+ * frame. Thin enough that the first thing the eye reads is the hole; thick
+ * enough that §4's long-range tell is still a line of cyan at 40 m rather than
+ * a dot. Both halves of that sentence are the same number, which is why it is
+ * pinned rather than tuned.
+ */
+const PORTAL_RIM_TUBE = 0.028
+
+/**
+ * Height of the gate above the lot, metres.
+ *
+ * BEFORE `1.35`, a literal at the ring's call site. AFTER `1.18`, a constant,
+ * because the disc is now *sized to the opening* and the opening has a size:
+ * the shed's doorway is 1.3 m wide and 1.9 m tall, so it spans y 0 to 1.9 about
+ * 0.95. A 0.72 m disc centred at 0.95 would sit inside that with margin on
+ * every side, and 1.35 left the old hoop's bottom edge 63 cm off the floor.
+ * 1.18 reaches the lintel at 1.90 and lifts the bottom to 0.46 m: the disc is
+ * *behind* the frame, cropped by it, which is the whole reading.
+ */
+const PORTAL_CORE_Y = 1.18
+
+/**
+ * How far the disc is set back from the gate's own plane, metres.
+ *
+ * BEFORE nothing — the ring *was* the portal and it stood in the plane of the
+ * opening, which is the only place a hoop has to stand because a hoop has no
+ * inside to be behind. AFTER 0.03, so the disc reads as a little way *into* the
+ * doorway and the rim stands proud of it. Bounded below by the swirl layers,
+ * which sit in the 0.03 in front of it.
+ */
+const PORTAL_CORE_INSET = 0.03
+
+/**
+ * How far in front of the disc each swirl layer sits, metres, outer layer
+ * first.
+ *
+ * BEFORE: there were no layers; the disc did not exist to have anything in
+ * front of it. AFTER [-0.008, -0.016], which is the 0.03 of
+ * `PORTAL_CORE_INSET` split so the two layers are 8 mm apart and both are
+ * strictly between the disc and the rim's plane. Additive blending does not
+ * care which draws first, so this ordering is here for the *raycast* the gate
+ * makes in `verify-world.mjs`, which stops a camera at the outermost layer.
+ */
+const PORTAL_SWIRL_DEPTHS = Object.freeze([-0.008, -0.016])
+
+/**
+ * The swirl layers' radii, metres, outer layer first.
+ *
+ * BEFORE none. AFTER [0.66, 0.40], both strictly *inside* `PORTAL_CORE_RADIUS`
+ * so the swirl can never draw an edge the disc does not have. The inner one is
+ * 0.6 of the outer because one spiral across the whole disc reads as a pinwheel
+ * and two scales of it read as depth — and 0.40 m is exactly where the swirl
+ * texture's own dark pupil has finished fading in, so the inner layer opens in
+ * the middle instead of stacking a second pupil there.
+ */
+const PORTAL_SWIRL_RADII = Object.freeze([0.66, 0.4])
+
+/**
+ * The swirl layers' angular rates, radians per second.
+ *
+ * BEFORE nothing turned, ever: the cold family's only motion was the ±3.5%
+ * swell on the hoop. AFTER [+0.21, -0.13] — one revolution in 30 s and 48 s,
+ * against each other. Slow because the portal is not supposed to be urgent: a
+ * thing that spins quickly is a machine, and §5.3's verb is a held breath, not
+ * a switch. Counter-rotating because two discs turning the same way read as one
+ * disc with a pattern painted on it, and the gate below asserts the two signs
+ * differ for exactly that reason.
+ */
+const PORTAL_SWIRL_RATES = Object.freeze([0.21, -0.13])
+
+/**
+ * How far along its own opening axis each structure's gate stands from that
+ * structure's origin, metres, in `PORTAL_STRUCTURES` order.
+ *
+ * BEFORE [0, 0, 0]: the ring sat at the origin of all three shells, which is the
+ * *middle* of the shed — 1.25 m behind its own doorway — and inside the phone
+ * box's solid 1.1 m cube, so the third portal was a hoop sealed in a metal box
+ * and had never once been visible from outside. AFTER [1.25, 0, 0.62]: the
+ * shed's is its doorway plane, the shelter's is the middle of its opening, and
+ * the phone box's is 0.07 m proud of the cube's front face, which is the only
+ * plane of that shell a disc can be seen on.
+ */
+const PORTAL_GATE_OFFSET = Object.freeze([1.25, 0, 0.62])
+
+/**
+ * How far each structure's gate is scaled, in the same order and for the same
+ * reason as the offsets: §5.1's list is only worth having if the three read as
+ * three different places.
+ *
+ * BEFORE 1 for all three, which was never wrong at the old radius — a 0.78 m
+ * hoop inside a 1.1 m cube was simply hidden, so its size never got to matter.
+ * AFTER [1, 1, 0.68], which is 0.98 m across on the phone box's 1.1 m face.
+ * That is the one number here with a real constraint behind it: the disc has
+ * to be *smaller* than the face it is stuck to, or the phone box stops being a
+ * phone box and becomes a disc with a booth behind it.
+ */
+const PORTAL_GATE_SCALE = Object.freeze([1, 1, 0.68])
 
 /**
  * The top face of a lot's yard slab, metres. `pools.yards.place` is called with
@@ -409,12 +551,84 @@ function makePoolTexture({ size = 128, peak = 1, rim = 0 } = {}) {
   return texture
 }
 
+/**
+ * The swirl inside a portal's core (iteration 2, pass 3), written as alpha.
+ *
+ * BEFORE: there was no such thing — the opening held a hoop and no interior,
+ * and a swirl is only legible against something darker than itself. AFTER: the
+ * pattern `update()` turns, on two layers, at two rates.
+ *
+ * The pattern is a *wound* phase, `arms * atan2(dy, dx) + twist * 2π r`, and not
+ * a pinwheel. That is the whole reason rotating the mesh reads as the pattern
+ * turning rather than as the picture spinning: a radial arm pattern is invariant
+ * under rotation in the way a spiral is not, so a pinwheel of arms would sit
+ * still on a spinning disc and only its texture would be legible as moving.
+ *
+ * `arms` is an integer on purpose, and it is the one thing a polar texture gets
+ * wrong by default: `atan2` jumps from +π to -π along the -x axis, and a phase
+ * built on it has a seam there unless the winding term is a whole number of
+ * turns, which an integer `arms` makes it.
+ *
+ * White in RGB and the pattern in alpha, for the reason `makePoolTexture` gives
+ * at length: the material's own colour is the cyan, so the swirl and the rim are
+ * demonstrably one light family, and the alpha is what the mesh rotates. The
+ * peak is 0.45 rather than 1.0 because this is additive over a near-black disc
+ * and the rim is already at full cyan — the swirl has to be *under* the edge or
+ * the hole stops being the first thing the eye reads.
+ */
+function makeSwirlTexture({ size = 128, seed = 1, arms = 3, twist = 5 } = {}) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const image = ctx.createImageData(size, size)
+  const data = image.data
+  const noise = noiseField(seed)
+  const half = (size - 1) / 2
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = (x - half) / half
+      const dy = (y - half) / half
+      const r = Math.hypot(dx, dy)
+      let tone = 0
+      if (r < 1) {
+        const wave = 0.5 + 0.5 * Math.sin(arms * Math.atan2(dy, dx) + twist * Math.PI * 2 * r)
+        // a dark pupil in the middle and nothing at the rim: the swirl has to
+        // fade out into the same near-black the disc behind it is painted, or it
+        // draws an edge of its own and gives the hole away as a decal
+        const fade = Math.min(1, Math.max(0, (r - 0.16) / 0.24)) * (1 - r * r)
+        // the same per-pixel dither `makeSurfaceTexture` uses, for the same
+        // reason: a smooth spiral across a 40-segment disc bands, and a hole in
+        // the world is the last place in this game that should band.
+        const grain = (noise(x / size, y / size) - 0.5) * 0.18
+        tone = Math.max(0, fade * (0.25 + 0.2 * wave * wave) + grain * fade)
+      }
+      const i = (y * size + x) * 4
+      data[i] = 255
+      data[i + 1] = 255
+      data[i + 2] = 255
+      data[i + 3] = Math.round(Math.min(1, tone) * 255)
+    }
+  }
+  ctx.putImageData(image, 0, 0)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
 
 export const SURFACE_SEEDS = Object.freeze({
   asphalt: 0x515f,
   sidewalk: 0x51de,
   siding: 0x51d1,
   hedge: 0x4ed9,
+  // BEFORE four seeds, one per surface, all of them lit by the sodium family.
+  // AFTER a fifth, which is the only cold texture in the game: the swirl inside
+  // a portal's core. It gets a seed of its own for the reason the other four
+  // have one — a texture whose seed is typed at its call site is a texture two
+  // people will change differently — and it is the one seed a player can see
+  // rotating, so it must not be a function of any surface's.
+  swirl: 0x5197,
 })
 
 // ---------------------------------------------------------------------------
@@ -628,7 +842,7 @@ export class StreetView {
   }
 
   _glow(color, options = {}) {
-    // unlit on purpose: a portal ring and a sodium lamp head are light sources,
+    // unlit on purpose: a portal's rim and a sodium lamp head are light sources,
     // not surfaces, and tone-mapping them as if they were lit would dim exactly
     // the two things §4 promises stay visible at distance
     return new THREE.MeshBasicMaterial({ color, fog: false, ...options })
@@ -639,6 +853,14 @@ export class StreetView {
     const sidewalk = this._texture({ seed: SURFACE_SEEDS.sidewalk, base: 0.58, contrast: 0.16, grain: 0.05, repeat: 96 })
     const siding = this._texture({ seed: SURFACE_SEEDS.siding, base: 0.6, contrast: 0.18, grain: 0.04, stripes: 8 })
     const hedge = this._texture({ size: 64, seed: SURFACE_SEEDS.hedge, base: 0.46, contrast: 0.44, grain: 0.16 })
+    // The swirl, built here and pushed onto `this.textures` rather than at the
+    // gate's call site: the other five textures in this file go through
+    // `_texture`, which registers them, and a sixth that quietly did not would
+    // survive `dispose()` and leak a canvas per mount. §15's teardown check
+    // counts `this.textures`, so an unregistered texture is a failed teardown
+    // waiting for a hot reload to notice.
+    const swirl = makeSwirlTexture({ seed: SURFACE_SEEDS.swirl })
+    this.textures.push(swirl)
     return {
       asphalt: this._material({ color: PALETTE.asphalt, map: asphalt }),
       sidewalk: this._material({ color: PALETTE.sidewalk, map: sidewalk }),
@@ -687,6 +909,12 @@ export class StreetView {
       // a dark shed. Same additive plane and same falloff texture, cyan instead
       // of sodium, and a quarter of the diameter: a doorway is not a streetlight.
       //
+      // It is still the *apron*, and not any part of the gate, that answers this
+      // comment. The disc is a hole and a hole throws no light on the ground: the
+      // gate is the first piece of portal geometry that is deliberately
+      // unlit-looking, and pass 3 did not touch the apron because the apron was
+      // never the thing that was wrong.
+      //
       // `makePoolTexture()` here takes no `rim`, and that omission is the point:
       // pass 2 gave the *sodium* pool a rim and deliberately left the portal's at
       // the default 0. A doorway has hard edges — it is a hole in a shed wall —
@@ -699,6 +927,26 @@ export class StreetView {
         fog: true,
       }),
       portalDead: this._glow(PALETTE.portalDead),
+      // The core disc, live and shut (iteration 2, pass 3). Two materials and
+      // not one, for the same reason `portal`/`portalDead` are two: §5.3 shuts
+      // portals one at a time and permanently, so "the disc" is not a state
+      // anyone can read off a single shared material. Opaque, unlit and
+      // unfogged — it is a hole, and a hole must not fade to the fog colour at
+      // 40 m or the portal would be the one object in the frame that gets
+      // *lighter* with distance.
+      portalCore: this._glow(PALETTE.portalCore),
+      portalCoreDead: this._glow(PALETTE.portalCoreDead),
+      // The swirl. One material for all six layers, because the layers are never
+      // shut individually — a shut portal hides its layers and the live ones all
+      // turn the same way at the same rate — and additive with `depthWrite: false`
+      // because two overlapping spiral layers have to *sum*, not paint over one
+      // another, which is the whole reason there are two.
+      swirl: this._glow(PALETTE.portal, {
+        map: swirl,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
       headlight: this._glow(PALETTE.headlight),
       windowLit: this._glow(0xffbe72),
       panel: this._material({ color: 0x26232b }),
@@ -972,7 +1220,7 @@ export class StreetView {
       const shell = new THREE.Group()
       if (index === 0) {
         // Shed: a back wall, two side walls, and a +X flank built as TWO panels
-        // with a gap between them — the doorway the ring stands in.
+        // with a gap between them — the doorway the gate stands in.
         //
         // The gap is the whole point of this structure and it was missing. The
         // +X flank used to be one box 2.4 m deep, which is exactly the full
@@ -983,10 +1231,13 @@ export class StreetView {
         // the gate measures how much light is in the frame, not whether the
         // frame is of the thing it claims to be.
         //
-        // 1.3 m of the 2.4 m flank is wall, 1.1 m is the doorway, and the ring
-        // (1.56 m across at 0.78 m radius) is sized to be *wider* than the
-        // opening — so from outside you see the cyan rim of a ring the doorway
-        // is cropping, which is what a ring in a doorway actually looks like.
+        // 1.3 m of the 2.4 m flank is wall, 1.1 m is the doorway, and the disc
+        // (1.44 m across at 0.72 m radius) is sized to be *wider* than the
+        // opening — so from outside you see the cyan lip of a disc the doorway
+        // is cropping, which is what a hole in a doorway actually looks like.
+        // BEFORE pass 3 the ring here was 1.56 m across and stood 1.25 m further
+        // in, at the middle of the shed, which is why the frame showed a hoop
+        // *inside* a shed rather than a hole in its wall.
         shell.add(this._box(3.2, 2.4, 0.18, this._materials.shed, 0, 1.2, -1.3))
         shell.add(this._box(0.18, 2.4, 2.4, this._materials.shed, -1.5, 1.2, 0))
         // the two flank panels, each 0.65 m deep, leaving z in (-0.65, 0.65) open
@@ -1011,32 +1262,83 @@ export class StreetView {
       }
       root.add(shell)
 
-      // The ring: §12.2's only cold light, standing in the doorway of each shell.
+      // The gate: §12.2's only cold light, and iteration 2, pass 3's rebuild of
+      // it from a halo into a doorway.
       //
-      // Turned to face out of the opening, which is not a detail. A
-      // `TorusGeometry` lies in the XY plane and so is seen edge-on — as a thin
-      // vertical bar, not a ring — by any camera looking down its own Z axis.
-      // The shed opens on its +X flank, so a ring left unrotated is viewed
-      // side-on by exactly the camera `capture.js` places on the shed's `facing`
-      // side, and §16.5.5 photographed a cyan stick. `PORTAL_OPEN_AXIS` already
-      // records which way each shell opens, so the quarter-turn that brings the
-      // ring's face toward the opening is read from that table rather than
-      // hardcoded per structure.
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(0.78, 0.08, 10, 28),
+      // BEFORE this block built one `TorusGeometry(0.78, 0.08, 10, 28)` standing
+      // in the plane of the opening, at the middle of all three shells: a hoop
+      // with the lit inside of the shed visible through the middle of it, which
+      // is a halo, and — for the phone box — a hoop buried in a solid metal cube
+      // and never seen at all. AFTER it builds a group of four things: a
+      // near-black disc, a 5.6 cm lip of cyan on the disc's edge, and two
+      // counter-rotating spiral layers turning inside the hole.
+      //
+      // The *group* is what the rest of this file addresses. The swell, the
+      // shutdown and the gate raycast in `verify-world.mjs` all act on the gate
+      // as one thing, so a future fourth piece of the opening is added inside
+      // this block and inherits all three. A quarter turn about Y for the shells
+      // that open on X, read from `PORTAL_OPEN_AXIS` rather than hardcoded per
+      // structure: a `CircleGeometry` and a `TorusGeometry` both lie in the XY
+      // plane and are seen edge-on — as a line, not a disc — by any camera
+      // looking down its own Z, and the shed's `facing` side is exactly where
+      // `capture.js` puts the §16.5.5 camera.
+      const gate = new THREE.Group()
+      gate.name = `portal-gate-${id}`
+      // The gate stands in the *opening plane*, which is the root's own +X for
+      // the shells that open on X and the root's +Z for the rest — and it is
+      // read off `PORTAL_OPEN_AXIS` a second time here for a reason that cost a
+      // capture to find: the quarter turn below rotates the gate's *children*,
+      // not the gate, so an offset written on the gate's own Z is a root-local X
+      // and puts the shed's gate 1.25 m to the side, inside a flank panel. A
+      // camera then sees the panel and the gate is behind a wall.
+      if (PORTAL_OPEN_AXIS[index] === 'x') {
+        gate.position.set(PORTAL_GATE_OFFSET[index], PORTAL_CORE_Y, 0)
+        gate.rotation.y = Math.PI / 2
+      } else {
+        gate.position.set(0, PORTAL_CORE_Y, PORTAL_GATE_OFFSET[index])
+      }
+      gate.scale.setScalar(PORTAL_GATE_SCALE[index])
+
+      // The disc: the hole itself. Set back from the rim so the rim stands proud
+      // of it in the frame, and cloned for the same reason the apron is cloned —
+      // `setPortalShut` puts one portal's gate out at a time, and three portals
+      // sharing a material could not be shut one at a time, which is the entire
+      // rule of §5.3.
+      const disc = new THREE.Mesh(
+        new THREE.CircleGeometry(PORTAL_CORE_RADIUS, 48),
+        this._materials.portalCore.clone(),
+      )
+      disc.name = `portal-core-${id}`
+      disc.position.z = -PORTAL_CORE_INSET
+      gate.add(disc)
+
+      // The rim: the same circle as the disc's edge and 2.8 cm of tube on it, so
+      // the cyan is a lip *on* the hole rather than a ring floating a radius away
+      // from it. Same radius, not a derived one, for the reason above.
+      const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(PORTAL_CORE_RADIUS, PORTAL_RIM_TUBE, 10, 40),
         this._materials.portal.clone(),
       )
-      ring.position.set(0, 1.35, 0)
-      // a quarter turn about Y, for the shells that open on X
-      if (PORTAL_OPEN_AXIS[index] === 'x') ring.rotation.y = Math.PI / 2
-      ring.name = `portal-ring-${id}`
-      root.add(ring)
+      rim.name = `portal-rim-${id}`
+      gate.add(rim)
+
+      // The swirl: two layers of the same additive spiral at two scales and two
+      // rates, both children of the gate so they inherit its quarter-turn, its
+      // offset and its scale, and neither of those is re-derived per structure.
+      const swirl = PORTAL_SWIRL_RADII.map((radius, layer) => {
+        const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 40), this._materials.swirl)
+        mesh.name = `portal-swirl-${id}-${layer}`
+        mesh.position.z = PORTAL_SWIRL_DEPTHS[layer]
+        gate.add(mesh)
+        return mesh
+      })
+      root.add(gate)
 
       const light = new THREE.PointLight(PALETTE.portal, 9, 26, 2)
       light.position.set(0, 1.5, 0)
       root.add(light)
 
-      // The apron the ring throws on the ground, and the reason the portal views
+      // The apron the gate throws on the ground, and the reason the portal views
       // have anything in the bottom half of the frame to measure. Pre-rotated
       // flat for the same reason the sodium pools are: `place` composes yaw only
       // and a radial falloff needs nothing else. A cloned material rather than
@@ -1072,7 +1374,16 @@ export class StreetView {
         anchor,
         structure: PORTAL_STRUCTURES[index],
         root,
-        ring,
+        // the gate, addressed as one thing: the disc and the rim are what §5.3
+        // puts out, the swirl is what `update()` turns, and `gateScale` is the
+        // structure's own factor, kept here because `update()` multiplies it by
+        // the swell every frame and the per-structure number is not something to
+        // re-read out of a frozen table in the render path
+        gate,
+        disc,
+        rim,
+        swirl,
+        gateScale: PORTAL_GATE_SCALE[index],
         light,
         apron,
         facing,
@@ -1483,7 +1794,17 @@ export class StreetView {
     const portal = this.portals.find((entry) => entry.id === id)
     if (!portal) return false
     portal.shut = shut
-    portal.ring.material = shut ? this._materials.portalDead : this._materials.portal
+    portal.rim.material = shut ? this._materials.portalDead : this._materials.portal
+    // and the core, which is the bigger half of the gate after pass 3. A shut
+    // portal's disc goes from near-black to *colder* near-black rather than to
+    // transparent: the shape of the opening survives §5.3 and only the light in
+    // it dies, which is what "cold, dim, inert" means as a picture. A removed
+    // disc would be a hole in the hole and the player walking past would read
+    // the missing thing rather than the dead thing.
+    portal.disc.material = shut ? this._materials.portalCoreDead : this._materials.portalCore
+    // and the swirl with them, in the same breath: BEFORE pass 3 nothing in the
+    // opening turned, so there was nothing here to stop.
+    for (const layer of portal.swirl) layer.visible = !shut
     portal.light.intensity = shut ? 0 : 9
     portal.light.visible = !shut
     // and the apron with them, in the same breath and for the same reason: a
@@ -1519,8 +1840,10 @@ export class StreetView {
    * Sodium flicker sits on the shared lamp material, so all 49 lamps gutter
    * together, which is how a real grid behaves and is cheaper than per-instance
    * variation. The portal pulse is the cold family's tell: a slow swell visible
-   * through a gap between two houses long before the player can see the ring
-   * itself, which is §4's second navigation mechanism doing its job.
+   * through a gap between two houses long before the player can see the gate
+   * itself, which is §4's second navigation mechanism doing its job. The swirl
+   * is on the same clock, which is what keeps pass 3's motion in one family with
+   * pass 1's light rather than reading as a second, unrelated animation.
    */
   update(dt) {
     this._time += dt
@@ -1535,8 +1858,21 @@ export class StreetView {
     for (const portal of this.portals) {
       if (portal.shut) continue
       portal.light.intensity = 9 * pulse
-      const swell = 1 + Math.sin(t * 2.3) * 0.035
-      portal.ring.scale.set(swell, swell, swell)
+      // BEFORE the ring alone swelled, on its own scale, with nothing else in
+      // the opening to breathe with it. AFTER the whole gate swells, so the disc,
+      // the rim and the swirl are one object breathing at one rate — and the
+      // per-structure factor is folded in here rather than applied to the group's
+      // scale at build time, because a scale written once is a scale the swell
+      // overwrites on the first frame.
+      const swell = (1 + Math.sin(t * 2.3) * 0.035) * portal.gateScale
+      portal.gate.scale.set(swell, swell, swell)
+      // The swirl turns on the same clock, one rate per layer, and only while
+      // the portal is live: the `continue` above is the reason a shut portal's
+      // disc is inert, and a spiral turning in a dead thing would be the one
+      // piece of motion in §5.3's silence.
+      for (let layer = 0; layer < portal.swirl.length; layer += 1) {
+        portal.swirl[layer].rotation.z = t * PORTAL_SWIRL_RATES[layer]
+      }
     }
     if (!this.hammer.taken) {
       this.hammer.light.intensity = 3.2 * pulse

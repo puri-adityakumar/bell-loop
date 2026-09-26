@@ -86,7 +86,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 // decoding and the lower-scene crop. It is imported here rather than
 // reimplemented because a second decoder would be a second set of numbers for
 // the same file, and the two would eventually disagree in a comment.
-import { sceneProfile, creatureContrast, describeCreatureContrast, repaintBody, LIT_LUMA } from './tools/png-luma.mjs'
+import { creatureContrast, describeCreatureContrast, repaintBody, LIT_LUMA } from './tools/png-luma.mjs'
 
 const VERIFY_LOOPS = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -6882,6 +6882,308 @@ test('fog is a depth cue, not a wall (§4, §3.7)', () => {
 
 
 // ---------------------------------------------------------------------------
+// iteration 2, pass 3 — the portal as a hole rather than a halo
+//
+// WHY THIS SECTION IS SOURCE-CONTRACT AND NOT A RENDER
+// ----------------------------------------------------
+// The same seam as pass 1: `streetView.js` imports Three.js, so `verify.mjs`
+// cannot construct a portal and can only read the file. The pass-2 answer to
+// that — read the numbers out of the source, assert the *properties* they were
+// chosen for, and pin the values separately — is the answer used again here, and
+// `verify-world.mjs` is where the same claims are made against the real scene
+// graph instead, which is the only place the geometry of a hole can be asked
+// about rather than described.
+//
+// WHAT PASS 3 CLAIMS
+// ------------------
+//   1. the opening is a disc with a thin lit lip on its edge, and the disc is
+//      *behind* the lip — a hole, not a halo (§12.2 unchanged: still the only
+//      cold light in the game)
+//   2. the disc is dark enough to be a hole, wide enough to be cropped by the
+//      doorway that frames it, and seated in that doorway rather than floating
+//      in it
+//   3. the swirl turns on the world's own clock, slowly, against itself, and
+//      only while the portal is live
+//   4. §5.3's shutdown puts the disc out as well as the lip: cold, dim, inert
+//
+// Every claim above is a *property*, so a future pass that rebuilds the portal
+// again passes as long as it is still a hole in a doorway with something turning
+// slowly inside it. Only a regression fails, which is the job.
+// ---------------------------------------------------------------------------
+
+section('The portal gate (iteration 2, pass 3)')
+
+/** A named number, read out of the source. Pass 2's `read`, with a name. */
+function portalNumber(name) {
+  const found = new RegExp(`const ${name} = ([\\d.]+)`).exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(found, `${name} is not a named constant any more`)
+  return Number(found[1])
+}
+
+/** A frozen table of numbers, read out of the source, in its own order. */
+function portalTable(name) {
+  const found = new RegExp(`const ${name} = Object\\.freeze\\(\\[([^\\]]+)\\]\\)`).exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(found, `${name} is not a frozen table any more`)
+  const values = [...found[1].matchAll(/-?[\d.]+/g)].map((entry) => Number(entry[0]))
+  assert.ok(values.length > 0, `${name} is empty, so there is nothing for the geometry to be made of`)
+  return values
+}
+
+/** A `PALETTE` hex, read out of the source. Pass 1's stops in scalar form. */
+function paletteHex(key) {
+  // `\b` and the whole key matter: `portal:` must not match `portalCore:`, and
+  // neither may match the other. The pass-3 palette has all three, they are one
+  // character apart, and a looser pattern silently compares a hole's colour
+  // against its lip's — which makes every luma assertion below a tautology.
+  const found = new RegExp(`\\b${key}: 0x([0-9a-fA-F]{6})`).exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(found, `PALETTE.${key} is not a six-digit hex any more`)
+  return Number.parseInt(found[1], 16)
+}
+
+test('the opening is a disc with a lit lip, and the disc is behind it', () => {
+  const code = stripProse(STREET_VIEW_SOURCE)
+  // the geometry that is built, at the granularity it is built at
+  assert.match(code, /new THREE\.CircleGeometry\(PORTAL_CORE_RADIUS, \d+\)/, 'there is no disc in the opening')
+  assert.match(
+    code,
+    /new THREE\.TorusGeometry\(PORTAL_CORE_RADIUS, PORTAL_RIM_TUBE, \d+, \d+\)/,
+    "the lip is not a torus on the disc's own radius — the cyan has floated off the hole it lights",
+  )
+  assert.match(code, /disc\.position\.z = -PORTAL_CORE_INSET/, 'the disc is not set back behind its own lip')
+  assert.match(code, /gate\.scale\.setScalar\(PORTAL_GATE_SCALE\[index\]\)/, 'the gate is not sized per structure')
+  // The disc is on the gate and not merely in the record. This pair of lines is
+  // here because of the one mutation of the ten that §16.1's testing of this pass
+  // did not kill: deleting `gate.add(disc)` left a disc that is built, named,
+  // stored on the portal, measured by every geometry check and never drawn —
+  // because a mesh that is not in the scene graph is still a perfectly good
+  // object, and nothing in the pure gate can tell the difference.
+  assert.match(code, /gate\.add\(disc\)/, 'the disc is never added to the gate, so there is no hole in the opening')
+  // The wiring. This is the mutation that matters: `root.add(ring)` is the line
+  // that put a floating hoop in the middle of a shell rather than a hole in its
+  // doorway, so its absence is asserted rather than assumed, and everything in
+  // the opening is now a child of the gate.
+  assert.doesNotMatch(code, /root\.add\(ring\)/, 'a bare ring is still being hung on the shell root')
+  assert.match(code, /root\.add\(gate\)/, 'and the gate is not on the shell root either')
+  // the parts are named, which is what lets `verify-world.mjs` and any future
+  // capture find them by name rather than by traversal order
+  for (const [owner, name] of [
+    ['disc', 'portal-core-${id}'],
+    ['rim', 'portal-rim-${id}'],
+    ['mesh', 'portal-swirl-${id}-${layer}'],
+  ]) {
+    assert.ok(
+      STREET_VIEW_SOURCE.includes(`${owner}.name = \`${name}\``),
+      `the ${name} is unnamed, so nothing downstream can address it`,
+    )
+  }
+  // ...and exposed on the record, so the disc and the swirl are reachable from a
+  // check, a capture or a future §5.3 without walking the scene graph
+  assert.match(
+    code,
+    /gate,\s*disc,\s*rim,\s*swirl,\s*gateScale: PORTAL_GATE_SCALE\[index\]/,
+    'the portal record does not expose the four parts of the gate',
+  )
+  // the materials, and why they are three and not one: §5.3 shuts one portal at
+  // a time and permanently, so "the disc" is not a state a shared material holds
+  assert.match(code, /portalCore: this\._glow\(PALETTE\.portalCore\)/, 'there is no live core material')
+  assert.match(code, /portalCoreDead: this\._glow\(PALETTE\.portalCoreDead\)/, 'and no dead one, so §5.3 has nothing to put out')
+  assert.match(
+    code,
+    /swirl: this\._glow\(PALETTE\.portal, \{[^}]*blending: THREE\.AdditiveBlending/s,
+    'the swirl is not additive, so two layers would paint over one another',
+  )
+  assert.match(code, /makeSwirlTexture\(/, 'the swirl has no procedural texture, so there is no swirl')
+})
+
+test('the hole is dark, cropped, and seated in the doorway that frames it', () => {
+  const core = portalNumber('PORTAL_CORE_RADIUS')
+  const tube = portalNumber('PORTAL_RIM_TUBE')
+  const y = portalNumber('PORTAL_CORE_Y')
+  const inset = portalNumber('PORTAL_CORE_INSET')
+  // the lip is a lip: BEFORE the tube was 0.08 on a 0.78 radius, 10.3%, and a
+  // band that thick is a ring whatever is behind it
+  assert.ok(
+    tube / core < 0.06,
+    `the lip is ${((tube / core) * 100).toFixed(1)}% of the disc's radius — a hoop, not a lip`,
+  )
+  // the hole is a hole, measured in the same luma pass 1's palette is measured
+  // in and on the same scale, so "darker than the lip" is a number and not an
+  // adjective. §12.2 is untouched: this is not a second lamp, it is the dark
+  // inside the one cold light the game has.
+  const lip = paletteHex('portal')
+  const hole = paletteHex('portalCore')
+  assert.ok(
+    relLuma(hole) < relLuma(lip) * 0.12,
+    `the hole is ${((relLuma(hole) / relLuma(lip)) * 100).toFixed(1)}% of the lip's luma — a dark lamp`,
+  )
+  // the hole is cropped: the shed's two flank panels leave 1.3 m of opening, and
+  // a disc with a margin inside it is a porthole hung in a wall
+  assert.ok(core > 0.65, `the disc is ${(core * 2).toFixed(2)} m across, which its 1.3 m doorway frames whole`)
+  // and seated *in* the doorway rather than floating in the shed. The opening is
+  // 1.3 m wide and 1.9 m tall about y = 0.95, so the disc has to *fill* the
+  // height it is given — reaching the lintel at 1.9 m — while the doorway crops
+  // it at the sides. A disc that stops short leaves a band of lit shed above the
+  // hole, and that band is the one thing that would make it a decal again.
+  assert.ok(
+    Math.abs(y + core - 1.9) < 0.05,
+    `the disc reaches ${(y + core).toFixed(2)} m against a 1.9 m opening, so it does not fill the frame`,
+  )
+  assert.ok(y - core > 0.2, `the disc's bottom is at ${(y - core).toFixed(2)} m, so it is a hole in the air`)
+  // and set back from the lip by something a camera at 4.5 m could see, which is
+  // the whole difference between a hole and a decal
+  assert.ok(inset > 0.01 && inset < 0.1, `the disc is set back ${inset} m, which is either nothing or a shadow`)
+  // the per-structure tables, in `PORTAL_STRUCTURES` order and both three long
+  const offsets = portalTable('PORTAL_GATE_OFFSET')
+  const scales = portalTable('PORTAL_GATE_SCALE')
+  assert.equal(offsets.length, 3, `${offsets.length} gate offsets for three shells`)
+  assert.equal(scales.length, 3, `${scales.length} gate scales for three shells`)
+  // the shed's gate is in its doorway, 1.25 m of flank out, and not at the
+  // middle of the shell, which is where BEFORE pass 3 left it
+  assert.ok(
+    offsets[0] > 1.0,
+    `the shed's gate is ${offsets[0]} m out, so it is floating in the shed rather than standing in its doorway`,
+  )
+  // the phone box's is proud of a 1.1 m cube, i.e. past its 0.55 m half-depth.
+  // This is the assertion that would have caught the ring being sealed inside
+  // solid metal for the whole of the benchmark.
+  assert.ok(
+    offsets[2] > 0.55,
+    `the phone box's gate is ${offsets[2]} m out, which is inside its own 1.1 m cube — the third portal is sealed in a metal box`,
+  )
+  // and scaled to fit the face it is stuck to: 0.68 * 1.44 = 0.98 m of hole
+  assert.ok(
+    scales[2] * core * 2 < 1.1,
+    `the phone box's hole is ${(scales[2] * core * 2).toFixed(2)} m across a 1.1 m face, so the booth is a disc with a booth behind it`,
+  )
+})
+
+test('the swirl turns on the world clock, slowly, against itself', () => {
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const rates = portalTable('PORTAL_SWIRL_RATES')
+  const radii = portalTable('PORTAL_SWIRL_RADII')
+  const depths = portalTable('PORTAL_SWIRL_DEPTHS')
+  const core = portalNumber('PORTAL_CORE_RADIUS')
+  const inset = portalNumber('PORTAL_CORE_INSET')
+  assert.equal(radii.length, 2, `${radii.length} radii: one layer is a painted disc, not a swirl`)
+  assert.equal(rates.length, radii.length, 'a layer with no rate is a decal')
+  assert.equal(depths.length, radii.length, 'a layer with no depth is behind the hole or in front of the lip')
+  // driven by the view's own clock and not by a frame count: `update(dt)` is
+  // handed a delta and keeps a `t`, so a rotation written from `t * rate` is the
+  // same rotation whatever the frame rate is, and one written from a per-frame
+  // increment is a different animation on every machine.
+  assert.match(
+    code,
+    /portal\.swirl\[layer\]\.rotation\.z = t \* PORTAL_SWIRL_RATES\[layer\]/,
+    'the swirl is not turned from the view clock, so its rate is a frame rate',
+  )
+  // and the loop that turns it is *inside* the `if (portal.shut) continue`, so a
+  // dead portal is inert rather than merely dark. The tick is located first
+  // because `nearestPortal` opens a loop over the same array with the same
+  // header, and a search that found that one first would be measuring §5.2.
+  const tick = /update\(dt\) \{([\s\S]*?)\n  \}\n/.exec(code)
+  assert.ok(tick, 'the view update tick is gone')
+  const loop = /for \(const portal of this\.portals\) \{([\s\S]*?)\n    \}\n/.exec(tick[1])
+  assert.ok(loop, 'the portal loop in the update tick is gone')
+  const body = loop[1]
+  assert.match(body, /if \(portal\.shut\) continue/, 'a shut portal is no longer skipped in the update')
+  assert.match(body, /rotation\.z/, 'and the swirl is not turned there at all')
+  assert.ok(
+    body.indexOf('if (portal.shut) continue') < body.indexOf('rotation.z'),
+    'the swirl turns in a portal that has been shut',
+  )
+  // inside the hole, or it draws an edge the hole does not have
+  for (const radius of radii) {
+    assert.ok(radius < core, `a swirl layer of ${radius} m is wider than the ${core} m hole it turns in`)
+  }
+  // in front of the disc and behind the lip, which is the only band in which a
+  // transparent layer can add to the hole without floating in front of the world
+  for (const depth of depths) {
+    assert.ok(depth > -inset, `a swirl layer at ${depth} m is behind its own disc`)
+    assert.ok(depth < 0, `a swirl layer at ${depth} m is proud of the lip`)
+  }
+  assert.notEqual(depths[0], depths[1], 'the two layers are coincident, so one of them is a decal')
+  // slow: a revolution has to outlast §5.3's hold, or the opening is a machine
+  for (const rate of rates) {
+    assert.notEqual(rate, 0, 'a rate of zero is a static texture')
+    assert.ok(
+      Math.abs(rate) < 0.35,
+      `a layer comes round once every ${(2 / Math.abs(rate)).toFixed(1)} s — that is machinery, not a hole`,
+    )
+  }
+  // and against itself, which is the property that makes two layers worth
+  // having at all: the same way round, they read as one disc with a pattern on it
+  assert.notEqual(
+    Math.sign(rates[0]),
+    Math.sign(rates[1]),
+    'both layers turn the same way, so the pair is one painted disc',
+  )
+})
+
+test('a shut portal is a cold, dim, inert disc (§5.3)', () => {
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const shut = /setPortalShut\(id, shut = true\) \{([\s\S]*?)\n  \}/.exec(code)
+  assert.ok(shut, 'setPortalShut is gone')
+  const body = shut[1]
+  // the lip and the hole both go out, and the swirl stops
+  assert.match(
+    body,
+    /portal\.rim\.material = shut \? this\._materials\.portalDead : this\._materials\.portal/,
+    "a shut portal is still wearing the live material on its lip",
+  )
+  assert.match(
+    body,
+    /portal\.disc\.material = shut \? this\._materials\.portalCoreDead : this\._materials\.portalCore/,
+    'a shut portal is still wearing the live material in its hole',
+  )
+  assert.match(body, /for \(const layer of portal\.swirl\) layer\.visible = !shut/, 'and its swirl never stops')
+  // cold and dim as two measured properties of two hexes rather than as an
+  // adjective: a dead lip is under a quarter of the live one, and it is the one
+  // *blue* thing left in a world that is otherwise entirely sodium
+  const liveLip = paletteHex('portal')
+  const deadLip = paletteHex('portalDead')
+  assert.ok(
+    relLuma(deadLip) < relLuma(liveLip) * 0.25,
+    `a shut lip is ${((relLuma(deadLip) / relLuma(liveLip)) * 100).toFixed(1)}% of the live one — the portal is still lit`,
+  )
+  assert.ok((deadLip >> 16) < (deadLip >> 8), `a shut lip is 0x${deadLip.toString(16)}, which is not cold`)
+  // and the dead hole is *colder* than the live one, not merely darker: a light
+  // going out leaves a blue hole, and that is the only hue change §5.3 is given
+  const liveHole = paletteHex('portalCore')
+  const deadHole = paletteHex('portalCoreDead')
+  assert.ok(relLuma(deadHole) < relLuma(liveHole), 'the dead hole is brighter than the live one')
+  assert.ok(
+    (deadHole & 0xff) >= ((deadHole >> 8) & 0xff),
+    `the dead hole is 0x${deadHole.toString(16)}, which warmed up instead of going cold`,
+  )
+})
+
+test('the gate is the size this pass chose (iteration 2, pass 3)', () => {
+  // Deliberately separate from the four property tests above, and for pass 1's
+  // reason: swapping 0x3ad6d6 for a hotter cyan, or 0.72 for a wider disc, leaves
+  // every property green while visibly changing the game. A *deliberate* retune
+  // is expected to fail this one, and the remedy is to move the pin in the same
+  // commit that moves the number — which is the moment a reviewer is told the
+  // portal changed, rather than the moment they notice on a screenshot.
+  assert.equal(portalNumber('PORTAL_CORE_RADIUS'), 0.72, 'PORTAL_CORE_RADIUS — move this pin in the commit that moves the disc')
+  assert.equal(portalNumber('PORTAL_RIM_TUBE'), 0.028, 'PORTAL_RIM_TUBE — move this pin in the commit that moves the lip')
+  assert.equal(portalNumber('PORTAL_CORE_Y'), 1.18, 'PORTAL_CORE_Y — move this pin in the commit that moves the hole')
+  assert.equal(portalNumber('PORTAL_CORE_INSET'), 0.03, 'PORTAL_CORE_INSET — move this pin in the commit that sets the hole back')
+  assert.deepEqual(portalTable('PORTAL_SWIRL_RADII'), [0.66, 0.4], 'PORTAL_SWIRL_RADII — move this pin with the swirl')
+  assert.deepEqual(portalTable('PORTAL_SWIRL_DEPTHS'), [-0.008, -0.016], 'PORTAL_SWIRL_DEPTHS — move this pin with the swirl')
+  assert.deepEqual(portalTable('PORTAL_SWIRL_RATES'), [0.21, -0.13], 'PORTAL_SWIRL_RATES — move this pin with the swirl')
+  assert.deepEqual(portalTable('PORTAL_GATE_OFFSET'), [1.25, 0, 0.62], 'PORTAL_GATE_OFFSET — move this pin with the shells')
+  assert.deepEqual(portalTable('PORTAL_GATE_SCALE'), [1, 1, 0.68], 'PORTAL_GATE_SCALE — move this pin with the shells')
+  assert.equal(paletteHex('portalCore'), 0x04100f, 'PALETTE.portalCore — move this pin in the commit that moves the hole')
+  assert.equal(paletteHex('portalCoreDead'), 0x050b0d, 'PALETTE.portalCoreDead — move this pin with it')
+  // and the seed, because the swirl is the one texture in the game a player sees
+  // rotating: a retune of its noise has to be a decision and not a side effect
+  assert.match(
+    stripProse(STREET_VIEW_SOURCE),
+    /swirl: 0x[0-9a-fA-F]+/,
+    'SURFACE_SEEDS.swirl is gone, so the swirl has no seed of its own',
+  )
+})
+
 // v2 slice 16 — the captures of §16.5, and the deletion of v1
 //
 // WHAT THIS SECTION IS FOR
