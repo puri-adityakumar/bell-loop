@@ -562,6 +562,109 @@ that could not see it.
   16's twelve captures are where that gets decided, and the numbers are all
   exported and asserted so moving one is a one-line change.
 
+## Slice 13 — the finale and the win
+
+The finale was *wired* before this slice and the plan knew it: `applyPortalHold`
+has latched the flag since 05, `creatureStep` has had the enrage edge since 06,
+the dusk step and the headlights are 09, §14.3's ramp is 12. So the slice is
+mostly about the **seams** — one flag, four consequences, and the sentence the
+plan asks for stated as facts — and about two things that turned out to be wrong.
+
+### What changed in the rules
+- **`FINAL_PORTAL_COUNT` + `triggersFinale(portals)`** (§10.1) as a named rule.
+  "Only the third" is now a predicate over *all three* rather than a sentence
+  inside `applyPortalHold`, and the flag stays latched (`next.finale ||`) so §9.1
+  cannot be undone by a re-derivation.
+- **`WIPE_TABLE` + `wipeRun(state)`** (§10.4), the mirror image of
+  `CAPTURE_TABLE`. The claim "a wiped run is indistinguishable from a new one" is
+  now provable: `deepEqual(wipeRun(dirty), createInitialState(...))` in the gate.
+  `WIPE_EXEMPT_FIELDS` names the two anchors (§3.4 geometry, not progress), and
+  the gate fails on any state field that neither table decides.
+- **`portalsShut` is null-safe**, for the reason `isInsideExit` already was: both
+  are asked a question by a caller holding a state it did not build.
+- `openPortals()` / `zeroProgress()` / `FULL_BREATH` exist so the wipe and the
+  constructor cannot disagree about what "open" or "full" means.
+
+### Two real bugs this slice found
+1. **THE FINALE HAD NO LOCOMOTION.** The world's walk was gated on
+   `step.to === 'stalk'`, so **CHASE and ENRAGED never moved** — §10.2's 5.2 m/s
+   was a number with nothing to spend it on, and the climax was a stroll to the
+   car with an omniscient statue behind it. The pure module now owns the answer:
+   `PURSUING_STATES = ['chase', 'enraged']` (asserted to contain every
+   `CAPTURE_STATES` member — a state that can end a run must be able to move in
+   it) and `pursuitTarget(creature, player)`, which sends ENRAGED at the player's
+   *live* position and everything else at its evidence (heard → seen → player).
+   **This also makes CHASE close for the first time**, which is a real difficulty
+   change to Act II and is exactly what slice 15's simulation is for.
+2. **THE WIN COULD RING MORE THAN ONCE.** `_win` had no guard, and a player
+   standing in the exit car keeps satisfying the test on every frame. It now
+   returns false if the store is already `PHASE.WON` (the store, not
+   `this.phase`, which is only refreshed at the top of a frame).
+
+### Smaller, deliberate
+- `restart()` now wipes through `rules.wipeRun` rather than rebuilding with
+  `createInitialState` — invisible at runtime, walkable by the gate — and
+  clears two more pieces of run state that survived it: the per-portal §5.2
+  sound windows and the per-portal hold readings.
+- `restart()` re-requests the pointer lock. The win card is the one screen the
+  player was never holding the lock on, so without it a new run starts
+  un-walkable — the same gesture-lock reason §14.3 gives for RESUME.
+- **Win text.** `THE BELL STOPPED.` → **`THE NEIGHBORHOOD WENT QUIET.`** (§10.4).
+  The v1 line is gone from all of `src/`, and the gate now greps the whole tree
+  to keep it gone; `loop.js`'s stale `PHASE.WON` comment went with it.
+- The finale has **no audio row**, and that is a decision rather than an
+  omission: §13's table is the design's list of sounds and a finale sting is not
+  on it. The climax is heard as the last portal hum stopping. The win chord stays
+  v1's and stays the one direct `audio.*` call the whitelist allows; `won` is
+  still on the frame and still ducks the drone to v1's `DRONE_LEVEL_WON`.
+
+### Gate
+- **206/206 pure checks** (up from 194) — a new "The finale and the win (v2
+  slice 13)" section, **12 checks**: the trigger over all eight portal subsets and
+  three orders; the finale as a condition not a phase (`PHASE` still has four
+  members); one flag read by four consequences; ENRAGED as a chase with the
+  ceiling clamped under the sprint and `CAPTURE_RADIUS / gap` seconds of clean
+  sprinting to leave contact; the flat 1.5 s window walked end to end
+  (swing → stagger → dormant → back **enraged**); no phase-out in 60 s of
+  silence while §8.2 still fires everywhere else; the win's phase/freeze/one
+  chord; the wipe; the world's wiring; the headlights as a beacon
+  (`_glow` sets `fog: false`, and the beam range is read out of the source and
+  compared against `fogVisibility` at dusk 1); and the win card's text.
+- **Mutation testing: 8 of 8 caught** — finale on the second portal, the purge of
+  `PURSUING_STATES`, a dropped `WIPE_TABLE` row, a dead headlight beam,
+  `restart()` running `applyCapture`, v1's line returning, ENRAGED walking at a
+  stale memory, and headlights reading `false`. Each fails 1–4 checks.
+- **Five world checks, validated in the scratch harness, 5/5** — and the first is
+  the only check in the project that shuts the three portals the way a player
+  does: walk the body to each anchor, hold E, let `applyPortalHold` fill, and
+  watch the flag, the headlights and the creature's state after each one. Then
+  the enrage and the 5.2 m/s actually spent on the ground, the beacons through
+  the fog, the win (one chord, then nothing moves but the fade), and the full
+  wipe. Parked in a new block with its own header.
+- **A control run says the other four parked world failures are not mine.**
+  Stashing this slice's three source files and re-running the scratch harness
+  gives 24/31 instead of 27/31 — the same four slice-10 checks fail either way:
+  the Act I apparition's title-screen pose, the telegraph's "gone when you look
+  back", the phase-out check's `§9.2` assertion, and the creature view's folded
+  position. Presentation expectations that drifted when slices 11–12 changed the
+  world; **slice 14's backlog**, and left alone here because "fixing" an
+  expectation about what a frame looks like, with no browser in this container,
+  would be guessing.
+- **A defect in slice 11's parked block, found by uncommenting it:** its last
+  check (`dispose() stops the hums it started`) never closed its `})`. Invisible
+  while commented, a parse error the moment slice 14 uncomments it. Fixed.
+- **The world harness's failure is UNCHANGED** — 1/12, `SHRINE_IDS is not
+  iterable`, the same baseline as 09/10/11/12. Slice 14 owns the repair; this
+  slice must not change how it fails, and did not.
+- **Left for slice 16, deliberately:** the title is still v1's `THE BELL LOOP`
+  (and `index.html`'s og/twitter tags with it). §0's working title is THE LONG
+  QUIET and the result README will name the run, so the naming is a slice-16
+  decision; §10.4's win text was not, and it moved.
+- **Not verifiable here:** whether the lit car reads as a beacon at 60 m through
+  dusk-1 fog, and whether an enraged creature closing at 5.2 m/s is thrill rather
+  than a coin flip. Slice 16's `finale-headlights` capture and slice 15's §11.3
+  simulation are where those two get answered.
+
 ## Infrastructure notes (for reproducibility)
 - tmux sessions die ~every 20–40 min in this container → abandoned tmux for slice execution.
 - New protocol per slice: `cline -P cline -m stealth/space-bunny-alpha --auto-approve true "<slice spec, V2-PLAN.md is authority>"` as Hermes-tracked background process; on exit → orchestrator runs `npm run check` itself, pushes via credential helper, updates this log, launches next slice.
@@ -570,6 +673,7 @@ that could not see it.
 - chromium-browser here is a snap transitional stub (no real binary) → screenshot tooling for Phase C captures: investigate repo tools/shot.mjs browser discovery or npx puppeteer browsers install chrome-headless-shell when Phase B renders exist.
 
 ## Pending
-- Slices 13–16 in order (13 finale, 14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slices 09–12 are landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`. Slice 14 should start from the parked world-check block at the bottom of `verify-world.mjs` — 26 checks are waiting there, and the nine from slice 12 were written *with* a working harness, so the stub work is the only thing between that block and the gate.
+- Slices 14–16 in order (14 verify-world repair, 15 balance sim, 16 captures + cleanup + result README). Slices 09–13 are landed; the branch is now past the point of no return and reverting v2 means reverting one line in `App.jsx`. Slice 14 should start from the parked world-check block at the bottom of `verify-world.mjs` — **31 checks are waiting there (9 slice-10, 7 slice-11, 9 slice-12, 5 slice-13, plus the v1-era live block it replaces)** — and the only thing between that block and the gate is the 2D canvas stub. Two things slice 14 needs to know that slice 13 found: the slice-11 block's last check needed a missing `})` (fixed here, and a reminder that the parked blocks have never been parsed), and **four slice-10 presentation checks fail as written** against today's world (title-screen apparition pose, the telegraph's look-back, the phase-out check's `§9.2` line, the creature view's folded position) — a control run with slice 13's source changes stashed gives 24/31, so those four are not slice 13's doing and want a decision, not a tweak.
 - Slice 07 open questions resolved, to be tuned in slice 15: `REEMERGE_MIN_GRAPH_DISTANCE` = 2 hops (90.5 m minimum straight line), `AGGRESSION_SPEED_STEP` = 0.25 m/s, `AGGRESSION_SIGHT_STEP` = 1.5 m, re-emergence delay 6 s → 0.5 s asymptote, `HUNT_SECONDS_PER_ENCOUNTER` = 9 s, `ENRAGED_REEMERGENCE_SECONDS` = 1.5 s (§16.3's candidate). §11.3 is asserted from the tables in node; slice 15 replaces that with the real simulation.
+- **NEW, and slice 15's first job: CHASE CLOSES NOW.** Slice 13 put `chase` into `PURSUING_STATES`, so a chasing creature walks at the tier speed for the first time in the branch's history — until slice 13 the world only moved it in STALK. Act II is therefore *harder* than every earlier slice assumed, and the §11.3 simulation should be run with that in mind rather than reading the old numbers. The number to watch is `CAPTURE_RADIUS / (SPRINT - tier speed)`: 1.4 s of clean sprinting in the finale, 2.6 s at tier 1, and it is asserted, so a tuning pass that pushes any tier past the sprint fails the gate immediately.
 - Vercel deploy: BLOCKED on Aditya auth — do not attempt without; everything else proceeds.

@@ -16,7 +16,7 @@ export const PHASE = Object.freeze({
   START: 'start', // start overlay up, world built but frozen
   PLAYING: 'playing', // player walks, timer runs
   RESET: 'reset', // bell tolling, walls swap, fade at full black
-  WON: 'won', // "THE BELL STOPPED."
+  WON: 'won', // §10.4: "THE NEIGHBORHOOD WENT QUIET." (v1's line is gone from src/)
 })
 
 /**

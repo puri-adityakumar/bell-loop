@@ -596,6 +596,12 @@ export class LongQuietGame {
     this._refreshColliders()
     this._updateVerbs(dt)
     this._updateCreature(dt, moved)
+    // §10.4. The win is the last thing that happens in a frame, deliberately: the
+    // verbs and the creature have already had this frame, so nothing that should
+    // have happened on the way into the car is skipped by winning on the way in.
+    // `checkExitWin` carries the whole rule — the `state.finale` in front of it
+    // is the short-circuit that keeps a two-point distance test off every frame
+    // of a run in which the car is, correctly, doing nothing.
     if (this.state.finale && this._insideExit()) this._win()
   }
 
@@ -726,19 +732,27 @@ export class LongQuietGame {
   /**
    * A portal went down: darken the world one step and take its light out for good.
    *
-   * §5.4's permanent record of progress. The dusk step and the headlights are the
-   * finale's *visible* consequences; the enraged creature that follows them is
-   * slice 13's business, and it is entirely inside `creatureStep`.
+   * §5.4's permanent record of progress. Two of the finale's three *visible*
+   * consequences are here and are idempotent by construction: the dusk step
+   * (§3.7) and the headlights (§10.3), both read off `state.finale` rather than
+   * off a counter, so the second and third portal re-apply them and only the
+   * third changes anything. The third consequence — the enraged creature — is
+   * entirely inside `creatureStep`, which is handed the same flag every frame.
    */
   _onPortalShut(id) {
     this.streetView.setPortalShut(id, true)
     this._applyDusk(this.state.dusk)
+    // §10.3. The car has been standing at the far side of the map since Act I,
+    // dark, and this is the only line in the codebase that lights it. It is
+    // written off `state.finale` rather than off a portal count so that the
+    // "third and only the third" decision is made once, in `rules.js`.
     this.streetView.setHeadlights(this.state.finale)
     // §13 gives a portal shutdown no bell of its own: the sound of a shutdown is
     // its hum falling an octave and stopping, which the routed `portalHum` row does
     // from `state.progress` and `state.portals` on the very next frame. v1 rang a
     // toll here, and v1's toll was a *timer* — a fourth source for the one sound
-    // §13 says has three.
+    // §13 says has three. The finale has no row either: it is heard as the last
+    // hum stopping and the drone carrying on underneath it.
   }
 
   _refreshColliders() {
@@ -835,7 +849,14 @@ export class LongQuietGame {
     // sigil in the game that flashes, so a deaf player sees the swing land
     if (step.swing && step.swing.result === 'banish') this.hammerFlash = 1
 
-    if (step.to === 'stalk' && this.creature.state === 'stalk') this._walkCreature(dt, player)
+    // §6.1's split between the two kinds of hunting, and §10.2's. STALK walks at
+    // its evidence; CHASE and ENRAGED walk at the player (`PURSUING_STATES`).
+    // The gate is the list rather than a second `if` because the list is also
+    // what `verify.mjs` asserts against `CAPTURE_STATES`: a state that can end
+    // the run and is not in this list is a creature that catches you from
+    // wherever it was standing, which is how the finale arrived with a 5.2 m/s
+    // speed and no locomotion to spend it on.
+    if (step.to === 'stalk' || beast.PURSUING_STATES.includes(step.to)) this._walkCreature(dt, player)
     if (step.to === 'dormant' && step.from !== 'dormant') this.banishElapsed = 0
     if (step.to === 'stalk' && step.from === 'dormant') {
       this._reemerge(player, occluders)
@@ -868,12 +889,22 @@ export class LongQuietGame {
    *
    * §6.1's STALK "ranges around" the last-heard point and CHASE closes; both are
    * the same walk here, because the difference between them is *which* point the
-   * module hands over, and that choice is already made by the time we get here.
-   * The creature is on the roads and never off them, which is what makes the
-   * street graph the right thing to path on at all.
+   * module hands over, and that choice is already made by the time we get here
+   * — `pursuitTarget` is where it is made, and it is pure, and it is why the
+   * finale is a chase rather than a coincidence. The creature is on the roads and
+   * never off them, which is what makes the street graph the right thing to path
+   * on at all.
+   *
+   * The speed comes from `creatureSpeed(tier, reemergenceCount)`, which is §11.1
+   * clamped by §8.6's `SPEED_CEILING`: 5.2 m/s at the finale, against a 6.0 m/s
+   * sprint. That gap is the design's whole escape plan, and it is the reason
+   * `verify.mjs` asserts the ceiling sits strictly under the sprint — a number
+   * that drifts by 0.1 turns the climax into a coin flip with no way to see it
+   * from a screenshot.
    */
   _walkCreature(dt, player) {
-    const target = this.creature.lastHeard ?? player
+    const target = beast.pursuitTarget(this.creature, player)
+    if (!target) return
     const hop = beast.nextHop(this.creaturePosition, target)
     if (hop == null) return
     const next = streetNodeToWorld(hop)
@@ -1113,14 +1144,50 @@ export class LongQuietGame {
    * condition comparable between runs" is literally true. The freeze matters as
    * much as the chord: PHASE.WON is a simulation state, so `update` stops moving
    * the player and the world holds still behind the card.
+   *
+   * Three things happen, in this order, and the order is the whole method:
+   *
+   *  1. **the player stops.** `enabled = false` is what makes the freeze real
+   *     rather than decorative — it is checked by `PlayerController.update`, and
+   *     it also drops the held keys, so a walk into the car is not a walk that
+   *     resumes behind the card.
+   *  2. **the phase moves.** The store is the only place the phase lives, and
+   *     `update` reads it at the top of every frame, so the very next frame is
+   *     `_updateWon` and nothing else runs.
+   *  3. **the chord rings.** Once, on this frame, and the guard below is what
+   *     makes "once" a fact rather than an observation: a world that is inside
+   *     the exit car keeps being inside the exit car for as long as the player
+   *     would have stood there, and an unguarded `_win` would ring a C major
+   *     chord on every one of those frames.
+   *
+   * §13's table has no win row, so this is the one sound the world reaches for
+   * directly — v1's chord, kept, on the design's own instruction that the bell
+   * "crosses as the *player's* instrument". The drone is still routed, not
+   * called: `won` is a field on the frame, and `droneLevelFor` is what pulls it
+   * down to v1's duck. The pure gate pins both halves of that.
+   *
+   * @returns {boolean} whether this call is the one that ended the run
    */
   _win() {
+    // the store, not `this.phase`: `this.phase` is only refreshed at the top of a
+    // frame, so it is still PLAYING on the frame this method sets WON and a
+    // second call in the same frame would ring the chord twice
+    if (this.store.get().phase === PHASE.WON || this.paused) return false
     this.player.enabled = false
     this.store.set({ phase: PHASE.WON, prompt: null })
     this.audio?.winChord()
+    return true
   }
 
-  /** The world holds still behind the win card; only the fade keeps moving. */
+  /**
+   * The world holds still behind the win card; only the fade keeps moving.
+   *
+   * §10.4's freeze, and it is a freeze of *everything*: no `player.update`, no
+   * `creatureStep`, no hold, no re-emergence clock, no lamp flicker. The one
+   * thing that moves is the fade, and it is the only thing that should — the
+   * card is over a world that has stopped, and a world that kept running behind
+   * a victory screen is a world that can still catch you.
+   */
   _updateWon(dt) {
     this.fade = Math.min(0.6, this.fade + dt * 0.8)
   }
@@ -1354,13 +1421,30 @@ export class LongQuietGame {
   /**
    * BEGIN AGAIN — the one place a full wipe is correct (§10.4).
    *
-   * Portals, the hammer, the banish ladder and the loop counter all go back to
-   * their opening values, the fixtures permute back to loop 1, and the creature
-   * goes back to the Act I sighting. The player goes back to spawn.
+   * Portals, the hammer, the banish ladder, the finale and the loop counter all
+   * go back to their opening values; the fixtures permute back to loop 1, the
+   * creature goes back to the Act I sighting, the fog goes back to dusk 0, the
+   * car's headlights go off; and the player goes back to spawn.
+   *
+   * The run state is wiped by `rules.wipeRun`, which is §10.4's table, rather
+   * than by rebuilding the object from `createInitialState` — the difference is
+   * invisible at run time and enormous in the gate, because the table is walked
+   * by `verify.mjs` and a constructor call cannot be walked by anything. It is
+   * emphatically NOT `applyCapture`: §9.1's right-hand column is the list of
+   * things a death never takes, and this is the one button that does take them.
+   *
+   * Three presentation clocks are cleared with it because the finale's ramp and
+   * the sigil flash are level meters on a *run*, and a new run is a new meter.
+   *
+   * The pointer lock is re-requested here, from the click that pressed the
+   * button: without it a new run starts un-walkable, because the win card is the
+   * one screen in the game the player was never holding the lock on, and a world
+   * that waits for a click they have already made is a world that reads as
+   * broken. It is the same gesture-lock reason §14.3 gives for RESUME.
    */
   restart() {
     this.startedOnce = true
-    this.state = rules.createInitialState(this.objectives, { loop: 1 })
+    this.state = rules.wipeRun(this.state, { loop: 1 })
     this.creature = beast.createCreature({ state: 'telegraph' })
     this.creaturePosition = this._firstSightingPoint()
     this.soundEvents = []
@@ -1383,10 +1467,16 @@ export class LongQuietGame {
     this.hammerFlash = 0
     this.finaleEffect = hud.finaleEffectInit()
     this._hold = 0
+    this._holdByPortal = Object.fromEntries(hood.PORTAL_IDS.map((id) => [id, '0']))
     this._awareness = 0
     this._creaturePresent = false
+    this.portalNoiseElapsed = Object.fromEntries(hood.PORTAL_IDS.map((id) => [id, 0]))
     for (const portal of this.streetView.portals) this.streetView.setPortalShut(portal.id, false)
     this.streetView.setHammerTaken(false)
+    // §10.3 in reverse. `wipeRun` cleared the flag; this is the one line in the
+    // codebase that puts the car back to the dark thing it was in Act I, and it
+    // has to be here rather than derived, or a new run would open with the
+    // beacon already on and the backrooms beat with it.
     this.streetView.setHeadlights(false)
     this.streetView.applyLoop(1)
     this.streetView.recentre(SPAWN.position.x, SPAWN.position.z)
@@ -1397,9 +1487,11 @@ export class LongQuietGame {
     this.resetElapsed = 0
     this.fade = 1
     this.store.set({ phase: PHASE.RESET, fade: 1 })
-    // the same beat as the capture (§13): the loop starts over, so it says so with
-    // the loop's own voice. This is the *only* other caller of the reset cue, and
-    // it is a caller because §10.4's wipe is a capture in everything but name.
+    // §9.3's beat, unchanged: a new run is a capture in everything but name, and
+    // it says so with the loop's own voice. `_updateReset` re-enables the player
+    // when the black lifts, and the lock is asked for here while the click that
+    // got us here is still a gesture.
+    this.player.requestLock()
     this._loopReset = true
   }
 

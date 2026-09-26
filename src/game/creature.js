@@ -141,6 +141,50 @@ export const CAPTURE_STATES = Object.freeze(['chase', 'enraged'])
 export const BANISHABLE_STATES = Object.freeze(['stalk', 'reposition', 'chase', 'enraged'])
 
 /**
+ * PURSUING_STATES — the states in which the creature *closes on the player*.
+ *
+ * §6.1 splits hunting into STALK, which "ranges around the last-heard point",
+ * and CHASE, which "closes", and §10.2's ENRAGED is CHASE with the pressure
+ * turned up and the safety valve removed. The distinction matters because it is
+ * the difference between a creature that wanders and a creature that is behind
+ * you, and because the world's walk is gated on this list: a state that can
+ * *catch* the player (`CAPTURE_STATES`) and is absent here is a state the game
+ * can end a run in without ever moving, which is exactly the bug this list
+ * exists to make impossible. `verify.mjs` asserts the containment.
+ *
+ * Slice 13 added it. Until then the world walked the creature in STALK only, so
+ * the whole of §10.2's premise — a 5.2 m/s thing behind you that only a 6.0 m/s
+ * sprint beats — was true only on paper, and the climax was a walk to the car
+ * with an omniscient statue behind you.
+ */
+export const PURSUING_STATES = Object.freeze(['chase', 'enraged'])
+
+/**
+ * pursuitTarget — the point the creature is walking toward, in metres.
+ *
+ * Three cases, in this order, and the first one is the finale:
+ *
+ *  - **ENRAGED walks at the player.** §10.2's permanent position knowledge is
+ *    the whole of the state, so it must not be spent on a stale memory: a
+ *    creature that enrages mid-hunt still holds the `lastHeard` point it had at
+ *    the time, and walking to that point while knowing where the player actually
+ *    is would be a creature that runs away from you at 5.2 m/s.
+ *  - **otherwise it walks at its evidence** — the last thing it *heard*, then
+ *    the last thing it *saw*, and only then the player. That ordering is §6.2's
+ *    meter made geometric: a creature that has heard nothing and seen nothing
+ *    wanders in a straight line toward where you are standing, which reads as a
+ *    coincidence and is not one.
+ *
+ * @param {object} creature from `createCreature`
+ * @param {{x:number,z:number}} player the player's canonical position
+ */
+export function pursuitTarget(creature, player) {
+  if (!creature) return player ?? null
+  if (creature.state === 'enraged' || creature.finale === true) return player ?? null
+  return creature.lastHeard ?? creature.lastSeen ?? player ?? null
+}
+
+/**
  * TRANSITIONS — the machine, as data.
  *
  * Every row here is asserted by `verify.mjs`, and so is the reverse: no

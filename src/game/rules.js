@@ -1,10 +1,10 @@
 /**
  * rules.js — the verb, the stamina and the bookkeeping for THE LONG QUIET
- * (v2, slice 05).
+ * (v2, slice 05; the finale and the wipe from slice 13).
  *
  * The parts of v2 that are neither the world nor the creature: how a portal is
  * shut down, how breath runs out, what a capture does and does not take away,
- * and the single geometric win trigger.
+ * what the third portal opens, and the single geometric win trigger.
  *
  * Everything here is a pure function of its arguments, in the same style as v1's
  * `loop.js`: primitives in, a new plain object out, never a mutation. The
@@ -79,10 +79,55 @@ export function portalShutProgress(progress, dt, holding, dead = false) {
   }
 }
 
-/** How many portals are shut. */
+/**
+ * How many portals are shut.
+ *
+ * Null-safe, deliberately and for the same reason `isInsideExit` is: both are
+ * asked "is the world in its final state" by callers holding a state object they
+ * did not build, and a predicate that throws on a missing portal set answers the
+ * question by taking the frame down.
+ */
 export function portalsShut(portals) {
+  if (!portals) return 0
   return PORTAL_IDS.reduce((n, id) => (portals[id] ? n + 1 : n), 0)
 }
+
+/**
+ * FINAL_PORTAL_COUNT — §10.1, as a number rather than an intention.
+ *
+ * "Shutting down the **third** portal triggers the finale. Nothing else does."
+ * The count is written down instead of the sentence because the sentence can
+ * only be read, and this is the one trigger in the game whose whole design
+ * weight is that it fires exactly once, on exactly one event: the headlights,
+ * the enrage, the §14.3 finale ramp and the win itself all hang off it.
+ */
+export const FINAL_PORTAL_COUNT = PORTAL_IDS.length
+
+/**
+ * triggersFinale — §10.1's trigger, as a predicate over the portal set.
+ *
+ * Deliberately *not* "is the third one shut": the rule is that every portal is
+ * shut, so a caller holding a stale or partial set cannot get a different
+ * answer by asking about a different portal. Monotone in the count, and
+ * therefore monotone in progress — which is the property the world relies on
+ * when it reads `state.finale` on a frame that is not the frame it was set.
+ */
+export function triggersFinale(portals) {
+  return portalsShut(portals) >= FINAL_PORTAL_COUNT
+}
+
+/** Every portal unlit — the opening state, and the one a full wipe returns to. */
+export function openPortals() {
+  return Object.fromEntries(PORTAL_IDS.map((id) => [id, false]))
+}
+
+/** Every hold at zero, for the same reason. */
+export function zeroProgress() {
+  return Object.fromEntries(PORTAL_IDS.map((id) => [id, 0]))
+}
+
+/** §7.3: a meter that is not being spent is full. One definition, two uses. */
+export const FULL_BREATH = 1
 
 /**
  * duskForPortals — §3.7. Dusk tracks PROGRESS, never the loop number, because
@@ -104,12 +149,15 @@ export function applyPortalHold(state, portalId, dt, holding) {
   const next = { ...state, progress: { ...state.progress, [portalId]: result.progress } }
   if (!result.completed) return next
   const portals = { ...next.portals, [portalId]: true }
-  const shut = portalsShut(portals)
   return {
     ...next,
     portals,
     dusk: duskForPortals(portals),
-    finale: next.finale || shut >= PORTAL_IDS.length,
+    // §9.1 keeps the finale across a capture, so the flag is latched here rather
+    // than recomputed from the portal set on every read: a caller that re-derived
+    // it could get `false` from a state whose portals were legitimately wiped out
+    // of order, and the headlights would go dark mid-climax.
+    finale: next.finale || triggersFinale(portals),
   }
 }
 
@@ -218,6 +266,14 @@ export function breathSoundRadius(baseRadius, exhausted) {
 // the win trigger (§10.4) — deliberately a mirror of v1's isInsideChamber
 // ---------------------------------------------------------------------------
 
+/**
+ * EXIT_WIN_RADIUS — §10.4's `isInsideExit(playerPosition, exitCenter, radius)`.
+ *
+ * 1.15 m, and the same number v1's `DOOR_WIN_RADIUS` has, which is asserted
+ * rather than merely intended. The radius is also why `streetView.js` parks the
+ * car *beside* its anchor: the player has a 0.36 m collision radius of their
+ * own, so a body centred on the anchor would push them out of their own win.
+ */
 export const EXIT_WIN_RADIUS = 1.15
 
 /**
@@ -234,7 +290,15 @@ export function isInsideExit(position, exitCenter, radius = EXIT_WIN_RADIUS) {
   return Math.hypot(position.x - exitCenter.x, position.z - exitCenter.z) <= radius
 }
 
-/** The actual win rule: in the exit, and the finale is running. */
+/**
+ * checkExitWin — the actual win rule: in the exit, and the finale is running.
+ *
+ * Both halves, in one function, because §10.4's win is the conjunction and a
+ * world that checked them separately would eventually check them in the wrong
+ * order. The finale half is the one that is easy to lose: the car is *there*
+ * from Act I (§10.3 — dark, unremarkable, easy to walk past), so a player can
+ * stand in the win trigger for a whole run and win nothing.
+ */
 export function checkExitWin(state, position) {
   if (!state.finale) return false
   return isInsideExit(position, state.exitAnchor.position, EXIT_WIN_RADIUS)
@@ -286,6 +350,12 @@ export function writeField(state, field, value) {
 /**
  * createInitialState — a fresh run, with the player's position at spawn.
  *
+ * The shape here and the shape `wipeRun` returns are the same shape, on purpose:
+ * the whole of §10.4's "BEGIN AGAIN returns to loop 1 with portals, hammer and
+ * counters wiped" is the claim that the second is indistinguishable from the
+ * first, and the only way to *prove* that is to build both from one list of
+ * fields. `verify.mjs` compares them with `deepEqual`.
+ *
  * @param {object} objectives from `placeObjectives`
  * @param {object} [options]
  * @param {number} [options.loop] starting capture counter
@@ -295,13 +365,13 @@ export function createInitialState(objectives, options = {}) {
     objectives,
     exitAnchor: objectives.exit,
     loop: options.loop ?? 1,
-    portals: Object.fromEntries(PORTAL_IDS.map((id) => [id, false])),
-    progress: Object.fromEntries(PORTAL_IDS.map((id) => [id, 0])),
+    portals: openPortals(),
+    progress: zeroProgress(),
     hammerHeld: false,
     banishCount: 0,
     finale: false,
     dusk: 0,
-    breath: 1,
+    breath: FULL_BREATH,
     exhausted: false,
     player: { x: SPAWN.position.x, z: SPAWN.position.z },
     prompt: null,
@@ -310,6 +380,105 @@ export function createInitialState(objectives, options = {}) {
     creature: { state: 'telegraph', reemergenceCount: 0, awareness: 0 },
     sounds: [],
   }
+}
+
+/**
+ * The two fields `createInitialState` owns that are *not* run state.
+ *
+ * They are the anchors: where the objectives and the exit are, which is
+ * geometry rather than progress (§3.4), and which is why a capture keeps them
+ * (§9.1) and why a full wipe may too. `verify.mjs` walks every key of a fresh
+ * state and fails on one that neither table mentions and this list does not
+ * cover — a field added to the state and to neither table is a rule nobody
+ * decided.
+ */
+export const WIPE_EXEMPT_FIELDS = Object.freeze(['objectives', 'exitAnchor'])
+
+/**
+ * WIPE_TABLE — §10.4's full wipe, as data.
+ *
+ * The mirror image of `CAPTURE_TABLE`, and the contrast is the design's own
+ * sentence: a capture should cost the player *where they were*, never *what they
+ * achieved*; BEGIN AGAIN is the one place the achieved column goes too, because
+ * the player asked for a new run rather than another attempt at this one. There
+ * is no `keep` row here. That absence is the rule, and `verify.mjs` asserts it.
+ *
+ * @see CAPTURE_TABLE for the row shape
+ */
+export const WIPE_TABLE = Object.freeze([
+  Object.freeze({ field: 'portals', mutation: 'open', note: 'all three go back to unlit' }),
+  Object.freeze({ field: 'progress', mutation: 'zeroProgress', note: 'no half-finished hold survives' }),
+  Object.freeze({ field: 'hammerHeld', mutation: 'clear', note: 'the hammer is back in its clearing' }),
+  Object.freeze({ field: 'banishCount', mutation: 'zero', note: 'the run-long ladder starts over' }),
+  Object.freeze({ field: 'finale', mutation: 'clear', note: 'the exit goes dark again' }),
+  Object.freeze({ field: 'dusk', mutation: 'zero', note: 'and with it the fog (§3.7)' }),
+  Object.freeze({ field: 'breath', mutation: 'refill', note: 'a new run starts rested' }),
+  Object.freeze({ field: 'exhausted', mutation: 'clear', note: 'and not winded' }),
+  Object.freeze({ field: 'loop', mutation: 'setLoop', note: 'back to loop 1' }),
+  Object.freeze({ field: 'player', mutation: 'spawn', note: 'and the player to spawn' }),
+  Object.freeze({ field: 'prompt', mutation: 'null', note: 'no prompt survives a wipe' }),
+  Object.freeze({
+    field: 'creature',
+    mutation: 'wipeCreature',
+    note: 'Act I sighting, no re-emergences, no awareness',
+  }),
+  Object.freeze({ field: 'sounds', mutation: 'empty', note: 'nothing queued for a frame that never came' }),
+])
+
+/**
+ * wipeRun — BEGIN AGAIN, the full wipe of §10.4.
+ *
+ * The one place in the game where nothing is kept, and the reason it is a table
+ * rather than a constructor call is that "nothing is kept" is the kind of claim
+ * that decays: a new field added to the state is kept by default, silently, and
+ * the only defence is a list the gate walks. A row added here is a new
+ * obligation; a field added to the state and to neither table fails the gate.
+ *
+ * @param {object} state the run to wipe
+ * @param {object} [options]
+ * @param {number} [options.loop] the loop to return to, 1 by default
+ */
+export function wipeRun(state, options = {}) {
+  let next = state
+  for (const row of WIPE_TABLE) {
+    switch (row.mutation) {
+      case 'open':
+        next = writeField(next, row.field, openPortals())
+        break
+      case 'zeroProgress':
+        next = writeField(next, row.field, zeroProgress())
+        break
+      case 'clear':
+        next = writeField(next, row.field, false)
+        break
+      case 'zero':
+        next = writeField(next, row.field, 0)
+        break
+      case 'refill':
+        next = writeField(next, row.field, FULL_BREATH)
+        break
+      case 'setLoop':
+        next = writeField(next, row.field, options.loop ?? 1)
+        break
+      case 'spawn':
+        next = writeField(next, row.field, { x: SPAWN.position.x, z: SPAWN.position.z })
+        break
+      case 'null':
+        next = writeField(next, row.field, null)
+        break
+      case 'wipeCreature':
+        next = writeField(next, row.field, { state: 'telegraph', reemergenceCount: 0, awareness: 0 })
+        break
+      case 'empty':
+        next = writeField(next, row.field, [])
+        break
+      default:
+        // a typo in the table must not quietly wipe nothing: a wipe that keeps
+        // everything is the one failure this function exists to make impossible
+        throw new Error(`wipeRun: unknown mutation '${row.mutation}' on ${row.field}`)
+    }
+  }
+  return next
 }
 
 /**

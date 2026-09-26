@@ -31,8 +31,13 @@
  *   — validated in a scratch copy of this file whose 2D context had the drawing
  *   surface `streetView`'s procedural textures need, which is precisely the stub
  *   work §15.3 hands slice 14. The scratch copy is not committed. `hud` is
- *   imported for them alongside `beast` and `hood`; all three are read only by
- *   the parked blocks, which is why the linter calls all three unused.
+ *   imported for them alongside `beast`, `hood` and `rules`; all four are read
+ *   only by the parked blocks, which is why the linter calls all four unused.
+ * - slice 13 added **five more parked checks in their own block** (§10.1's
+ *   trigger driven through the real hold, §10.2's enrage, §10.3's headlights, the
+ *   §10.4 win and the full wipe), written in that same scratch harness and for
+ *   the same reason. The first of the five is the only check anywhere in the
+ *   project that shuts the three portals by walking to them and holding E.
  *
  * Run: node verify-world.mjs   (exit code 0 = the whole loop works)
  */
@@ -108,6 +113,10 @@ const hood = await import('./src/game/neighborhood.js')
 // slice 12: the HUD projection, which the parked block below asserts against.
 // Pure, so importing it here costs the live block nothing.
 const hud = await import('./src/ui/hud.js')
+// slice 13: the rules, for the parked finale block — the fog curve, the exit
+// radius and `checkExitWin` are all rules, and a world check that re-derived
+// them locally would be asserting a copy. Pure, like the three above.
+const rules = await import('./src/game/rules.js')
 
 function makeFakeRenderer() {
   return {
@@ -763,6 +772,7 @@ check('dispose() stops the hums it started', () => {
   audio.calls.length = 0
   second.dispose()
   assert.ok(audio.calls.includes('stopPortalHums'), 'the hums outlived the world')
+})
 // ---------------------------------------------------------------------------
 // slice 12 — the HUD mirror, pause, and motion sensitivity (PARKED for slice 14)
 // ---------------------------------------------------------------------------
@@ -1081,6 +1091,259 @@ check('the pause card\'s two calls are the only doors React has into the world',
   game.setPaused(true)
   assert.equal(game.tryInteract(DT), false, 'tryInteract ran through a pause')
   game.setPaused(false)
+})
+*/
+
+/*
+// ---------------------------------------------------------------------------
+// slice 13 — the finale and the win (PARKED for slice 14)
+//
+// Five checks, and the first one is the reason this block exists at all: it
+// drives the three portals through the *real* hold — walk the body to the
+// anchor, press E, let `applyPortalHold` fill — rather than setting
+// `state.finale` and reading it back. Every earlier block in this file sets
+// state and asserts a consequence, which cannot tell "the trigger works" from
+// "the flag was already true". This one can: if the third portal stopped being
+// the trigger, the second shutdown would light the headlights and the first
+// would enrage the creature, and both are watched here against a body that has
+// never been told anything.
+//
+// The other four are the plan's own list: ENRAGED, the headlights, the win, and
+// BEGIN AGAIN. Two of their rules (§10.2's banish window and §10.3's fog) are
+// pure and are asserted in `verify.mjs`; what a world check adds is that the
+// *world* reads them — that the re-emergence clock it runs is the flat one, and
+// that the lamps it lights are the ones that ignore fog.
+//
+// Transcribed from a working run in a scratch copy of this file whose 2D
+// context had the drawing surface `streetView`'s procedural textures need. The
+// scratch copy is not committed.
+//
+// (This header is `//` lines rather than a nested JSDoc block because the whole
+// slice-13 block is already inside one, and a nested comment's own closer ends
+// the outer one early — which is the exact mistake this line exists to stop the
+// next reader repeating.)
+
+check('the third portal and only the third opens the finale', () => {
+  game.restart()
+  run(game, 1.6)
+  game.state = { ...game.state, hammerHeld: true }
+  // the creature is awake and hunting, so the enrage is a real consequence
+  // rather than an Act I apparition that cannot promote
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.5 })
+  game.creaturePosition = { x: game.player.pos.x + 30, z: game.player.pos.z }
+
+  const shut = []
+  for (const entry of game.streetView.portals) {
+    const at = game.streetView.worldOf(entry.position)
+    game.player.teleport(at.x, at.z, 0)
+    run(game, DT)
+    let frames = 0
+    while (!game.state.portals[entry.id] && frames < 600) {
+      game.tryInteract(DT)
+      frames += 1
+    }
+    assert.equal(game.state.portals[entry.id], true, `${entry.id} never shut through the real hold`)
+    shut.push(entry.id)
+    // §10.1: the flag is the count, and only the count. The headlights and the
+    // creature are the two things that read it, so they are what is watched.
+    assert.equal(game.state.finale, shut.length === 3, `the finale opened after ${shut.length} portals`)
+    assert.equal(game.streetView.exitCar.lit, shut.length === 3, 'the headlights disagree with the finale')
+    if (shut.length < 3) {
+      assert.notEqual(game.creature.state, 'enraged', `the creature enraged after ${shut.length} portals`)
+    }
+  }
+  assert.deepEqual(shut, [...hood.PORTAL_IDS])
+  assert.equal(game.state.finale, true, 'the third portal did not open the finale')
+  assert.equal(game.state.dusk, 1, '§3.7: the fog closed to dusk 1 with it')
+  assert.equal(game.state.hammerHeld, true, 'and nothing about the finale touched the hammer')
+  // the last two consequences, on the frame after the third — still without a
+  // single line of state written by this check beyond the hold itself
+  game.update(DT)
+  assert.equal(game.creature.tier, 3, '§11.1: the tier is the portals shut, and the world hands it over every frame')
+  assert.equal(game.creature.state, 'enraged', '§10.2: the third portal enrages the creature')
+  assert.equal(game.creature.awareness, beast.AWARENESS_CHASE, 'with the meter already full')
+  // and it is spending 5.2 m/s on the ground, which is the only thing that makes
+  // §10.2's "sprint remains the escape" a fact about the world and not a number
+  // in a table. Until slice 13 the walk was gated on STALK, so this creature
+  // stood still with perfect knowledge and the climax was a walk to the car.
+  // 150 m is two whole blocks: at a shorter range the creature and the player can
+  // share one intersection node, and `nextHop` has nothing to hand back.
+  game.creaturePosition = { x: game.player.pos.x + 150, z: game.player.pos.z }
+  const from = { ...game.creaturePosition }
+  run(game, 0.5)
+  const closed = Math.hypot(
+    beast.wrapDelta(from.x, game.creaturePosition.x),
+    beast.wrapDelta(from.z, game.creaturePosition.z),
+  )
+  assert.ok(closed > beast.SPEED_CEILING * 0.5 * 0.6, `it moved ${closed.toFixed(2)} m in half a second; 5.2 m/s is 2.6`)
+  assert.ok(closed <= beast.SPEED_CEILING * 0.5 + 1e-6, 'and it never exceeded the ceiling')
+  assert.ok(closed < beast.PLAYER_SPRINT_SPEED * 0.5, 'and the sprint still beats it')
+})
+
+check('the finale enrages the creature, and the hammer still answers', () => {
+  game.restart()
+  run(game, 1.6)
+  game.state = { ...game.state, finale: true, hammerHeld: true }
+  // 1.6 m: inside the hammer's 2.6 m banish range and outside the 1.1 m contact
+  // radius, so the swing below is a banish and not a capture. Standing at 1 m
+  // would be a capture on the same frame the enrage fires, which is correct
+  // behaviour and a useless place to assert it from.
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.5, finale: true })
+  game.creaturePosition = { x: game.player.pos.x + 1.6, z: game.player.pos.z }
+  game.update(DT)
+  assert.equal(game.creature.state, 'enraged', '§10.2')
+  // the tier follows the *portal count*, not the flag: this check raises the flag
+  // by hand without shutting anything, so the world's own line says tier 0 — and
+  // the check above is where the two are shown to be the same thing for real
+  assert.equal(game.creature.tier, 0, 'the world hands the creature the portals-shut count, not the finale flag')
+  assert.equal(game.creature.awareness, beast.AWARENESS_CHASE, 'permanent position knowledge')
+  // a connected swing banishes, and the window the world then runs is the flat
+  // one rather than a rung of §7.4's ladder — this is the only place the world's
+  // own re-emergence clock is visible
+  game.player.pressButton(0)
+  game.update(DT)
+  game.player.releaseButton(0)
+  assert.equal(game.state.banishCount, 1, 'the ladder advanced, as a connected swing must')
+  const window = beast.banishWindow({ state: 'stagger', banishCount: game.state.banishCount, finale: true })
+  assert.equal(window, beast.ENRAGED_REEMERGENCE_SECONDS, 'the finale ignored the ladder')
+  assert.equal(window, 1.5, '§10.2 / §16.3: the flat short delay, at its documented candidate')
+  // §7.4's recoil and §10.2's window are two different clocks, and the world's
+  // is the second one: the creature is still reeling at the end of the window
+  run(game, window + 0.1)
+  assert.equal(game.creature.state, 'stagger', 'the window swallowed the §7.4 recoil')
+  run(game, beast.STAGGER_SECONDS)
+  assert.equal(game.creature.state, 'enraged', 'and it came back angry, on the flat delay plus the recoil')
+  assert.equal(game.creature.reemergenceCount, 1, '§11.2: the pressure axis counted the re-emergence')
+  // §10.2's speed is spent on locomotion: an enraged creature closes on the
+  // player, at the ramp speed for the tier the world was given rather than at
+  // zero. The measurement is a straight-line closure, so a path that turns a
+  // corner can only report *less* than the distance walked — which is why the
+  // ceiling is an upper bound here and the floor is deliberately loose. 150 m is
+  // two whole blocks, for the same `nextHop` reason as the check above.
+  game.creaturePosition = { x: game.player.pos.x + 150, z: game.player.pos.z }
+  const from = { ...game.creaturePosition }
+  run(game, 0.5)
+  const closed = Math.hypot(
+    beast.wrapDelta(from.x, game.creaturePosition.x),
+    beast.wrapDelta(from.z, game.creaturePosition.z),
+  )
+  const expected = beast.creatureSpeed(game.creature.tier, game.creature.reemergenceCount) * 0.5
+  assert.ok(closed > expected * 0.6, `the enraged creature moved ${closed.toFixed(2)} m in half a second; ${expected.toFixed(2)} m is its ramp speed`)
+  assert.ok(closed <= beast.SPEED_CEILING * 0.5 + 1e-6, 'and it never exceeded the §8.6 ceiling')
+  assert.equal(game.creature.state, 'enraged', 'and it was still hunting after all of that')
+})
+
+check('the exit car lights up, and the lamps are the ones that read through fog', () => {
+  game.restart()
+  run(game, 1.6)
+  const car = game.streetView.exitCar
+  assert.equal(car.lit, false, '§10.3: the car is dark in Act I')
+  for (const lamp of car.lamps) assert.equal(lamp.visible, false, 'and it is not a pair of glowing boxes either')
+  assert.equal(car.beam.intensity, 0)
+  assert.equal(game.scene.fog.density, rules.fogDensityForDusk(0), 'Act I is the open fog')
+  // §10.3: the finale lights it, and the fog is at its tightest on the same
+  // frame, which is the whole problem the headlights solve
+  game.state = { ...game.state, finale: true, dusk: 1 }
+  game._onPortalShut('C')
+  game._applyDusk(1)
+  assert.equal(car.lit, true, 'the finale did not light the car')
+  for (const lamp of car.lamps) assert.equal(lamp.visible, true, 'a lamp stayed dark')
+  assert.ok(car.beam.intensity > 0, 'and the beam never came on')
+  // the beam outlasts the fog, and the lamps ignore it: at dusk 1 the world is
+  // half opaque at about 32 m, so a lit surface would be a glow twenty metres out
+  const half = rules.fogVisibility(game.scene.fog.density)
+  assert.ok(car.beam.distance > half, `the beam reaches ${car.beam.distance} m and the fog is half opaque at ${half.toFixed(1)}`)
+  for (const lamp of car.lamps) {
+    assert.equal(lamp.material.fog, false, 'the headlights are fogged out, so the beacon cannot be seen coming')
+  }
+  // and the body is parked *beside* the win anchor, so the player can stand in
+  // their own win trigger (§10.3): 2.6 m of kerbside, against a 1.15 m radius
+  // and a 0.36 m player body. The rule is checked on the *canonical* anchor,
+  // because the drawn car is in the folded copy and the win is not.
+  const anchor = game.streetView.worldOf(game.state.exitAnchor.position)
+  const offset = Math.hypot(car.root.position.x - anchor.x, car.root.position.z - anchor.z)
+  assert.ok(offset > rules.EXIT_WIN_RADIUS, 'the car body is centred on the win anchor and the player cannot reach it')
+  assert.equal(
+    rules.checkExitWin({ ...game.state, finale: true }, game.state.exitAnchor.position),
+    true,
+    'and standing on the anchor wins',
+  )
+})
+
+check('walking into the exit wins, rings once, and freezes the world', () => {
+  game.restart()
+  run(game, 1.6)
+  const anchor = game.streetView.worldOf(game.state.exitAnchor.position)
+  // §10.4: the geometry alone wins nothing, and the car has been there all run
+  game.player.teleport(anchor.x, anchor.z, 0)
+  audio.calls.length = 0
+  game.update(DT)
+  assert.notEqual(store.get().phase, PHASE.WON, 'won before the finale')
+  game.state = { ...game.state, finale: true }
+  audio.calls.length = 0
+  game.update(DT)
+  assert.equal(store.get().phase, PHASE.WON, '§10.4: walking into the exit did not win')
+  assert.equal(game.player.enabled, false, 'the player is still walking behind the card')
+  assert.equal(audio.calls.filter((name) => name === 'winChord').length, 1, 'the win chord did not ring exactly once')
+  // the freeze: nothing in the world moves, and the one thing that does is the fade
+  const at = { x: game.player.pos.x, z: game.player.pos.z, fade: game.fade }
+  const frozen = { ...game.creaturePosition }
+  for (let i = 0; i < 60; i += 1) game.update(DT)
+  assert.equal(game.player.pos.x, at.x, 'the player kept walking after the win')
+  assert.equal(game.player.pos.z, at.z)
+  assert.deepEqual(game.creaturePosition, frozen, 'the creature kept hunting after the win')
+  assert.ok(game.fade > at.fade, 'but the fade stopped, so the card has nothing behind it')
+  // and the chord is not rung again by standing in the car for a second
+  audio.calls.length = 0
+  for (let i = 0; i < 60; i += 1) game.update(DT)
+  assert.equal(audio.calls.includes('winChord'), false, 'the chord rang again while the player stood in the exit')
+})
+
+check('BEGIN AGAIN is a full wipe: loop 1, no portals, no hammer, no counters', () => {
+  // §10.4 against §9.1: this is the one button that takes the achieved column
+  // too, and the only difference between the two tables is that.
+  game.restart()
+  run(game, 1.6)
+  game.state = { ...game.state, finale: true, dusk: 1, hammerHeld: true, banishCount: 3, loop: 6 }
+  for (const portal of game.streetView.portals) game.streetView.setPortalShut(portal.id, true)
+  game.streetView.setHammerTaken(true)
+  game.streetView.setHeadlights(true)
+  game.creature = beast.createCreature({ state: 'enraged', awareness: 1, finale: true, reemergenceCount: 3 })
+  game.creaturePosition = { x: game.player.pos.x + 4, z: game.player.pos.z }
+  game.portalNoiseElapsed = { A: 9, B: 9, C: 9 }
+  game.hammerFlash = 1
+  game.finaleEffect = { level: 0.83, hold: 1.5 }
+
+  game.restart()
+  assert.equal(game.state.loop, 1, '§9.2: the counter counts captures, and a new run is zero of them')
+  assert.equal(game.state.finale, false, 'the finale survived BEGIN AGAIN')
+  assert.equal(game.state.dusk, 0, 'the fog did not reopen')
+  assert.equal(game.state.hammerHeld, false, 'the hammer survived BEGIN AGAIN')
+  assert.equal(game.state.banishCount, 0, 'the banish ladder survived BEGIN AGAIN')
+  assert.equal(game.state.breath, 1, 'and a new run starts winded')
+  assert.equal(game.state.exhausted, false)
+  for (const id of hood.PORTAL_IDS) {
+    assert.equal(game.state.portals[id], false, `${id} is still shut`)
+    assert.equal(game.state.progress[id], 0, `${id} kept a half-finished hold`)
+    assert.equal(game.portalNoiseElapsed[id], 0, `${id} kept its §5.2 sound window`)
+  }
+  assert.equal(game.state.creature.state, 'telegraph', 'the state opened in Act II')
+  assert.equal(game.creature.state, 'telegraph')
+  assert.equal(game.creature.reemergenceCount, 0, 'the pressure axis survived BEGIN AGAIN')
+  assert.equal(game.streetView.exitCar.lit, false, 'the headlights survived BEGIN AGAIN')
+  assert.equal(game.streetView.hammer.taken, false, 'the hammer is still out of its clearing')
+  for (const portal of game.streetView.portals) {
+    assert.equal(portal.shut, false, `${portal.id} is still dark in the world`)
+  }
+  assert.equal(game.hammerFlash, 0, '§14.3: the sigil flash survived')
+  assert.equal(game.finaleEffect.level, 0, '§14.3: the finale ramp survived')
+  assert.equal(game.player.enabled, false, 'the player can walk through the black of a wipe')
+  // the wipe is a reset, so the player is back at spawn and the run plays on
+  assert.ok(Math.hypot(game.player.pos.x - hood.SPAWN.position.x, game.player.pos.z - hood.SPAWN.position.z) < 0.01)
+  run(game, 2.0)
+  assert.equal(store.get().phase, PHASE.PLAYING, 'and play resumes')
+  assert.equal(game.player.enabled, true)
+  assert.equal(store.get().loop, 1, 'the HUD is showing loop 1')
 })
 */
 

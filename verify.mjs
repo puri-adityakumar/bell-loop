@@ -86,7 +86,7 @@ import * as audio from './src/game/audio.js'
 // that *replaced* v1's `hudSnapshot` in `loop.js`, so nothing here has to be
 // renamed when slice 16 deletes `loop.js`.
 import * as hud from './src/ui/hud.js'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import {
   LOOP_SECONDS,
   PHASE,
@@ -6056,6 +6056,452 @@ test('the world still makes exactly one audio call, and the router still owns th
   for (const field of audio.AUDIO_FRAME_FIELDS) {
     assert.ok(new RegExp(`\\b${field}:`).test(WORLD_SOURCE), `the world never fills in ${field}`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// v2 slice 13 — the finale and the win
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS SECTION OWNS, AND WHY IT IS MOSTLY ABOUT SEAMS
+// ---------------------------------------------------------------------------
+// The finale was already *wired* before this slice: `rules.applyPortalHold` has
+// latched the flag since slice 05, `creatureStep` has had the enrage edge since
+// slice 06, the world's dusk step and headlights are slice 09, and §14.3's
+// finale ramp is slice 12. What none of them could do is say the sentence the
+// plan asks for — "third portal, and *only* the third; ENRAGED; headlights
+// through fog; win; BEGIN AGAIN" — as one set of facts about one flag.
+//
+// So this section is about the seams rather than the pieces:
+//   - the flag the headlights read is the same flag the creature reads, and only
+//     the third portal can raise it (§10.1);
+//   - the finale is a condition, not a phase (§10.5), so `PHASE` still has four
+//     members and a won run is still a `PHASE.WON`;
+//   - ENRAGED is a *chase*: it moves, at the ramp speed, and the sprint beats it
+//     (§10.2, §8.6);
+//   - the win is a freeze, a phase, one chord, and one line of text (§10.4);
+//   - BEGIN AGAIN is a full wipe, and it is the only one (§9.1 vs §10.4).
+//
+// Two of these — the locomotion and the wipe — were not merely unproven. Both
+// were wrong: see `PURSUING_STATES` and `wipeRun`.
+
+section('The finale and the win (v2 slice 13)')
+
+/** One method's source out of `world.js`, by name, including its opening line. */
+function worldMethod(name) {
+  const start = WORLD_SOURCE.indexOf(`  ${name}(`)
+  assert.notEqual(start, -1, `world.js has no ${name}`)
+  return WORLD_SOURCE.slice(start, WORLD_SOURCE.indexOf('\n  }', start))
+}
+
+/** Close a portal by holding the verb, the way the world does. */
+function shutPortal(state, id) {
+  let next = state
+  for (let i = 0; i < 400 && !next.portals[id]; i += 1) next = rules.applyPortalHold(next, id, DT, true)
+  assert.equal(next.portals[id], true, `${id} did not shut`)
+  return next
+}
+
+/** A run with every portal down, and therefore the finale open. */
+function finaleRun() {
+  let state = rules.createInitialState(hood.placeObjectives(1337, 1))
+  for (const id of hood.PORTAL_IDS) state = shutPortal(state, id)
+  assert.equal(state.finale, true, 'the fixture run did not open the finale')
+  return state
+}
+
+test('the finale opens on the third portal and only the third (§10.1)', () => {
+  // the number, not the sentence: three portals, and the trigger is all of them
+  assert.equal(rules.FINAL_PORTAL_COUNT, 3)
+  assert.equal(rules.FINAL_PORTAL_COUNT, hood.PORTAL_IDS.length, 'the trigger is a count, so the two cannot drift')
+  // every subset, because "only the third" is a claim about all eight
+  for (let bits = 0; bits < 8; bits += 1) {
+    const set = Object.fromEntries(hood.PORTAL_IDS.map((id, index) => [id, Boolean(bits & (1 << index))]))
+    const shut = hood.PORTAL_IDS.filter((id) => set[id]).length
+    assert.equal(rules.triggersFinale(set), shut === rules.FINAL_PORTAL_COUNT, `a subset of ${shut} triggered the finale`)
+  }
+  assert.equal(rules.triggersFinale({}), false)
+  assert.equal(rules.triggersFinale(null), false, 'no portal set is not a finale')
+  // and the verb cannot get there early, in any order, or by an id that is not a
+  // portal — the three ways "only the third" is usually broken
+  for (const order of [['A', 'B', 'C'], ['C', 'B', 'A'], ['B', 'C', 'A']]) {
+    let state = rules.createInitialState(hood.placeObjectives(1337, 1))
+    for (const [index, id] of order.entries()) {
+      state = shutPortal(state, id)
+      assert.equal(state.finale, index === order.length - 1, `the finale opened on ${id} of ${order.join('')}`)
+    }
+  }
+  const fresh = rules.createInitialState(hood.placeObjectives(1337, 1))
+  assert.equal(rules.applyPortalHold(fresh, 'Z', DT, true), fresh, 'a portal that does not exist was accepted')
+  assert.equal(fresh.finale, false, 'and a non-portal opened the finale')
+  // holding a shut portal again is not a second trigger: the verb is dead (§5.2)
+  const held = rules.applyPortalHold(finaleRun(), 'C', DT, true)
+  assert.equal(rules.portalsShut(held.portals), 3, 'a held portal scored twice')
+  assert.equal(held.finale, true)
+})
+
+test('the finale is a condition, not a phase (§10.5)', () => {
+  // four members, and none of them is the finale — this is the assertion that
+  // stops a later refactor from "tidying" the flag into a PHASE.FINALE
+  assert.deepEqual(Object.keys(PHASE).sort(), ['PLAYING', 'RESET', 'START', 'WON'])
+  for (const name of Object.values(PHASE)) {
+    assert.equal(String(name).includes('finale'), false, `PHASE grew a ${name}`)
+  }
+  // it is a boolean on the state, and a new run opens with the car dark
+  const state = rules.createInitialState(hood.placeObjectives(1337, 1))
+  assert.equal(typeof state.finale, 'boolean')
+  assert.equal(state.finale, false)
+  // §9.1: a capture in the finale keeps it, so the headlights do not go dark
+  // because the player died two blocks from the exit
+  const afterDeath = rules.applyCapture({ ...state, finale: true, loop: 4, banishCount: 3 })
+  assert.equal(afterDeath.finale, true, 'a capture closed the exit')
+  assert.equal(afterDeath.loop, 5)
+})
+
+test('the enrage is driven by the same flag the headlights read (§10.1, §10.2)', () => {
+  // the seam this slice exists to close: one flag, four consequences, all read
+  // from `state.finale` rather than from counters that can disagree
+  const state = finaleRun()
+  assert.match(WORLD_SOURCE, /this\.streetView\.setHeadlights\(this\.state\.finale\)/, 'the headlights read a different flag')
+  assert.match(WORLD_SOURCE, /finale: this\.state\.finale,/, 'the creature is handed a different flag')
+  assert.match(WORLD_SOURCE, /hud\.finaleEffect\(this\.finaleEffect, dt, this\.state\.finale/, 'the finale ramp reads a third flag')
+  assert.match(WORLD_SOURCE, /if \(this\.state\.finale && this\._insideExit\(\)\)/, 'and the win reads a fourth')
+  // and the flag the rules raise enrages the creature on the next frame, from
+  // every state it can actually be hunting in (§6.1's edge list)
+  for (const creatureState of beast.ENRAGE_FROM) {
+    const step = beast.creatureStep(
+      beast.createCreature({ state: creatureState, awareness: 0.5 }),
+      DT,
+      { distance: 60, finale: state.finale, sounds: [] },
+    )
+    assert.equal(step.to, 'enraged', `${creatureState} did not enrage on the finale flag`)
+    assert.equal(step.awareness, beast.AWARENESS_CHASE, 'and it arrives already knowing where the player is')
+  }
+  // Act I and a banish in flight are untouched by the finale. This is the third
+  // place that rule is asserted, and it is the one a "just promote it
+  // everywhere" patch would break: it is what keeps the hammer's two-act
+  // structure, and therefore Act I, from evaporating at the climax.
+  for (const creatureState of ['telegraph', 'dormant']) {
+    const step = beast.creatureStep(beast.createCreature({ state: creatureState }), DT, { distance: 60, finale: true })
+    assert.equal(step.to, creatureState, `${creatureState} must not be reachable from the finale`)
+  }
+  // and a banish in flight is not cancelled by the finale either: the recoil is
+  // already in motion, and §10.2's promise is that the hammer still works, not
+  // that the finale is a mutagen
+  const stunned = beast.creatureStep(
+    { ...beast.createCreature({ state: 'stagger', awareness: 0.8 }), staggerSeconds: 1, banishPending: true },
+    DT,
+    { distance: 60, finale: true, sounds: [] },
+  )
+  assert.equal(stunned.to, 'stagger', 'the finale cancelled a banish in flight')
+})
+
+test('an enraged creature is a chase, not an omniscient statue (§10.2)', () => {
+  // Every state that can END a run must be able to MOVE in it. Until this slice
+  // the world's walk was gated on `step.to === 'stalk'`, so CHASE and ENRAGED
+  // stood still while owning perfect knowledge: §10.2's 5.2 m/s was a number
+  // with nothing to spend it on, and the climax was a stroll to the car.
+  assert.deepEqual([...beast.PURSUING_STATES].sort(), ['chase', 'enraged'])
+  for (const state of beast.CAPTURE_STATES) {
+    assert.ok(beast.PURSUING_STATES.includes(state), `${state} can catch the player but cannot walk`)
+  }
+  // the world gates the walk on that list, in one place
+  assert.equal((WORLD_SOURCE.match(/_walkCreature\(dt, player\)/g) ?? []).length, 2, 'the walk is called from somewhere new')
+  assert.match(WORLD_SOURCE, /if \(step\.to === 'stalk' \|\| beast\.PURSUING_STATES\.includes\(step\.to\)\)/)
+  // and the target is the pure rule, not an inline `??` in the world
+  assert.match(WORLD_SOURCE, /const target = beast\.pursuitTarget\(this\.creature, player\)/)
+  // §10.2: permanent position knowledge, spent on where the player IS. An
+  // enraged creature holding a stale last-heard point must not walk to it.
+  const player = { x: 12, z: -34 }
+  const stale = { ...beast.createCreature({ state: 'enraged' }), lastHeard: { x: -200, z: 190 }, lastSeen: { x: 5, z: 5 } }
+  assert.equal(beast.pursuitTarget(stale, player), player, 'the finale walks at a memory instead of at the player')
+  // Act II is unchanged: heard beats seen beats the player
+  const stalk = { ...beast.createCreature({ state: 'stalk' }), lastHeard: { x: 1, z: 1 }, lastSeen: { x: 2, z: 2 } }
+  assert.deepEqual(beast.pursuitTarget(stalk, player), { x: 1, z: 1 })
+  assert.deepEqual(beast.pursuitTarget({ ...stalk, lastHeard: null }, player), { x: 2, z: 2 })
+  assert.deepEqual(beast.pursuitTarget(beast.createCreature({ state: 'stalk' }), player), player)
+  assert.equal(beast.pursuitTarget(null, player), player, 'no creature is still a position')
+  assert.equal(beast.pursuitTarget(beast.createCreature({ state: 'stalk' }), null), null)
+})
+
+test('sprint remains the escape, and the clamp is what makes it one (§8.6, §10.2)', () => {
+  // §10.2: "top speed 5.2 m/s — deliberately just under the player's 6.0 sprint,
+  // so the gap is real and crossable". A gap of zero is a coin flip and a
+  // negative gap is a game nobody can finish, and neither is visible from a
+  // screenshot — which is the whole argument for asserting it here.
+  assert.equal(beast.rampAt(3).speed, 5.2, '§11.1 row 3')
+  assert.equal(beast.SPEED_CEILING, 5.2, 'the ceiling IS the finale speed, not a rounded version of it')
+  assert.ok(
+    beast.SPEED_CEILING < beast.PLAYER_SPRINT_SPEED,
+    `the creature (${beast.SPEED_CEILING}) must be slower than the sprint (${beast.PLAYER_SPRINT_SPEED})`,
+  )
+  // and the clamp holds however far the pressure axis is pushed: this is the
+  // assertion that would fail first in a tuning pass that broke §8.6. Tier 2
+  // reaches the ceiling after eight re-emergences and stops there, which is the
+  // point — the pressure axis may narrow the gap to the sprint, never cross it.
+  for (let reemergences = 0; reemergences <= 40; reemergences += 1) {
+    assert.equal(beast.creatureSpeed(3, reemergences), beast.SPEED_CEILING, `tier 3 moved past the ceiling at ${reemergences}`)
+    assert.ok(beast.creatureSpeed(2, reemergences) <= beast.SPEED_CEILING, 'tier 2 passed the ceiling')
+    assert.ok(beast.creatureSpeed(3, reemergences) >= 5.2, 'the clamp must not slow the finale down')
+    assert.equal(beast.detectionRange(3, reemergences), Infinity, '§11.1 row 3: the finale sees everything')
+  }
+  assert.equal(beast.creatureSpeed(3, 0), 5.2, 'and it is 5.2 on the first frame of the finale, not after a ramp')
+  assert.ok(beast.creatureSpeed(2, 0) < beast.SPEED_CEILING, 'a fresh Act II creature is slower than the finale')
+  assert.equal(beast.creatureSpeed(2, 40), beast.SPEED_CEILING, 'a very angry Act II creature is exactly the finale speed, not past it')
+})
+
+test('the finale ignores the banish ladder and returns in a flat short delay (§10.2)', () => {
+  // "banish still works, but the ladder is ignored and re-emergence is a flat
+  // short delay. The hammer must stay relevant or Act II's whole skill ceiling
+  // evaporates at the climax; the enraged creature simply cannot be made to wait."
+  for (let banishes = 0; banishes <= 12; banishes += 1) {
+    assert.equal(
+      beast.banishWindow({ state: 'enraged', banishCount: banishes, finale: true }),
+      beast.ENRAGED_REEMERGENCE_SECONDS,
+      `the ladder applied at banish ${banishes}`,
+    )
+  }
+  assert.ok(beast.ENRAGED_REEMERGENCE_SECONDS < beast.BANISH_TABLE[0], 'the finale delay must be shorter than the first rung')
+  assert.ok(beast.ENRAGED_REEMERGENCE_SECONDS >= 1, 'and long enough that a swing still costs something')
+  // the window is closed a frame before its end and open on it
+  const flat = { state: 'dormant', banishCount: 9, finale: true }
+  assert.equal(beast.reemergeReady(flat, beast.ENRAGED_REEMERGENCE_SECONDS - 0.02), false)
+  assert.equal(beast.reemergeReady(flat, beast.ENRAGED_REEMERGENCE_SECONDS), true)
+  // and the whole cycle, walked frame by frame: a connected swing banishes, the
+  // banish completes, it comes back on the flat delay, and it comes back angry
+  const hit = beast.creatureStep(beast.createCreature({ state: 'enraged', awareness: 1, finale: true }), DT, {
+    distance: 1,
+    swing: true,
+    sounds: [],
+  })
+  assert.equal(hit.swing.result, 'banish', '§10.2: the hammer must still work in the finale')
+  assert.equal(hit.swing.flat, true)
+  assert.equal(hit.banishSeconds, beast.ENRAGED_REEMERGENCE_SECONDS, 'and the window is the flat one from the first frame')
+  let creature = hit.creature
+  for (let i = 0; i < 10_000 && creature.state !== 'dormant'; i += 1) {
+    creature = beast.creatureStep(creature, DT, { distance: 60, sounds: [], finale: true }).creature
+  }
+  assert.equal(creature.state, 'dormant', 'the banish never completed')
+  assert.equal(creature.banishCount, 1, 'a connected swing advances the ladder even in the finale')
+  const back = beast.creatureStep(creature, DT, {
+    distance: 60,
+    sounds: [],
+    reemerge: beast.reemergeReady(creature, beast.ENRAGED_REEMERGENCE_SECONDS),
+    finale: true,
+  })
+  assert.equal(back.to, 'enraged', 'and it comes back angry, not stalking')
+  assert.equal(back.awareness, beast.AWARENESS_CHASE, 'with the meter already full')
+  assert.equal(back.creature.reemergenceCount, 1, '§11.2: the pressure axis still counts a re-emergence')
+})
+
+test('the finale has no phase-out and no awareness decay (§8.2, §10.2)', () => {
+  // §8.2's valve is suspended: "no phase-out — the §8.2 safety valve is
+  // suspended". Walked as frames rather than asserted as a constant, because the
+  // constant is not where the rule lives: the rule is that not one frame in a
+  // long silent window reports a phase-out or lets the meter move.
+  let creature = beast.createCreature({ state: 'enraged', finale: true })
+  let phaseOuts = 0
+  for (let seconds = 0; seconds < 60; seconds += DT) {
+    const step = beast.creatureStep(creature, DT, { distance: 200, sounds: [], finale: true })
+    creature = step.creature
+    if (step.phaseOut) phaseOuts += 1
+  }
+  assert.equal(phaseOuts, 0, '§10.2: the valve is suspended in the finale')
+  assert.equal(creature.state, 'enraged', 'a minute of silence and it gave up')
+  assert.equal(creature.awareness, 1, '§10.2: permanent position knowledge, no decay')
+  // §8.2 still fires everywhere else, or "suspended" would have meant "removed".
+  // The meter is held up with sight, because a chase that lets go of the meter
+  // is a chase that ends for the reason §6.3 gives and never reaches the clock.
+  let chasing = beast.createCreature({ state: 'chase', awareness: 1 })
+  let fired = false
+  for (let seconds = 0; seconds < beast.CHASE_MAX_SECONDS + 1 && !fired; seconds += DT) {
+    const step = beast.creatureStep(chasing, DT, { distance: 3, sounds: [], seen: true, sightDistance: 3, sightRange: 20 })
+    chasing = step.creature
+    if (step.phaseOut) fired = true
+  }
+  assert.equal(fired, true, '§8.2: the valve is gone for every state but the finale')
+  // §8.6's other half, as the number the player actually feels. The finale is
+  // 0.8 m/s slower than the sprint, and contact is 1.1 m, so the price of a
+  // clean escape is CAPTURE_RADIUS / gap seconds of unbroken sprinting — more
+  // than a second of running before you are even back in reach, and a couple of
+  // seconds to open a real gap. That band is the whole tuning target of §11.3:
+  // widen the gap and the climax stops being one, narrow it and it stops being
+  // escapable, and neither end is visible in a screenshot.
+  const gap = beast.PLAYER_SPRINT_SPEED - beast.SPEED_CEILING
+  const secondsToClear = beast.CAPTURE_RADIUS / gap
+  assert.ok(secondsToClear > 1, `one second of sprinting buys ${gap.toFixed(2)} m, which is still contact range`)
+  assert.ok(secondsToClear < 4, `it takes ${secondsToClear.toFixed(1)} s to leave contact — the finale is not a chase you can never break`)
+})
+
+test('walking into the exit wins, freezes the world, and rings the chord once (§10.4)', () => {
+  const state = finaleRun()
+  const exit = state.exitAnchor.position
+  const inside = { x: exit.x, z: exit.z }
+  // the car is there from Act I (§10.3), so the geometry alone wins nothing
+  assert.equal(rules.isInsideExit(inside, exit), true)
+  assert.equal(rules.checkExitWin({ ...state, finale: false }, inside), false, 'won without the finale')
+  assert.equal(rules.checkExitWin(state, inside), true, 'the finale did not open the exit')
+  assert.equal(rules.checkExitWin(state, { x: exit.x + 2, z: exit.z }), false, 'won from two metres away')
+
+  // the world's half of the win, which is a *phase* and a freeze
+  const win = worldMethod('_win')
+  assert.match(win, /this\.store\.set\(\{ phase: PHASE\.WON, prompt: null \}\)/, 'the win does not set PHASE.WON')
+  assert.match(win, /this\.player\.enabled = false/, 'the win does not stop the player')
+  assert.match(win, /this\.audio\?\.winChord\(\)/, 'the win does not ring the chord')
+  assert.equal((win.match(/winChord\(\)/g) ?? []).length, 1, 'the chord is rung more than once in one win')
+  assert.match(
+    win,
+    /if \(this\.store\.get\(\)\.phase === PHASE\.WON \|\| this\.paused\) return false/,
+    'a second call in the same frame would ring it again',
+  )
+  // the phase machine routes WON to the frozen branch and nowhere else
+  assert.match(WORLD_SOURCE, /case PHASE\.WON:\n        this\._updateWon\(dt\)/)
+  const won = worldMethod('_updateWon')
+  for (const forbidden of ['player.update', 'creatureStep', '_updateVerbs', '_updateCreature', '_walkCreature']) {
+    assert.equal(won.includes(forbidden), false, `_updateWon runs ${forbidden}`)
+  }
+  assert.match(won, /this\.fade = Math\.min\(0\.6, this\.fade \+ dt \* 0\.8\)/, 'the fade stopped moving behind the card')
+  // the exit is tested on the frame the verbs and the creature have already had
+  // their turn, so winning on the way in skips nothing
+  assert.match(WORLD_SOURCE, /if \(this\.state\.finale && this\._insideExit\(\)\) this\._win\(\)/)
+  assert.match(WORLD_SOURCE, /_insideExit\(\) \{[\s\S]*?rules\.checkExitWin\(/)
+  // §13's half of the win is routed even though the chord is not: `won` is a
+  // field on the frame, and the drone comes down to v1's duck
+  assert.equal(audio.droneLevelFor({ won: true }), audio.DRONE_LEVEL_WON)
+  assert.ok(audio.DRONE_LEVEL_WON < audio.DRONE_LEVEL_BLACK, 'the win duck is above the capture black')
+  assert.match(WORLD_SOURCE, /won: this\.phase === PHASE\.WON,/)
+})
+
+test('BEGIN AGAIN is a full wipe, and it is the only one (§10.4 against §9.1)', () => {
+  const fresh = rules.createInitialState(hood.placeObjectives(1337, 1))
+  // §10.4's whole claim: a wiped run is indistinguishable from a new one
+  const dirty = {
+    ...fresh,
+    portals: { A: true, B: true, C: true },
+    progress: { A: 1, B: 1, C: 0.6 },
+    hammerHeld: true,
+    banishCount: 4,
+    finale: true,
+    dusk: 1,
+    breath: 0.31,
+    exhausted: true,
+    loop: 7,
+    player: { x: 900, z: -900 },
+    prompt: 'portal',
+    creature: { state: 'enraged', reemergenceCount: 3, awareness: 1 },
+    sounds: [{ kind: 'toll', radius: 30, position: { x: 0, z: 0 } }],
+  }
+  assert.deepEqual(rules.wipeRun(dirty), fresh, 'the wipe left something behind')
+  // the anchors are geometry, not progress (§3.4), so they are the one exemption
+  assert.deepEqual([...rules.WIPE_EXEMPT_FIELDS], ['objectives', 'exitAnchor'])
+  // every field of the state is decided by one table or the other: a field added
+  // to the state and to neither table is a rule nobody chose
+  const decided = new Set([...rules.WIPE_TABLE.map((row) => row.field), ...rules.CAPTURE_TABLE.map((row) => row.field)])
+  for (const field of Object.keys(fresh)) {
+    assert.ok(decided.has(field) || rules.WIPE_EXEMPT_FIELDS.includes(field), `no table decides what '${field}' does`)
+  }
+  // and the contrast with §9.1 is the design's own sentence, checked as data:
+  // everything CAPTURE_TABLE keeps, the wipe takes
+  const keep = rules.CAPTURE_TABLE.filter((row) => row.mutation === 'keep').map((row) => row.field)
+  assert.deepEqual(keep, ['portals', 'hammerHeld', 'banishCount', 'finale', 'dusk'])
+  for (const field of keep) {
+    assert.ok(
+      rules.WIPE_TABLE.some((row) => row.field === field),
+      `BEGIN AGAIN keeps ${field}, which §9.1 says a death must never do`,
+    )
+  }
+  assert.equal(
+    rules.WIPE_TABLE.some((row) => row.mutation === 'keep'),
+    false,
+    "there is no 'keep' on the only button in the game that may take things",
+  )
+  // each row, walked: dirty the one field, wipe, and check only that field moved
+  for (const row of rules.WIPE_TABLE) {
+    const after = rules.wipeRun({ ...fresh, [row.field]: 'DIRTY' })
+    assert.notEqual(after[row.field], 'DIRTY', `the wipe skipped ${row.field}`)
+  }
+  assert.equal(rules.wipeRun(fresh, { loop: 5 }).loop, 5, 'the loop to return to is an argument, not a constant')
+})
+
+test('the world wipes the run, with the wipe and never the capture', () => {
+  const restart = worldMethod('restart')
+  assert.match(restart, /this\.state = rules\.wipeRun\(this\.state, \{ loop: 1 \}\)/, 'the world does not use §10.4\'s wipe')
+  assert.equal(/applyCapture/.test(restart), false, 'BEGIN AGAIN runs the capture table, which keeps everything §9.1 protects')
+  // the visible consequences are put back, not just the flags behind them
+  for (const call of [
+    'this.streetView.setHeadlights(false)',
+    'this.streetView.setHammerTaken(false)',
+    'this.streetView.applyLoop(1)',
+    'this._applyDusk(0)',
+    'this.hammerFlash = 0',
+    'this.finaleEffect = hud.finaleEffectInit()',
+  ]) {
+    assert.ok(restart.includes(call), `BEGIN AGAIN does not call ${call}`)
+  }
+  assert.match(restart, /for \(const portal of this\.streetView\.portals\) this\.streetView\.setPortalShut\(portal\.id, false\)/)
+  // the per-portal §5.2 windows and the per-portal hold readings are run state
+  // too, and both are cleared here rather than surviving into the new run
+  assert.match(restart, /this\.portalNoiseElapsed = Object\.fromEntries/)
+  assert.match(restart, /this\._holdByPortal = Object\.fromEntries/)
+  // the win card is the one screen the player was never holding the lock on, so
+  // the wipe asks for it again from the click that pressed the button
+  assert.match(restart, /this\.player\.requestLock\(\)/, 'a new run starts un-walkable')
+  assert.match(restart, /this\.store\.set\(\{ phase: PHASE\.RESET, fade: 1 \}\)/)
+  // the creature goes back to Act I, and the player's body to spawn
+  assert.match(restart, /beast\.createCreature\(\{ state: 'telegraph' \}\)/)
+  assert.match(restart, /this\.player\.teleport\(SPAWN\.position\.x, SPAWN\.position\.z, SPAWN_YAW\)/)
+})
+
+test('the exit car is a beacon that survives the fog (§10.3)', () => {
+  // §10.3 is the detail the finale depends on: "Without it, the finale is a
+  // random search across a wrapping 448 m neighborhood at maximum aggression,
+  // which is a coin flip rather than a climax." Two properties make it a beacon,
+  // and both are read out of the source because `streetView.js` imports Three.js
+  // and the pure gate cannot import it (§15.1) — so the numbers come from the
+  // pure half and the geometry from the text.
+  assert.match(STREET_VIEW_SOURCE, /_glow\(color, options = \{\}\) \{[\s\S]*?fog: false/)
+  assert.match(STREET_VIEW_SOURCE, /headlight: this\._glow\(PALETTE\.headlight\)/, 'the headlights are lit geometry, not a lit surface')
+  assert.match(STREET_VIEW_SOURCE, /lamp\.visible = false/, '§10.3: the car is dark in Act I')
+  // the one method that turns it on turns on both halves — the two lamp boxes
+  // that read through the fog, and the beam that lights the pavement
+  const setter = STREET_VIEW_SOURCE.slice(STREET_VIEW_SOURCE.indexOf('  setHeadlights(on) {'))
+  assert.match(setter, /for \(const lamp of this\.exitCar\.lamps\) lamp\.visible = this\.exitCar\.lit/)
+  assert.match(setter, /this\.exitCar\.beam\.intensity = this\.exitCar\.lit \? [\d.]+ : 0/)
+  // the beam is pulled out of the source and compared against the fog, because
+  // the comparison *is* the design: a beam shorter than the fog's half-visibility
+  // lights nothing you can see
+  const beam = STREET_VIEW_SOURCE.match(/new THREE\.PointLight\(PALETTE\.headlight, 0, ([\d.]+), 2\)/)
+  assert.ok(beam, 'the headlight beam is not where it was')
+  const range = Number(beam[1])
+  const tightest = rules.fogVisibility(rules.fogDensityForDusk(1))
+  assert.ok(range > tightest, `the beam reaches ${range} m and the fog is half opaque at ${tightest.toFixed(1)} m`)
+  // the fog is at its tightest on exactly the frame the car lights up, and §3.7
+  // keys it to portals rather than to captures, so dying never puts the beacon
+  // back out of reach
+  assert.equal(rules.duskForPortals({ A: true, B: true, C: true }), 1)
+  assert.ok(rules.fogDensityForDusk(1) > rules.fogDensityForDusk(0))
+  assert.equal(rules.applyCapture(finaleRun()).dusk, 1, 'a capture thinned the fog back out')
+})
+
+test('the win card says §10.4, and v1 never comes back', () => {
+  const winCard = readFileSync(new URL('./src/ui/WinOverlay.jsx', import.meta.url), 'utf8')
+  assert.match(winCard, /THE NEIGHBORHOOD WENT QUIET\./, '§10.4: the win screen')
+  assert.match(winCard, /BEGIN AGAIN/, 'and the button that wipes the run')
+  assert.match(APP_SOURCE, /hud\.phase === PHASE\.WON \? <WinOverlay onRestart=\{restart\} \/>/, 'the card is not on the won phase')
+  // the v1 line is gone from the whole of `src/`, not just from the card: a
+  // string that comes back in a comment is one refactor away from coming back
+  // on screen
+  const sources = readdirSync(new URL('./src', import.meta.url), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.js') || name.endsWith('.jsx'))
+  assert.ok(sources.length > 10, `only ${sources.length} sources found — is the walk broken?`)
+  for (const name of sources) {
+    const text = readFileSync(new URL(`./src/${name}`, import.meta.url), 'utf8')
+    assert.equal(text.includes('BELL STOPPED'), false, `v1's win line is back in ${name}`)
+  }
+  // §14.1's "no new text" is still true of the HUD: the card is chrome, the HUD
+  // is not, and the finale reaches the HUD as levels rather than as words
+  assert.match(HUD_JSX_SOURCE, /finaleActive/)
+  assert.equal(hud.HUD_FIELDS.includes('finaleActive'), true, 'the HUD no longer projects the finale')
+  assert.equal(hud.HUD_FIELDS.includes('winText'), false, '§14.1: the win line is a card, not a HUD field')
 })
 
 // ---------------------------------------------------------------------------
