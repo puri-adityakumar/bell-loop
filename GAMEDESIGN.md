@@ -684,11 +684,11 @@ states (`verify.mjs`, "Sodium dusk (iteration 2, pass 1)"):
 
 The exposure curve is quadratic rather than linear, and that is the substance of
 the fix rather than its endpoints: Act I and Act II are played between `t = 0` and
-`t ≈ 0.66`, and the previous linear curve had already surrendered 8.5% of its
-exposure by `t = 0.5` — charging the player for darkness during the part of the
-run where the design wants them looking at the street. The new curve costs 1.75%
-there and spends almost all of its fall on the finale, which is the only stretch
-of the run where §3.7 wants the world tightening.
+`t ≈ 0.66`, and the previous linear curve had already surrendered 8.9% of its 0.95
+base by `t = 0.5` — charging the player for darkness during the part of the
+run where the design wants them looking at the street. The new curve costs 3.5% of
+its 1.02 base there and spends almost all of its fall on the finale, which is the
+only stretch of the run where §3.7 wants the world tightening.
 
 The creature being a silhouette rather than a model is deliberate: at fog
 distances a low-detail dark mass with a hard rim reads far more disturbingly than

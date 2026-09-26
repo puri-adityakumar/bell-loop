@@ -117,10 +117,11 @@ const LAMP_RADIUS = 40
  * as `1.02 - 0.14 * t * t`.
  *
  * Two things changed and they are different in kind. The base is up 7% because
- * the sky ramp itself came up 3.0x to 6.2x in luma and ACES at the old 0.95 was
- * compressing a palette that no longer needed compressing. The *shape* is the
- * actual fix: the cut is now quadratic, so it is almost free through Act I and
- * Act II (`t = 0.5` costs 1.75% where the old curve cost 8.5%) and lands almost
+ * the sky ramp itself came up 1.6x to 3.0x in 8-bit luma (3.0x to 6.2x linear)
+ * and ACES at the old 0.95 was compressing a palette that no longer needed
+ * compressing. The *shape* is the actual fix: the cut is now quadratic, so it is
+ * almost free through Act I and Act II (`t = 0.5` costs 3.5% of the 1.02 base
+ * where the old curve cost 8.9% of its 0.95) and lands almost
  * all of itself on the last third, which is the only stretch of the run where
  * §3.7 wants the world visibly tightening.
  *
@@ -553,11 +554,12 @@ export class LongQuietGame {
     //
     // AFTER `EXPOSURE_BASE - EXPOSURE_CUT * t * t` — the same endpoints' intent
     // with the bite taken out of the middle. The quadratic matters more than the
-    // endpoints: at t = 0.5 the old curve had already given up 8.5% while the
-    // player is still in Act II hunting three portals, and the new one has given
-    // up 1.75%. The curve is therefore *flat where the game is played* and only
-    // closes in the last third, which is the finale's job — and §3.7's promise
-    // that the world visibly tightens survives, just at 0.88 rather than 0.78.
+    // endpoints: at t = 0.5 the old curve had already given up 8.9% of its 0.95
+    // while the player is still in Act II hunting three portals, and the new one
+    // has given up 3.5% of its 1.02. The curve is therefore *flat where the game
+    // is played* and only closes in the last third, which is the finale's job —
+    // and §3.7's promise that the world visibly tightens survives, just at 0.88
+    // rather than 0.78.
     this.renderer.toneMappingExposure = EXPOSURE_BASE - EXPOSURE_CUT * t * t
   }
 

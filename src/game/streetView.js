@@ -104,7 +104,10 @@ import { OCCLUDER_KINDS } from './creature.js'
  *
  * The brief was the Backrooms reference (67ktSmxCniA): a mono-yellow sodium haze,
  * *lighter* than what shipped, and still night. So both ramps moved to a sodium
- * ochre (hue ~36°, R > G > B) and up by 3.0x to 9.8x in relative luminance:
+ * ochre (hue ~36°, R > G > B) and up by 3.0x to 9.8x in *linear* relative
+ * luminance — the smallest lift is the sky's own mid stop, the largest is the fog
+ * mid stop. (In 8-bit Rec. 601 the same lifts are only 1.6x to 3.3x, which is
+ * why the two are quoted separately below: the digits in the table are 8-bit.)
  *
  *   skyStops   0x2a2233 / 0x4a3550 / 0x12101a  ->  0x6b5836 / 0x7a6440 / 0x3f3320
  *     luma        38.3  / 62.4  / 17.7          ->   89.9 / 102.5 / 52.5  (0-255)

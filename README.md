@@ -115,8 +115,8 @@ Slices 01–07 built the pure core; 09 was the v2 swap; 10–15 the game systems
 `npm run capture` photographs all fourteen §16.5 states from a headless Chrome
 (SwiftShader) at seed 1337. Every frame is measured before it is kept and is
 rejected if it falls under its luma floor, so a black rectangle can never sit in
-the gallery wearing a view's name. Mean luma **46.237%** against a 6% floor; the
-tightest margin is `title` at 4.6% against its 3.5% floor.
+the gallery wearing a view's name. Mean luma **57.006%** against a 6% floor; the
+tightest margin is `win` at 10.1% against its 6% floor.
 
 <table>
   <tr><td><img src="benchmark/screenshots/title.png" alt="Title"><br>Title</td><td><img src="benchmark/screenshots/street.png" alt="Street"><br>Street</td></tr>
@@ -212,9 +212,10 @@ npm run dev
   requires integers and no counter was readable. `0` here means **unrecorded**,
   not zero. AGENTS.md asks for non-cache and cache-read tokens separately; that
   split cannot be supplied truthfully yet.
-- **`title` is the tightest frame** at 4.6% against a 3.5% floor (+1.1). It is a
-  deliberately dark start screen, but it is the first thing to re-tune if a
-  future renderer drifts darker.
+- **`win` is the tightest frame** at 10.1% against a 6% floor (+4.1), followed by
+  `title` at 8.19% against its 3.5% floor (+4.69). Under iteration 2 pass 1 the
+  sodium retune lifted every frame, and the binding constraint moved off `title`
+  for the first time — `title` had been the tightest margin since slice 16.
 - **Two open oxlint warnings** remain, both pre-existing and non-fatal: an
   unused `dt` parameter in `world.js:698`, and a fast-refresh export warning in
   `capture/main.jsx:137`.

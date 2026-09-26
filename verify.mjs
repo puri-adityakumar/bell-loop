@@ -6450,6 +6450,7 @@ test('the fog is darker than the sky at every stop (§12.1 silhouettes)', () => 
     const sky = relLuma(SKY_STOPS[index])
     assert.ok(fog < sky, `stop ${index}: the fog (${fog.toFixed(1)}) is not darker than the sky (${sky.toFixed(1)})`)
   }
+})
 
 test('the ambient and exposure curves are warmer, higher and flatter (iteration 2, pass 1)', () => {
   // The three numbers in `world.js`, read as numbers rather than as prose, and
@@ -6538,8 +6539,6 @@ test('the constructor exposure is the curve at dusk 0', () => {
   assert.equal(constructor[1], 'EXPOSURE_BASE', 'the constructor stopped using the named exposure constant')
   const base = /const EXPOSURE_BASE = ([\d.]+)/.exec(code)
   assert.equal(Number(base[1]), 1.02, 'EXPOSURE_BASE is not the 1.02 this pass set')
-})
-
 })
 
 
