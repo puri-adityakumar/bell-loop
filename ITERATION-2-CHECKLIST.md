@@ -25,7 +25,7 @@ Hard rules for every pass:
   violet-dark (0x2a2233/0x4a3550/0x12101a). Retune to warm sodium-amber dusk
   (Backrooms 67ktSmxCniA vibe: yellow haze, LIGHTER, still night-horror), raise
   hemisphere from 0.5, rework the exposure curve (0.95 − 0.17t is too punishing).
-- [x] `PASS 2: Sodium light feels cinematic.` Broader warm pools (radius),
+- [DONE] `PASS 2: Sodium light feels cinematic.` Broader warm pools (radius),
   warm bounce on walls/ground near lamps, lamp flicker stays. Fog should be a
   depth cue, not a wall: lower density close to lamps. Verify: street + title
   captures clearly brighter and amber; creature silhouette still reads.
