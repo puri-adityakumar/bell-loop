@@ -80,6 +80,13 @@ import { createStartStore, createStore, PHASE } from './src/game/store.js'
 // gallery is the gallery the design asked for, before anything is rendered.
 import * as capture from './src/game/capture.js'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+// `tools/png-luma.mjs` for the same reason `tools/capture.mjs` uses it: the
+// creature-separation gate in "Sodium light (iteration 2, pass 2)" has to
+// measure a *rendered* frame, and this is the module that already owns PNG
+// decoding and the lower-scene crop. It is imported here rather than
+// reimplemented because a second decoder would be a second set of numbers for
+// the same file, and the two would eventually disagree in a comment.
+import { sceneProfile } from './tools/png-luma.mjs'
 
 const VERIFY_LOOPS = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -6539,6 +6546,224 @@ test('the constructor exposure is the curve at dusk 0', () => {
   assert.equal(constructor[1], 'EXPOSURE_BASE', 'the constructor stopped using the named exposure constant')
   const base = /const EXPOSURE_BASE = ([\d.]+)/.exec(code)
   assert.equal(Number(base[1]), 1.02, 'EXPOSURE_BASE is not the 1.02 this pass set')
+})
+
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 2 — the sodium family: pool width, bounce, reach, and the
+// one gate the pass-1 review asked for by name
+//
+// THE REVIEW'S "MOST VALUABLE GATE TO ADD NEXT"
+// --------------------------------------------
+// `REVIEW-pass-1.md` closed with this, under residual risk:
+//
+//   "The creature silhouette is currently protected by a *source* property
+//   (fog < sky) plus a *rendered* observation I made by hand. Nothing in the
+//   gate measures creature-vs-background separation in a frame. A future pass
+//   that lifts the fog without lifting the sky could satisfy every existing
+//   check and still cost the subject its read. This is the most valuable gate
+//   to add next."
+//
+// That is this section's first test, and it is written to fail for exactly the
+// reason the review gives. `fog < sky` is a *palette* property; a pass can
+// brighten the creature, or the bounce family introduced below can wash it,
+// without moving a single hex. The only claim that survives that is measured on
+// the rendered frame: the creature's population is darker than the background
+// it stands in, by a margin, today.
+//
+// WHY IT READS THE COMMITTED PNG
+// ------------------------------
+// Because that is the artifact the benchmark ships. `main/README.md`'s result
+// table is built from these files, so a separation property only ever measured
+// on a frame nobody commits is a property of a local run. This is the same
+// trade the anti-rotation check already makes, and it has the same known gap —
+// a stale PNG passes. Capture runs close that gap, not this test.
+// ---------------------------------------------------------------------------
+
+section('Sodium light (iteration 2, pass 2)')
+
+test('the creature still reads darker than its background (§12.1)', () => {
+  // The gate the pass-1 review asked for by name. Two populations, one frame:
+  // `p0_1` is the creature (the darkest thousandth of the lower scene, which at
+  // 460,800 scene pixels is ~460 px — a figure at 17 m) and `median` is the lit
+  // road it is standing on. The claim is the RATIO, not either value.
+  const file = new URL(`./${capture.CAPTURE_DIR}/creature-stalking.png`, import.meta.url)
+  assert.equal(existsSync(file), true, 'creature-stalking.png is missing — run npm run capture')
+  const profile = sceneProfile(readFileSync(file))
+  assert.ok(profile.pixels > 0, 'the frame decoded to no scene pixels')
+  // §12.1: "it should read as a hole in the fog rather than an object in it."
+  // A hole is *darker than what is around it*; the threshold is the fraction,
+  // and 0.55 is deliberately not tight. The measured ratio is 7/24 = 0.29, so
+  // the headroom absorbs a pass that legitimately warms the fog (raising the
+  // denominator) while still failing the one that warms the creature (raising
+  // the numerator toward the median).
+  assert.ok(
+    profile.p0_1 < profile.median * 0.55,
+    `the creature is not a hole in the frame: p0.1 is ${profile.p0_1} against a median of ` +
+      `${profile.median} (ratio ${(profile.p0_1 / profile.median).toFixed(2)}, needs under 0.55)`,
+  )
+  // and the background it is a hole *in* is actually lit. Without this half, a
+  // frame that went uniformly black would satisfy the ratio above perfectly and
+  // satisfy §16.5's floor not at all — the two are a pair, and this is the one
+  // that stops the ratio being won by making the world worse.
+  assert.ok(
+    profile.median >= 18,
+    `the background is unlit (median ${profile.median}), so there is nothing to be a silhouette against`,
+  )
+  // the subject is near-black in absolute terms too, not merely darker: §12.3
+  // pins the creature at #08070a, and a "dark" reading of 17 is a grey smudge
+  // the fog happens to be darker than.
+  assert.ok(profile.p0_1 <= 12, `the creature is luma ${profile.p0_1}, which is grey rather than a hole`)
+  // and the frame keeps a bright end as well as a dark one, so a mid-grey mush
+  // fails with a message that says so rather than leaving the reader to infer
+  // it from whichever number tripped first.
+  assert.ok(profile.p95 > profile.median, 'the frame has no lit end: everything is one value')
+})
+
+test('the pools are wide enough to read as pools, and still a grid (§4)', () => {
+  // Iteration 2, pass 2: `LAMP_POOL_DIAMETER` 12 -> 18, plus a new
+  // `LAMP_POOL_RIM`. Both are read out of the source for the reason the pass-1
+  // section gives: `streetView.js` imports Three.js, so the gate cannot import
+  // its constants, and reading a number back at itself is worthless. What is
+  // asserted is the two *properties* the brief asked for — broader pools, and a
+  // grid you can still steer by — before the value pin at the end.
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const diameter = /const LAMP_POOL_DIAMETER = ([\d.]+)/.exec(code)
+  assert.ok(diameter, 'the pool diameter is not a named constant any more')
+  const pool = Number(diameter[1])
+  // "Broader warm pools." The carriageway is `2 * STREET_HALF_WIDTH` = 12 m, so
+  // a 12 m pool exactly inscribes the road and stops dead at the kerb. The
+  // complaint was small hot circles, and a pool that does not reach the kerb is
+  // the definition of one.
+  assert.ok(pool > 12, `the pool is ${pool} m, which still stops at the kerb (the road is 12 m wide)`)
+  // ...and the grid survives. Lamps are one per intersection, intersections are
+  // 64 m apart, so neighbouring rims are `64 - pool` apart. §4's second
+  // navigation mechanism is a *grid*, and a grid is spacing: at 32 m the discs
+  // would touch and the road would be a continuous orange sheet.
+  assert.ok(
+    64 - pool > 20,
+    `pools are ${pool} m across on a 64 m spacing — the discs nearly touch and §4's grid is gone`,
+  )
+  // the rim: a floor under the falloff, so a 1.5x-wider pool does not read as a
+  // smudge. Asserted as a range rather than a value because its whole job is to
+  // be *less than* a lift and *more than* nothing.
+  const rim = /const LAMP_POOL_RIM = ([\d.]+)/.exec(code)
+  assert.ok(rim, 'the pool has no rim constant — a wider pool from the same falloff is a smudge')
+  assert.ok(Number(rim[1]) > 0.5 && Number(rim[1]) < 1, `the rim is ${rim[1]}, which is not a plateau`)
+  // and the rim has to actually reach the sodium pool, while the portal's is
+  // left alone: `makePoolTexture`'s default is 0 precisely so the cyan apron is
+  // unchanged, because a doorway has hard edges and a rimmed disc around one
+  // reads as a glowing puddle.
+  assert.match(code, /map: makePoolTexture\(\{ rim: LAMP_POOL_RIM \}\)/, 'the sodium pool is not using its rim')
+  assert.match(code, /portalPool: this\._glow\(PALETTE\.portal, \{\s*map: makePoolTexture\(\)/, 'the portal pool grew a rim it should not have')
+  // the value pin, deliberately separate, for the reason pass 1's hex pins are:
+  // a *deliberate* retune is expected to fail this, and the remedy is to move
+  // the pin in the commit that moves the number.
+  assert.equal(pool, 18, `LAMP_POOL_DIAMETER is ${pool} — move this pin in the same commit as the pool`)
+  assert.equal(Number(rim[1]), 0.82, `LAMP_POOL_RIM is ${rim[1]} — move this pin in the same commit as the pool`)
+})
+
+test('the bounce is a fill and not a second key (§12.1)', () => {
+  // The four `LAMP_BOUNCE_*` constants and the one property that makes them a
+  // bounce. A bounce light that competes with its source is a second key, and
+  // at that point the pool's shape is being drawn by the fill — which spends
+  // §4's "steer by the sodium grid" affordance on the thing this pass exists to
+  // improve.
+  const code = stripProse(WORLD_SOURCE)
+  const read = (name) => {
+    const found = new RegExp(`const ${name} = ([\\d.]+)`).exec(code)
+    assert.ok(found, `${name} is not a named constant any more`)
+    return Number(found[1])
+  }
+  const key = read('LAMP_LIGHT_INTENSITY')
+  const bounce = read('LAMP_BOUNCE_INTENSITY')
+  assert.ok(bounce > 0, 'there is no bounce at all, so the walls are still black')
+  assert.ok(
+    bounce < key * 0.2,
+    `the bounce is ${((bounce / key) * 100).toFixed(1)}% of the key (${bounce} vs ${key}) — that is a second key`,
+  )
+  // the count is bounded by the key count for the same reason: more bounces
+  // than keys means some of them are lighting a lamp nothing else is lighting.
+  assert.ok(read('LAMP_BOUNCE_LIGHTS') <= read('LAMP_LIGHTS'), 'there are more bounces than keys')
+  // low and wide. A bounce comes *off* a horizontal road, so it travels roughly
+  // horizontally: at road level it would light the underside of nothing and the
+  // tops of everything. The height is also below the lamp head (5.1 m) on
+  // purpose — two lights at one position are one light.
+  const height = read('LAMP_BOUNCE_HEIGHT')
+  assert.ok(height > 1 && height < 5.1, `the bounce sits at ${height} m, neither a wall wash nor a second head`)
+  const reach = read('LAMP_BOUNCE_DISTANCE')
+  const pool = Number(/const LAMP_POOL_DIAMETER = ([\d.]+)/.exec(stripProse(STREET_VIEW_SOURCE))[1])
+  assert.ok(reach > pool, `the bounce throws ${reach} m, inside the ${pool} m pool it stands in`)
+  // and the four constants are *used*, which is the check a reviewer probes for
+  // when a paragraph of rationale has no reader. A constant that describes a
+  // feature nobody wired up is a comment that believes it is a feature.
+  assert.match(code, /new THREE\.PointLight\(PALETTE\.bounce, 0, LAMP_BOUNCE_DISTANCE, 2\)/, 'the bounce lights are never built')
+  assert.match(code, /bounce\.position\.set\(lamp\.x, LAMP_BOUNCE_HEIGHT, lamp\.z\)/, 'the bounce is never aimed at a lamp')
+  assert.match(code, /bounce\.intensity = LAMP_BOUNCE_INTENSITY/, 'the bounce is never lit')
+  // aimed off the same nearest-lamp list as the key, which is the only way it
+  // can be a bounce rather than an independent opinion about where the road is.
+  const aimed = worldMethod('_updateLampPool')
+  assert.equal((aimed.match(/lamps\[i\]/g) ?? []).length, 2, 'the key and the bounce are not aimed off the same list')
+})
+
+test('a lamp reaches the next lamp, and the search finds it (§4)', () => {
+  // `LAMP_RADIUS` (the search) and `LAMP_LIGHT_DISTANCE` (the throw) are two
+  // different numbers and the old relationship between them was a bug: a 60 m
+  // throw fed by a 40 m search meant the outer 20 m of every lamp's reach was
+  // lit only if the player happened to be standing next to that lamp, so pools
+  // faded out mid-frame for no reason a viewer could name. Pass 2: search 96,
+  // throw 92.
+  const code = stripProse(WORLD_SOURCE)
+  const read = (name) => {
+    const found = new RegExp(`const ${name} = ([\\d.]+)`).exec(code)
+    assert.ok(found, `${name} is not a named constant any more`)
+    return Number(found[1])
+  }
+  const search = read('LAMP_RADIUS')
+  const reach = read('LAMP_LIGHT_DISTANCE')
+  // the search must cover the throw, or the far half of the throw is
+  // unreachable. This is the relationship that was inverted, and it is the
+  // reason the two numbers exist separately.
+  assert.ok(
+    search >= reach,
+    `the search (${search} m) is shorter than the throw (${reach} m): the far half of every pool is unreachable`,
+  )
+  // and the throw has to cover the gap between lamps, or the midpoint of every
+  // avenue is the darkest point on the road twice per 64 m — a stripe of unlit
+  // tarmac down the centre, which is what "a row of isolated coins" looks like.
+  assert.ok(reach > 64, `a lamp throws ${reach} m, so pools do not meet across a 64 m spacing`)
+  // the beam outlasts the fog it has to be seen through (§10.3). Pass 2 thinned
+  // the fog and lengthened the beam to match; the exit-car test asserts the same
+  // relationship, and it is restated here so the two numbers are read together.
+  const beam = /new THREE\.PointLight\(PALETTE\.headlight, 0, ([\d.]+), 2\)/.exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(beam, 'the headlight beam is gone')
+  const tightest = rules.fogVisibility(rules.fogDensityForDusk(1))
+  assert.ok(
+    Number(beam[1]) > tightest,
+    `the beam reaches ${beam[1]} m and the fog is half opaque at ${tightest.toFixed(1)} m`,
+  )
+})
+
+test('fog is a depth cue, not a wall (§4, §3.7)', () => {
+  // The checklist item in one test: "Fog should be a depth cue, not a wall:
+  // lower density close to lamps." Pass 2 thinned every stop — dusk 1 went from
+  // half opacity 32.0 m to 47.6 m — and these are the properties thinning has to
+  // satisfy without spending the dusk clock it was thinned for.
+  const stages = [0, 1 / 3, 2 / 3, 1].map((dusk) => rules.fogVisibility(rules.fogDensityForDusk(dusk)))
+  // still a clock: §3.7's dusk is legible as a closing world, and it still
+  // closes by more than half across the run.
+  for (let i = 1; i < stages.length; i += 1) {
+    assert.ok(stages[i] < stages[i - 1], `fog did not close at stage ${i}: ${stages.map((s) => s.toFixed(1))}`)
+  }
+  assert.ok(stages[0] / stages[3] > 2, `the finale must close the world by half, got ${(stages[0] / stages[3]).toFixed(2)}x`)
+  // and not a wall: the tightest fog in the game has to leave a road in it.
+  // 47.6 m is the measured value; the floor is 40 because the honest question
+  // is not "is 47.6 the right number" but "can the player still see the thing
+  // hunting them", and §11.3's detection range is 20 m.
+  assert.ok(stages[3] > 40, `the tightest fog is half opaque at ${stages[3].toFixed(1)} m — a wall, not a depth cue`)
+  // the before/after of this pass, which is what a reviewer will look for.
+  assert.ok(rules.fogDensityForDusk(1) < 0.026, `dusk 1 density is ${rules.fogDensityForDusk(1)} — pass 2 was meant to thin the fog`)
+  assert.ok(rules.fogDensityForDusk(0) < 0.01, 'Act I fog was not thinned')
 })
 
 

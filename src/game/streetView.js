@@ -149,6 +149,11 @@ export const PALETTE = Object.freeze({
   portal: 0x3ad6d6,
   portalDead: 0x0b2b2b,
   sodium: 0xffa54a,
+  // The bounce (iteration 2, pass 2): sodium that has come back off the road.
+  // A paler, less saturated amber than `sodium` on purpose — light that has
+  // bounced off grey asphalt has lost its most saturated wavelengths twice over,
+  // and a bounce in the *key's* colour reads as a second key rather than as fill.
+  bounce: 0xffd2a0,
   headlight: 0xffe2a8,
   creature: 0x08070a,
 })
@@ -188,14 +193,46 @@ const ROOF_HEIGHT = 1.9
 /**
  * How wide a sodium pool is on the road, metres.
  *
- * Sized to the street rather than to the light: the carriageway is `2 *
- * STREET_HALF_WIDTH` = 12 m wide, so a 12 m pool fills the road it stands on and
- * stops at the kerb, which is what makes the pools read as a *grid you steer by*
- * (§4's second navigation mechanism) rather than as a smear. A smaller pool reads
- * as a spotlight on a stage and loses the spacing; a larger one runs the pools
- * together and the grid stops being legible at all.
+ * BEFORE 12, AFTER 18 (iteration 2, pass 2). The original 12 was sized to the
+ * street: the carriageway is `2 * STREET_HALF_WIDTH` = 12 m wide, so a 12 m pool
+ * filled the road it stands on and stopped dead at the kerb.
+ *
+ * That is a *containment* rule, and this pass replaced it with a *coverage* rule,
+ * because §4's pools are a navigation affordance and a pool that stops at the
+ * kerb is not the one the brief is complaining about. The complaint is "small hot
+ * circles": a disc that exactly inscribes the carriageway reads as a spotlight on
+ * a stage, and the 32 m of kerb, pavement and frontage it leaves black is most of
+ * the visible ground in any frame taken from under a lamp.
+ *
+ * 18 m is 1.5x the road width and it is bounded from above by the spacing, not by
+ * taste: lamps are one per intersection and intersections are 64 m apart, so
+ * neighbouring pools are 46 m apart at the rim and there is still 46 m of darker
+ * road between any two pools on an avenue. §4 needs the pools to read as a grid
+ * and a grid *is* spacing — at 32 m the discs would touch and the grid would be a
+ * continuous orange sheet, which is precisely the failure the old 400-candela
+ * comment warns about at 900. The gate pins the number and asserts the rim gap.
  */
-const LAMP_POOL_DIAMETER = 12
+const LAMP_POOL_DIAMETER = 18
+
+/**
+ * The fraction of the pool's peak that survives to its rim, before the texture's
+ * own falloff. Iteration 2, pass 2, and it exists because a *broader* pool lit by
+ * a point light is a different animal from a *hotter* one.
+ *
+ * Raising `LAMP_POOL_DIAMETER` from 12 to 18 without this would have made the
+ * pools bigger and, at the same time, thinner-looking: `makePoolTexture`'s
+ * `(1 - r²)²` falloff is a fixed curve, so spreading the same texture over 50%
+ * more radius spreads the same energy over 2.25x the area. The rim — which is
+ * what the "reads as a pool of warmth" claim is actually about, because the rim is
+ * what the eye uses to see it *is* a pool — loses 2.25x its brightness per unit
+ * area.
+ *
+ * 0.82 BEFORE implicit 1.0, i.e. the rim is 82% of peak rather than 100% of a
+ * curve that is already heading for zero there. It is a plateau, not a lift: the
+ * middle of the pool is unchanged, so the sodium stays the brightest thing on the
+ * road and §4's "steer by the pools" affordance is not spent.
+ */
+const LAMP_POOL_RIM = 0.82
 
 /**
  * The cyan apron's diameter, metres. A quarter of the sodium pool's 12, which is
@@ -322,13 +359,27 @@ function makeSurfaceTexture({ size = 128, seed = 1, base = 0.5, contrast = 0.3, 
  *
  * Drawn per-pixel through `createImageData`/`putImageData` for the reason every
  * other texture in this file is: `verify-world.mjs` stubs the 2D context with
- * exactly these members, and a texture written with a gradient primitive would
- * be a texture the gate cannot construct. The falloff is `(1 - r²)²` because a
+ * exactly these members, and a texture written with a gradient primitive would be
+ * a texture the gate cannot construct. The falloff is `(1 - r²)²` because a
  * linear ramp reads as a painted disc with a hard edge, and a sodium lamp on wet
  * asphalt has neither — it is bright under the head and gone well before the
  * kerb.
+ *
+ * `rim` is iteration 2, pass 2. BEFORE the curve was `(1 - r²)²` alone, so it
+ * decayed all the way to zero at the edge of the disc. AFTER, with `rim` > 0 the
+ * curve is `rim + (1 - rim) * (1 - r²)²`: the same shape with a floor under it,
+ * i.e. the pool has a *rim* rather than an edge.
+ *
+ * The reason is the same one that made the pool 1.5x wider. A 12 m disc and an
+ * 18 m disc made from the same texture are not the same picture scaled up — the
+ * outer third of the new one covers 2.25x the area for the same pixel energy, so
+ * the part of the pool the eye actually reads the *shape* of (the rim, where the
+ * falloff is steep) goes dim, and a broad pool with a dim rim is a smudge. The
+ * floor puts that energy back. The default is 0, so `portalPool` — which the same
+ * function builds and which is a doorway, not a streetlight — is byte-for-byte
+ * unchanged by this pass.
  */
-function makePoolTexture({ size = 128, peak = 1 } = {}) {
+function makePoolTexture({ size = 128, peak = 1, rim = 0 } = {}) {
   const canvas = document.createElement('canvas')
   canvas.width = size
   canvas.height = size
@@ -341,7 +392,7 @@ function makePoolTexture({ size = 128, peak = 1 } = {}) {
       const dx = (x - half) / half
       const dy = (y - half) / half
       const r2 = dx * dx + dy * dy
-      const fall = r2 >= 1 ? 0 : (1 - r2) * (1 - r2) * peak
+      const fall = r2 >= 1 ? 0 : (rim + (1 - rim) * (1 - r2) * (1 - r2)) * peak
       const value = Math.round(fall * 255)
       const i = (y * size + x) * 4
       // white in RGB and the falloff in alpha, so the material's own colour is the
@@ -613,8 +664,12 @@ export class StreetView {
       // the renderer never makes. `fog: true` here and `fog: false` on the head
       // above it is deliberate and is the whole depth cue: the pool fades with
       // distance, the lamp does not.
+      //
+      // `LAMP_POOL_RIM` is iteration 2, pass 2, and it is the difference between
+      // a pool and a disc: see the constant for why a 1.5x-wider pool built from
+      // the same falloff texture loses its rim.
       sodiumPool: this._glow(PALETTE.sodium, {
-        map: makePoolTexture(),
+        map: makePoolTexture({ rim: LAMP_POOL_RIM }),
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
@@ -631,6 +686,11 @@ export class StreetView {
       // in its worst form — the one cold light in the game, reading as a decal on
       // a dark shed. Same additive plane and same falloff texture, cyan instead
       // of sodium, and a quarter of the diameter: a doorway is not a streetlight.
+      //
+      // `makePoolTexture()` here takes no `rim`, and that omission is the point:
+      // pass 2 gave the *sodium* pool a rim and deliberately left the portal's at
+      // the default 0. A doorway has hard edges — it is a hole in a shed wall —
+      // and a rimmed disc would read as a glowing puddle around a doorway.
       portalPool: this._glow(PALETTE.portal, {
         map: makePoolTexture(),
         transparent: true,
@@ -1100,7 +1160,23 @@ export class StreetView {
       root.add(lamp)
       lamps.push(lamp)
     }
-    const beam = new THREE.PointLight(PALETTE.headlight, 0, 34, 2)
+    // The beam, and §10.3's whole argument in one number: it has to *outlast the
+    // fog*, or a lit surface in the finale is a glow twenty metres out and the
+    // climax becomes a search. The gate asserts `beam.distance > fogVisibility` at
+    // dusk 1, so the two numbers cannot drift apart.
+    //
+    // BEFORE 34, AFTER 56 (iteration 2, pass 2). Pass 2 thinned the fog (the whole
+    // point of it: fog as a depth cue rather than a wall), which moved the
+    // half-visibility at dusk 1 from 32.0 m to 47.6 m. A 34 m beam would have
+    // fallen *inside* the fog it is supposed to be visible through, and the
+    // assertion that has protected this since slice 13 would have started failing
+    // for a reason that has nothing to do with the car.
+    //
+    // The intensity is unchanged at 26 and that is deliberate rather than an
+    // oversight: `distance` is a cutoff, not a brightness, and this beam is decay
+    // 2, so lengthening it does not dim the near field. What it changes is the
+    // far field, which is exactly the half that was missing.
+    const beam = new THREE.PointLight(PALETTE.headlight, 0, 56, 2)
     beam.position.set(frame.alongX ? length * 0.8 : 0, 1.1, frame.alongX ? 0 : length * 0.8)
     root.add(beam)
     this.group.add(root)

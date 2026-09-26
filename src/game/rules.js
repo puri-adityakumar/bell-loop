@@ -177,11 +177,27 @@ export function applyPortalHold(state, portalId, dt, holding) {
  * rules; the split is deliberate and is the same split §15.2 draws between the
  * two harnesses.
  */
+// ITERATION 2, PASS 2 — 0.01 / 0.0135 / 0.018 / 0.026 -> 0.0075 / 0.0105 /
+// 0.0135 / 0.0175. Every stop is down, and the reason is the checklist's own
+// wording: "fog should be a depth cue, not a wall." The old table put Act I at
+// half opacity 83.3 m and the finale at 32.0 m, which sounds generous until it
+// is read as a *ratio*: the world lost 61% of its sight between the first step
+// and the last, and the 32 m finale put the horizon inside the distance at
+// which the player is expected to recognise a shape. §11.3's whole balance rests
+// on 20 m of creature detection meaning something, and a fog that is half opaque
+// at 32 m means the thing it detects at 20 m is a smudge.
+//
+// The new table's half-visibility is 111.0 / 79.3 / 61.7 / 47.6 m. The closure
+// ratio is 2.33x rather than 2.60x — deliberately still "the finale closes the
+// world by half", because §3.7's dusk-as-a-clock is a design promise and this
+// pass was never chartered to unmake it. What changed is the *floor*: the
+// thinnest fog in the game is now 47.6 m instead of 32.0 m, so the darkest the
+// world ever gets still has a road in it.
 export const DUSK_FOG = Object.freeze([
-  Object.freeze({ portals: 0, density: 0.01 }),
-  Object.freeze({ portals: 1, density: 0.0135 }),
-  Object.freeze({ portals: 2, density: 0.018 }),
-  Object.freeze({ portals: 3, density: 0.026 }),
+  Object.freeze({ portals: 0, density: 0.0075 }),
+  Object.freeze({ portals: 1, density: 0.0105 }),
+  Object.freeze({ portals: 2, density: 0.0135 }),
+  Object.freeze({ portals: 3, density: 0.0175 }),
 ])
 
 /** Dusk below zero or above one is a caller bug, not a mood; clamp it. */

@@ -106,8 +106,27 @@ const DIRECT_APPROACH_HOPS = 1
 /** Point lights given to the sodium lamps; the rest of the grid is unlit. */
 const LAMP_LIGHTS = 4
 
-/** How far a lamp light reaches before the pool stops looking for another. */
-const LAMP_RADIUS = 40
+/**
+ * How far a lamp light reaches before the pool stops looking for another.
+ *
+ * BEFORE 40, AFTER 96 (iteration 2, pass 2). This is the radius of the *search*
+ * — how far `streetView.lampsNear` will go looking for a lamp to put one of the
+ * four lights on — and it is not the same number as `LAMP_LIGHT_DISTANCE`, which
+ * is how far the light itself throws. The two have to be related, and the old
+ * relationship was the bug: a 60 m throw fed by a 40 m search means the outer
+ * 20 m of every lamp's reach is only ever lit if the player happens to be standing
+ * next to that lamp, so a pool faded out in the middle of the frame for no reason
+ * a viewer could name.
+ *
+ * 96 m is 1.5 lamp spacings, so the search can always see the next two lamps down
+ * the road. It is bounded above by the light count, not by taste: four lights
+ * cannot cover 96 m of 64 m-spaced grid from anywhere, and pretending otherwise
+ * would be a comment rather than a behaviour. What it buys is that the four
+ * lights are always the four *nearest*, including while walking between them,
+ * which is what keeps the grid regular instead of flickering between lamps as the
+ * player crosses an intersection.
+ */
+const LAMP_RADIUS = 96
 
 /**
  * §12.1's exposure curve, as two numbers instead of two literals.
@@ -157,18 +176,97 @@ const EXPOSURE_CUT = 0.14
  * to a uniform orange and the sodium stops being a pool you steer by, which is
  * the navigation affordance the pools exist for. 400 is the top of the legible
  * range without spending that affordance.
+ *
+ * ITERATION 2, PASS 2 — 400 stays 400, and that is a decision rather than an
+ * omission. Three things changed underneath this number and none of them is the
+ * brightness: the painted pool got 1.5x wider (`streetView.js`), the throw got
+ * 1.5x longer (`LAMP_LIGHT_DISTANCE`), and the world got a dedicated bounce
+ * family (`LAMP_BOUNCE_*`) whose entire job is the *road between* pools. Raising
+ * the key as well would have spent §4's "steer by the sodium grid" affordance on
+ * the change that was supposed to be about the pools' shape instead of their
+ * reach, and the measurement that calibrated 400 in the first place — 34% of the
+ * lower scene lit at 900, where the pools stop being pools — is the measurement
+ * that would have caught it. The gate re-runs that comparison.
  */
 const LAMP_LIGHT_INTENSITY = 400
 
 /**
  * How far one lamp light throws, in metres.
  *
- * Just over half the 64 m lamp spacing, so adjacent pools overlap slightly at
- * the midpoint and the road between them is lit at both ends rather than dark in
- * the middle. Below ~45 m the falloff is still inside the painted 12 m pool and
- * the change is invisible; the reach is what does the work.
+ * BEFORE 60, AFTER 92 (iteration 2, pass 2). The old comment said "just over half
+ * the 64 m lamp spacing, so adjacent pools overlap slightly at the midpoint" —
+ * and that was true, and it is the reason the old street read as a row of isolated
+ * coins. Slight overlap at the midpoint means the *midpoint* is the darkest point
+ * on the road, twice per 64 m, which is a stripe of unlit tarmac running down the
+ * centre of every avenue. The pools were not too small; they were too *short*.
+ *
+ * 92 m is 1.44 spacings, so each lamp's reach covers the whole gap to its
+ * neighbour's and the pools overlap by 28 m rather than 4 m. It is bounded above
+ * by the same thing `LAMP_RADIUS` is bounded above by: beyond about 1.5 spacings
+ * the inverse square has done essentially all the work it can do, and past that
+ * point a longer throw is indistinguishable from raising `LAMP_LIGHT_INTENSITY`,
+ * which is the number §4's affordance lives on.
  */
-const LAMP_LIGHT_DISTANCE = 60
+const LAMP_LIGHT_DISTANCE = 92
+
+/**
+ * The warm bounce: how many extra lights stand in for light that has come off the
+ * road and the walls and gone back up onto them.
+ *
+ * BEFORE zero — there was no bounce of any kind, and the sodium family consisted
+ * of a hot disc under each head, an unfogged head above it, and black everywhere
+ * else. AFTER 2 (iteration 2, pass 2), aimed at the same nearest lamps as the key
+ * lights but sitting low, wide and very dim.
+ *
+ * The count is 2 rather than 4 for a reason that is about the look and not about
+ * the budget. A bounce is a *fill*: it is what stops the underside of a roofline
+ * and the face of a wall from being black while the road under them is orange, and
+ * that job is done by the two biggest sources nearest the camera. Four bounce
+ * lights would have started to compete with the key for the road, and a bounce
+ * that competes with its own source is a second key.
+ */
+const LAMP_BOUNCE_LIGHTS = 2
+
+/**
+ * How bright a bounce light is. BEFORE nothing / AFTER 46.
+ *
+ * It has to be small against `LAMP_LIGHT_INTENSITY` (400) and it is: 11.5% of the
+ * key. That ratio is the whole design. A bounce that is a large fraction of its
+ * key stops being a bounce and becomes the light, at which point the pool's shape
+ * is being drawn by the fill and §4's grid goes soft. At 11.5% the key still owns
+ * the pool's centre and the bounce owns everything the key cannot reach — the
+ * kerb, the pavement, the lower two metres of a wall — which is precisely the
+ * "tint the road and nearby walls amber" the brief asked for.
+ */
+const LAMP_BOUNCE_INTENSITY = 46
+
+/**
+ * How far a bounce light throws, in metres. BEFORE nothing / AFTER 34.
+ *
+ * Wider than the pool it is standing in (18 m) and wider than the key's own
+ * useful reach near the ground, on purpose: this is the light that has to get
+ * onto the *walls*, and a wall 20 m down the road is 20 m from the lamp but
+ * nowhere near the disc. 34 m is a little over half a lamp spacing, so a bounce
+ * covers the frontage of its own intersection and the near half of the next one.
+ */
+const LAMP_BOUNCE_DISTANCE = 34
+
+/**
+ * How high a bounce light sits, in metres. BEFORE nothing / AFTER 2.2.
+ *
+ * Low, and the number is load-bearing in a way that is easy to get backwards. A
+ * bounce comes *off* a horizontal road, so it travels roughly horizontally: a
+ * point light at road level would light the underside of nothing and the tops of
+ * everything. 2.2 m is a little under the shoulder line of a 2.80 m figure and
+ * just above `world.js`'s 1.5 m camera fill, which puts it at the height a wall
+ * is actually being washed at — the middle of the frontage, where the eye reads
+ * "this surface is lit" rather than "this surface is in shadow".
+ *
+ * It is also below the lamp head (5.1 m) on purpose. Two lights on one lamp
+ * should not be co-located, or the bounce is invisible: at the same position it
+ * is the same light.
+ */
+const LAMP_BOUNCE_HEIGHT = 2.2
 
 /**
  * How far away §6.1's first sighting has to stand, in metres.
@@ -517,6 +615,21 @@ export class LongQuietGame {
       this.lampLights.push(light)
     }
 
+    // The warm bounce (iteration 2, pass 2), and the only lights in the scene
+    // that are not a key.
+    //
+    // They are built here rather than lazily in `_updateLampPool` so the light
+    // count is fixed at construction: a pool of lights that grows and shrinks
+    // with the player is a shader recompile walking down the street, and §17's
+    // budget is a budget precisely because it is knowable in advance.
+    this.bounceLights = []
+    for (let i = 0; i < LAMP_BOUNCE_LIGHTS; i += 1) {
+      const bounce = new THREE.PointLight(PALETTE.bounce, 0, LAMP_BOUNCE_DISTANCE, 2)
+      bounce.visible = false
+      this.scene.add(bounce)
+      this.bounceLights.push(bounce)
+    }
+
     this.fill = new THREE.PointLight(0xffb877, 0.9, 9, 2)
     this.scene.add(this.fill)
   }
@@ -568,6 +681,14 @@ export class LongQuietGame {
    *
    * Only re-aimed when the set of nearest lamps changes, which for a player
    * walking at 3.6 m/s is a couple of times a second rather than 60 times.
+   *
+   * The key lights and the bounce are aimed in the same pass and off the same
+   * `lampsNear` list, which is the only arrangement where the bounce can be a
+   * bounce: a fill that is allowed to choose its own lamps is a second key with
+   * a different opinion about where the road is brightest. The bounce takes the
+   * *first* `LAMP_BOUNCE_LIGHTS` entries — the nearest — and stands each one
+   * directly under the key that owns it, at `LAMP_BOUNCE_HEIGHT` instead of the
+   * key's 4.9 m.
    */
   _updateLampPool() {
     const lamps = this.streetView.lampsNear(this.player.pos.x, this.player.pos.z, LAMP_RADIUS)
@@ -585,6 +706,19 @@ export class LongQuietGame {
       light.visible = true
       light.position.set(lamp.x, lamp.y - 0.2, lamp.z)
       light.intensity = LAMP_LIGHT_INTENSITY
+    }
+    // the bounce, aimed at the same lamps and lit by the same arrival
+    for (let i = 0; i < this.bounceLights.length; i += 1) {
+      const bounce = this.bounceLights[i]
+      const lamp = lamps[i]
+      if (!lamp) {
+        bounce.visible = false
+        bounce.intensity = 0
+        continue
+      }
+      bounce.visible = true
+      bounce.position.set(lamp.x, LAMP_BOUNCE_HEIGHT, lamp.z)
+      bounce.intensity = LAMP_BOUNCE_INTENSITY
     }
   }
 

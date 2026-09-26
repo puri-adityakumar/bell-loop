@@ -53,6 +53,21 @@ const LUMA_G = 150
 const LUMA_B = 29
 
 /**
+ * The Rec. 601 luma of one decoded pixel, 0-255.
+ *
+ * Shared by `luma` and `sceneProfile` so the two can never disagree about what
+ * a pixel is worth — a gate that measures a frame two different ways is a gate
+ * whose two numbers will eventually contradict each other in a comment.
+ */
+function lumaAt(data, at, channels) {
+  if (channels <= 2) {
+    // greyscale: the single channel is already the luma
+    return data[at]
+  }
+  return (LUMA_R * data[at] + LUMA_G * data[at + 1] + LUMA_B * data[at + 2]) >> 8
+}
+
+/**
  * Where the scene is, as a fraction of frame height.
  *
  * The lower half. The upper half of every frame in this gallery is dusk sky, a
@@ -200,14 +215,7 @@ export function luma(buffer) {
   for (let y = 0; y < height; y += 1) {
     const inScene = y >= firstRow
     for (let x = 0; x < width; x += 1) {
-      const at = (y * width + x) * channels
-      let value
-      if (channels <= 2) {
-        // greyscale: the single channel is already the luma
-        value = data[at]
-      } else {
-        value = (LUMA_R * data[at] + LUMA_G * data[at + 1] + LUMA_B * data[at + 2]) >> 8
-      }
+      const value = lumaAt(data, (y * width + x) * channels, channels)
       total += value
       if (value > max) max = value
       if (inScene) {
@@ -237,6 +245,75 @@ export function describeLuma(measured, floor) {
     `${measured.litPct}% of the lower scene at or above luma ${LIT_LUMA}/255 ` +
     `(whole-frame mean ${measured.mean}, max ${measured.max}), floor ${floor}%`
   )
+}
+
+/**
+ * sceneProfile — the *distribution* of the lower scene, not one number from it.
+ *
+ * WHY THIS EXISTS, AND IT IS THE REVIEW
+ * ------------------------------------
+ * `luma` answers "is the street lit?". It cannot answer "is the creature still
+ * visible against it?", and that second question is the one a whole-world
+ * brightening puts at risk: every pass that lifts the fog also lifts whatever
+ * is standing in the fog, and the gate's only evidence that the subject
+ * survived was a comment saying it did.
+ *
+ * A distribution separates the two populations a frame is made of. On a lit
+ * sodium street there is a bright mass (the road, the pools) and a dark mass
+ * (the creature, the unlit kerb, the vignette), and the claim §12.1 makes is
+ * that the dark mass is *darker than the bright one by enough to be a shape*.
+ * That is a statement about the gap between two populations, which a mean is
+ * structurally incapable of expressing: raising the mean and raising the
+ * subject together leaves the mean looking like progress.
+ *
+ * The percentiles are reported raw rather than as an index, because the useful
+ * reading is the pair. On `creature-stalking` the median is the lit road and
+ * p0.1 is the creature; the gate asserts on the RATIO, so a pass that lifts the
+ * street has to lift the creature by the same factor to stay quiet, and a pass
+ * that lifts only the street is caught.
+ *
+ * SCOPE: the same lower-scene crop as `luma` (see `SCENE_TOP`), for the same
+ * reason and no new one — the upper half is sky, roofline and HUD, and none of
+ * those is evidence about whether a silhouette reads.
+ */
+export function sceneProfile(buffer) {
+  const { width, height, channels, data } = decodePng(Buffer.from(buffer))
+  const firstRow = Math.floor(height * SCENE_TOP)
+  const values = new Uint8Array(width * (height - firstRow))
+  let cursor = 0
+  for (let y = firstRow; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      values[cursor] = lumaAt(data, (y * width + x) * channels, channels)
+      cursor += 1
+    }
+  }
+  // 256 buckets, so "sort the scene" is a counting sort over the luma range the
+  // format actually has. A Float64Array of a 1280x720 half-frame would also
+  // work and would allocate 8x the bytes to learn the same thing.
+  const histogram = new Uint32Array(256)
+  for (let i = 0; i < values.length; i += 1) histogram[values[i]] += 1
+  const total = values.length
+  const percentile = (fraction) => {
+    if (total === 0) return 0
+    const want = Math.min(total - 1, Math.max(0, Math.round(fraction * (total - 1))))
+    let seen = 0
+    for (let value = 0; value < 256; value += 1) {
+      seen += histogram[value]
+      if (seen > want) return value
+    }
+    return 255
+  }
+  return {
+    pixels: total,
+    min: percentile(0),
+    p0_1: percentile(0.001),
+    p1: percentile(0.01),
+    p5: percentile(0.05),
+    median: percentile(0.5),
+    p95: percentile(0.95),
+    max: percentile(1),
+    at: percentile,
+  }
 }
 
 export default luma
