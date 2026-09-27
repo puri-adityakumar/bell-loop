@@ -6910,6 +6910,544 @@ check('pass-10: a trail mark lands INSIDE the frame, and the gallery stages one 
     )
   }
 })
+/**
+ * `lampDreaded` — the built sodium light's state, as a record a check can reason about.
+ *
+ * ITERATION 2, PASS 11. Three numbers, and the reason a helper exists is that the
+ * interesting assertions are about RELATIONSHIPS between them (is the drodded light
+ * dimmer than the untouched one, does the bounce move with the key) and reading
+ * `game.lampLights[i].intensity` at four different call sites is how a check ends up
+ * comparing a base to a base.
+ */
+function lampReadout(game) {
+  return {
+    dread: { ...game.lampDread },
+    keys: game.lampLights.map((light, i) => ({
+      index: i,
+      visible: light.visible,
+      intensity: light.intensity,
+      bounce: game.bounceLights[i] ? game.bounceLights[i].intensity : 0,
+    })),
+  }
+}
+
+check('pass-11: the shimmer is built as one additive ring, and its bands clear the body', () => {
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  const view = game.creatureView
+  // ONE MESH, like the trail and for the same reason: six bands as six meshes is six
+  // draw calls for a column the eye integrates into one.
+  let named = 0
+  game.scene.traverse((object) => {
+    if (object.name === 'creatureHaze') named += 1
+  })
+  assert.equal(named, 1, `the world has ${named} shimmer meshes, and every extra one is a second draw call`)
+  assert.ok(!view.haze.isInstancedMesh, 'the shimmer is instanced, which has no per-vertex alpha in stock three.js')
+  assert.equal(view.haze.material.blending, 2, 'the shimmer is not additive, so it is a grey stain rather than light')
+  assert.equal(view.haze.material.fog, false, 'the shimmer is fogged, so it ADDS the fog colour')
+  // ...and the ring has a hole. The four-component colour attribute is what makes the
+  // per-vertex alpha legal at all, and the alpha is zero on the inner edge: measured off
+  // the built buffer rather than read out of the source, because a source claim cannot
+  // see a geometry that was never written.
+  const colour = view.haze.geometry.attributes.color
+  const position = view.haze.geometry.attributes.position
+  assert.equal(colour.itemSize, 4, 'the shimmer colour attribute is not RGBA, so the band fade is discarded')
+  assert.equal(position.count, beast.HAZE_LAYERS * 4 * 4, `the shimmer has ${position.count} vertices, not HAZE_LAYERS x 4 quads`)
+  // Put the creature close and present, and read the buffer that is about to be drawn.
+  placeCreature(game, 0, -4)
+  game.creature = beast.createCreature({ state: 'chase', awareness: 1 })
+  game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
+  game.update(DT)
+  assert.equal(view.haze.visible, true, 'a creature four metres away is not shimmering')
+  let innerLit = 0
+  let outerLit = 0
+  for (let band = 0; band < beast.HAZE_LAYERS; band += 1) {
+    for (let side = 0; side < 4; side += 1) {
+      const vertex = (band * 4 + side) * 4
+      // The band is an ANNULUS and its four corners are ordered inner-top, outer-top,
+      // outer-bottom, inner-bottom against an alpha ramp of `[0, 1, 1, 0]` — so corners
+      // 1 and 2 are the OUTER edge and carry the band's strength, and 0 and 3 are the
+      // inner edge and must carry none. Read as a count rather than a comparison so the
+      // assertion is about the geometry rather than about one band's moment in time.
+      if (colour.getW(vertex + 1) > 0) outerLit += 1
+      if (colour.getW(vertex) > 0) innerLit += 1
+    }
+  }
+  assert.equal(outerLit, beast.HAZE_LAYERS * 4, `only ${outerLit} of the ${beast.HAZE_LAYERS * 4} outer edges carry the band alpha`)
+  assert.equal(innerLit, 0, `${innerLit} inner edges are lit, so the curtain is painted over the creature`)
+  // ...and the hole is wide enough for the figure, measured on the BUILT buffer: the
+  // smallest distance from the column's axis to any lit vertex, against the widest the
+  // rig ever gets. `creature-stalking.png` has 0.013 of headroom on the body/surround
+  // ratio this protects, so the number is measured rather than reasoned about.
+  let narrowest = Infinity
+  for (let band = 0; band < beast.HAZE_LAYERS; band += 1) {
+    for (let side = 0; side < 4; side += 1) {
+      const vertex = (band * 4 + side) * 4
+      const y = position.getY(vertex)
+      const radial = Math.hypot(position.getX(vertex), position.getZ(vertex))
+      const body = (y <= beast.CREATURE_SHAPE.armRoot ? beast.CREATURE_SHAPE.hip / 2 : beast.CREATURE_SHAPE.shoulder / 2) * game.creatureView.pose.scale
+      if (radial - body < narrowest) narrowest = radial - body
+    }
+  }
+  assert.ok(narrowest > 0.05, `the nearest lit shimmer pixel is ${narrowest.toFixed(3)} m from the body it is shimmering around`)
+  // AND IT IS OFF when the creature is not, which is the artefact this pass could ship
+  // that nothing else would notice: a column of hot air standing where a banished thing
+  // used to be. Both routes to "not there" are checked, because they are different
+  // frames: the pose going absent, and the pose never having had one.
+  game.creature = beast.createCreature({ state: 'dormant' })
+  game.update(DT)
+  assert.equal(view.haze.visible, false, 'the shimmer is still up for a creature that is not there')
+  assert.equal(view.pose.haze, 0)
+  game.restart()
+  game.update(DT)
+  assert.equal(view.haze.visible, false, "the shimmer is up on the title screen's dormant frame")
+  // ...and off beyond the radius, by construction rather than by a retunable constant.
+  placeCreature(game, 0, -beast.HAZE_RADIUS - 4)
+  game.creature = beast.createCreature({ state: 'chase', awareness: 1 })
+  game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
+  game.update(DT)
+  assert.equal(view.pose.haze, 0, `a creature ${beast.HAZE_RADIUS + 4} m away is at haze ${view.pose.haze}`)
+  assert.equal(view.haze.visible, false)
+})
+
+check('pass-11: the lamp under the creature strobes on the built light, and recovers', () => {
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  // FIND A LAMP TO STAND UNDER, rather than assuming one is in range. The four lit
+  // lamps are the nearest to the PLAYER, and the creature is somewhere else entirely, so
+  // "the nearest lamp" is a question this check has to answer against the world's own
+  // aimed list — which is also the list `_writeLampDread` reads, so the two cannot
+  // disagree about which lamp is which.
+  const aimed = game.streetView.lampsNear(game.player.pos.x, game.player.pos.z, 96)
+  assert.ok(aimed.length > 0, 'the light pool has no lamps in it at all, so this check can never fire')
+  const lamp = aimed[0]
+  // STAND THE CREATURE UNDER IT, in the CANONICAL frame the world keeps it in (§3.3),
+  // one metre north so it is inside the radius and not on the lamp's own position.
+  // `canonicalCoord` IS the fold: it takes a world coordinate and returns the canonical
+  // one, which is what `creaturePosition` holds. Subtracting `origin` as well — the first
+  // version of this helper did, and the tell was that a creature placed one metre from
+  // the lamp drodded nothing at all — folds twice and puts the creature 448 m away. The
+  // pass-10 harness's own `placeCreature` says the same thing in one line: the frame is
+  // stated once, and it is this.
+  const put = (metres) => {
+    game.creaturePosition = {
+      x: hood.canonicalCoord(lamp.x + metres),
+      z: hood.canonicalCoord(lamp.z),
+    }
+  }
+  // BEFORE. A creature 40 m from the nearest lamp is not a neighbour of it.
+  put(40)
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.4 })
+  game.update(DT)
+  const base = lampReadout(game)
+  assert.equal(base.dread.level, 1, `a creature 40 m from the lamp drodded it to ${base.dread.level}`)
+  assert.ok(base.keys.some((key) => key.intensity > 0), 'no lamp light is on at all')
+  // UNDER IT. The level has to be BELOW one on some ticks and the built `THREE` light's
+  // intensity has to move with it — the pure module's number and the renderer's number
+  // are two different objects, and a wiring that computed the level and forgot to apply
+  // it would pass every check in `verify.mjs`.
+  put(1)
+  let lowest = 1
+  let highest = 0
+  let dimmed = 0
+  const samples = 240
+  // THE WIRING CLAIM, FRAME FOR FRAME AND EXACTLY. On every one of these frames the
+  // built `THREE.PointLight.intensity` has to BE the pure function's answer for the
+  // distance the world measured and the clock it is on — not "about" it, not on average.
+  // This is the assertion the whole lamp effect rests on, and it is the one the first
+  // version of this check could not make: it compared WINDOW MEANS, and a mean of eleven
+  // one-in-three drops is a coin, so it read 261.9 where the pure mean at the same
+  // distance is 217.0 and reported a fault that was not there. A gate that compares
+  // through a noisy statistic is a gate that can only be satisfied by being loose.
+  const seed = beast.lampDreadSeed(game.seed, 0)
+  for (let i = 0; i < samples; i += 1) {
+    run(game, 1 / 60)
+    const now = lampReadout(game)
+    const drodded = now.keys[0]
+    lowest = Math.min(lowest, drodded.intensity / 400)
+    highest = Math.max(highest, drodded.intensity / 400)
+    if (drodded.intensity < 400 - 1e-6) dimmed += 1
+    const expected = 400 * beast.lampDread(now.dread.distance, game.animTime, { seed })
+    assert.ok(
+      Math.abs(drodded.intensity - expected) < 1e-6,
+      `frame ${i}: the built light is at ${drodded.intensity} and 400 x lampDread(${now.dread.distance.toFixed(3)} m, ${game.animTime.toFixed(4)} s) is ${expected.toFixed(6)}`,
+    )
+    // ...and the BOUNCE moves with the key, because the bounce IS the sodium returning
+    // off the road and a strobed key over a steady bounce is a light being eaten from
+    // above. The bounce is 46 at rest, so the two are the same number on two channels.
+    assert.ok(
+      Math.abs(drodded.bounce - 46 * (drodded.intensity / 400)) < 1e-6,
+      `the key is at ${drodded.intensity.toFixed(1)} and the bounce at ${drodded.bounce.toFixed(1)}, which is not the same level`,
+    )
+  }
+  assert.ok(lowest < 0.35, `the strobe bottoms out at ${(lowest * 100).toFixed(0)}% of the base over ${samples} frames`)
+  assert.ok(highest > 0.9, `the strobe never comes back up (best ${(highest * 100).toFixed(0)}%)`)
+  assert.ok(dimmed > samples * 0.15, `the lamp was dimmed on only ${dimmed} of ${samples} frames, so nothing is strobing`)
+  // ...and the OTHER lit lamps are untouched, which is the "nearest lamp" half of the
+  // brief and the difference between a presence in a place and a global dimmer.
+  const spread = lampReadout(game)
+  const others = spread.keys.slice(1).filter((key) => key.visible)
+  for (const key of others) {
+    assert.ok(Math.abs(key.intensity - 400) < 1e-6, `lamp ${key.index} is at ${key.intensity} while the creature is under lamp 0`)
+  }
+  // AND THE PUBLISHED RECORD matches the built light, which is the point of publishing
+  // it: `dread.level` and `keys[0].intensity / 400` are the same number read two ways.
+  const published = spread.dread
+  assert.equal(published.lamp, 0, `the world says lamp ${published.lamp} was drodded, and the creature is under lamp 0`)
+  assert.ok(Math.abs(published.level - spread.keys[0].intensity / 400) < 1e-9, 'the published level and the built intensity disagree')
+  assert.ok(published.distance < beast.LAMP_DREAD_RADIUS, `the world measured ${published.distance.toFixed(1)} m to the lamp it drodded`)
+  // AND IT RECOVERS, which is the half of the brief that is a claim about time: walk the
+  // creature out of the radius and the light comes back to exactly its base.
+  put(beast.LAMP_DREAD_RADIUS + 6)
+  run(game, 0.2)
+  const after = lampReadout(game)
+  assert.equal(after.dread.level, 1, `a creature 6 m past the radius left the lamp at ${after.dread.level}`)
+  assert.ok(Math.abs(after.keys[0].intensity - 400) < 1e-6, `the lamp is at ${after.keys[0].intensity} with nothing standing under it`)
+  // ...and the two ENDS of the ramp, which is what this harness can see and what the
+  // pure module's monotone sweep above already owns in full. There is deliberately no
+  // twenty-step sweep here: a hashed square wave's window mean is a coin at every window
+  // length a headless world can afford, and the first version of this check spent its
+  // whole budget learning that. The wiring is now asserted exactly, frame by frame; what
+  // is left for the world is the RAMP — a lamp at the centre of the radius is measurably
+  // darker than one at the edge of it, and measurably brighter than one outside it.
+  const atRadius = beast.LAMP_DREAD_RADIUS - beast.LAMP_DREAD_FADE
+  // The sample carries its own EXPECTATION: the pure function evaluated at the very
+  // frames and the very distances the world used, so the comparison is like for like and
+  // the noise cancels instead of having to be tolerated. This is the third attempt at
+  // this assertion and the reason is worth recording: comparing two INDEPENDENT window
+  // means of a hashed one-in-three dropout does not work, because the spread of a
+  // 22-tick mean is not the +/-3.6% a binomial predicts. Measured on four seeds, six
+  // consecutive 22-tick windows each, the same distance gives means from 0.539 to 0.734 —
+  // a +/-18% band, because the hashed pattern is not independent from tick to tick at the
+  // scale of a short window. A gate that compares through a noisy statistic is a gate
+  // that can only be satisfied by being loose.
+  const sample = (metres, frames) => {
+    let sum = 0
+    let expected = 0
+    for (let i = 0; i < frames; i += 1) {
+      put(metres)
+      game.update(1 / 60)
+      const now = lampReadout(game)
+      sum += now.keys[0].intensity
+      expected += 400 * beast.lampDread(now.dread.distance, game.animTime, { seed })
+    }
+    return { mean: sum / frames, expected: expected / frames, metres }
+  }
+  // The creature is RE-PINNED every frame — during a whole second of simulation §6.1's
+  // chase state walks it down the road toward the player, out of the radius and on, so a
+  // version that pinned once was measuring "a creature that leaves" rather than the ramp.
+  //
+  // The three ends are the RAMP, not the radius: `LAMP_DREAD_FADE` 6 m of it, so 0 m and
+  // 3 m are both at full weight and would sample the same distribution twice. 9 m is the
+  // ramp's midpoint, where the weight is a half.
+  const underIt = sample(0, 240)
+  const rampMid = sample(beast.LAMP_DREAD_RADIUS - beast.LAMP_DREAD_FADE / 2, 240)
+  const outside = sample(beast.LAMP_DREAD_RADIUS + 6, 240)
+  for (const [label, at] of [['under it', underIt], ['mid-ramp', rampMid], ['outside', outside]]) {
+    assert.ok(
+      Math.abs(at.mean - at.expected) < 1e-6,
+      `the ${label} lamp (${at.metres} m) averages ${at.mean.toFixed(4)} where the pure function at the same frames averages ${at.expected.toFixed(4)}`,
+    )
+  }
+  assert.ok(underIt.mean < rampMid.mean, `the lamp is ${underIt.mean.toFixed(1)} with the creature under it and ${rampMid.mean.toFixed(1)} at the ramp's midpoint`)
+  assert.ok(rampMid.mean < outside.mean, `the lamp is ${rampMid.mean.toFixed(1)} at the ramp's midpoint and ${outside.mean.toFixed(1)} past the radius`)
+  assert.ok(outside.mean > 399, `a lamp with nothing under it averages ${outside.mean.toFixed(1)} of 400`)
+  assert.ok(underIt.mean < 400 * 0.8, `a lamp with the creature standing under it averages ${underIt.mean.toFixed(1)} of 400, which is not a drodd`)
+  console.log(
+    `\n  pass-11 lamps: lamp 0 under the creature ranged ${lowest.toFixed(2)}-${highest.toFixed(2)} of 400 over 4 s, ` +
+      `the other ${others.length} lit lamp(s) untouched, ${underIt.mean.toFixed(0)}/${rampMid.mean.toFixed(0)}/${outside.mean.toFixed(0)} of 400 ` +
+      `at 0 m, ${atRadius / 2} m and ${beast.LAMP_DREAD_RADIUS + 6} m, equal to the pure level on every frame`,
+  )
+})
+
+check('pass-11: the eye flare pulses the lamp once, and only while it is flaring', () => {
+  // THE SAME SPOT PROBE pass 10's flare check uses, and it is copied rather than shared
+  // because each harness block is a self-contained story; the mechanic it searches for is
+  // a §6.3 sighting — in range, inside the cone, not behind a house — and the search is
+  // over bearings and ranges rather than a hand-picked pair, with a guard that the
+  // placement EXISTS. A check that cannot fire is the pass-10 review's complaint about
+  // the trail all over again.
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  const player = { x: game.player.pos.x, z: game.player.pos.z }
+  const range = beast.detectionRange(0, 0)
+  const origin = game.streetView.origin
+  let placed = null
+  for (const dz of [3, 4, 5, 6, -3, -4, -5, -6]) {
+    for (const dx of [0, 1, -1, 2, -2]) {
+      const canonical = { x: hood.canonicalCoord(player.x) + dx, z: hood.canonicalCoord(player.z) + dz }
+      const drawn = { x: canonical.x + origin.x, z: canonical.z + origin.z }
+      if (!beast.canSee(drawn, { x: player.x, z: player.z }, { range, occluders: game.streetView.occluders() })) continue
+      placed = { dx, dz, canonical }
+      break
+    }
+    if (placed) break
+  }
+  assert.ok(placed, 'no placement within 6 m of the player is a §6.3 sighting, so this check can never fire')
+  // ...AND THE PLACEMENT HAS TO BE UNDER A LAMP, because the brief said "nearby lamp
+  // glow" and a pulse on a lamp the creature is not near is a lie about the light's
+  // source. The check searches for a placement that satisfies BOTH, and says so when it
+  // cannot find one rather than quietly testing a lamp on the far side of the street.
+  const aimed = game.streetView.lampsNear(player.x, player.z, 96)
+  let underLamp = null
+  for (const lamp of aimed) {
+    for (const dx of [0, 1, -1, 2, -2, 3, -3, 4, -4]) {
+      for (const dz of [2, 3, 4, 5, 6, 7, 8, -3, -4, -5]) {
+        const world = { x: lamp.x + dx, z: lamp.z + dz }
+        if (Math.hypot(world.x - player.x, world.z - player.z) > range) continue
+        const canonical = { x: hood.canonicalCoord(world.x), z: hood.canonicalCoord(world.z) }
+        const drawn = { x: canonical.x + origin.x, z: canonical.z + origin.z }
+        if (!beast.canSee(drawn, { x: player.x, z: player.z }, { range, occluders: game.streetView.occluders() })) continue
+        if (Math.hypot(drawn.x - lamp.x, drawn.z - lamp.z) > beast.LAMP_DREAD_RADIUS) continue
+        underLamp = { canonical, lamp }
+        break
+      }
+      if (underLamp) break
+    }
+    if (underLamp) break
+  }
+  assert.ok(underLamp, `no §6.3 sighting is within ${beast.LAMP_DREAD_RADIUS} m of a lit lamp, so the lamp cannot pulse`)
+  // FILL THE METER until §6.2 crosses 1.0 and the state machine turns it into a chase,
+  // taking the FIRST frame the world says so. The position is re-pinned every frame for
+  // §11.1's reason: at three metres the creature reaches the player and captures inside
+  // two seconds, which is four before the meter fills.
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.6 })
+  game.creaturePosition = underLamp.canonical
+  const slot = game.streetView.lampsNear(game.player.pos.x, game.player.pos.z, 96).findIndex((l) => Math.abs(l.x - underLamp.lamp.x) < 1e-6 && Math.abs(l.z - underLamp.lamp.z) < 1e-6)
+  assert.ok(slot >= 0, 'the lamp under the creature is not in the pool the world drives')
+  let spot = null
+  for (let frame = 0; frame < 900; frame += 1) {
+    game.creaturePosition = underLamp.canonical
+    game.update(DT)
+    if (game.creature.state !== 'chase') continue
+    const now = lampReadout(game)
+    spot = { frame, intensity: now.keys[slot].intensity, pulse: now.dread.pulse, level: now.dread.level, flare: game.creatureView.pose.eyeFlare }
+    break
+  }
+  assert.ok(spot, 'the creature never reached a chase from a sighting under a lamp, so nothing pulsed')
+  // THE PULSE IS ON THE BUILT LIGHT, at the documented gain, on the spotting frame.
+  assert.equal(spot.pulse, 1 + beast.LAMP_PULSE_GAIN, `the lamp's pulse envelope is ${spot.pulse} on the spotting frame`)
+  const expected = 400 * spot.level * spot.pulse
+  assert.ok(
+    Math.abs(spot.intensity - expected) < 1e-6,
+    `the built light is at ${spot.intensity.toFixed(2)} and 400 x ${spot.level.toFixed(4)} x ${spot.pulse} is ${expected.toFixed(2)}`,
+  )
+  // ...and it SURGES relative to the same lamp on a non-flaring frame. The comparison is
+  // against the level this very frame drodded to, not against the base, because the two
+  // terms are multiplied and a pulse measured against the base would read as smaller than
+  // it is whenever a dropout lands under the flare.
+  const quiet = 400 * spot.level
+  assert.ok(spot.intensity > quiet * 1.4, `the lamp is at ${spot.intensity.toFixed(1)} against ${quiet.toFixed(1)} un-pulsed, which is not a pulse`)
+  // AND IT IS ONE PULSE: the envelope is back to exactly 1 within the window and stays
+  // there, which is what "a single deterministic pulse" means against a lamp that is
+  // still drodded rather than against a lamp that has recovered.
+  let returned = null
+  for (let frame = 0; frame < 200; frame += 1) {
+    game.creaturePosition = underLamp.canonical
+    run(game, 1 / 60)
+    if (lampReadout(game).dread.pulse === 1) { returned = frame; break }
+  }
+  assert.ok(returned !== null, 'the lamp never stopped pulsing')
+  assert.ok(
+    returned * DT <= beast.EYE_FLARE_SECONDS + DT * 2,
+    `the lamp was still pulsing ${((returned * DT) * 1000).toFixed(0)} ms after the sighting, and the window is ${(beast.EYE_FLARE_SECONDS * 1000).toFixed(0)} ms`,
+  )
+  // ...and it does not come back. A lamp that swelled once per sighting and never settled
+  // would be a lamp with a memory, and the world clears the spot clock on every frame
+  // the creature is not pursuing.
+  const settled = lampReadout(game)
+  assert.equal(settled.dread.pulse, 1, 'the lamp is still pulsing on a frame with no sighting')
+  // AND A LAMP THE CREATURE IS NOT NEAR DOES NOT PULSE, which is the "nearby" half and
+  // the one a whole-street version of this effect would fail.
+  game.creaturePosition = { x: hood.canonicalCoord(underLamp.lamp.x) + 40, z: hood.canonicalCoord(underLamp.lamp.z) }
+  game.spotElapsed = 0
+  game.update(DT)
+  const far = lampReadout(game)
+  assert.ok(far.dread.pulse > 1, 'the pulse needs a sighting to exist')
+  assert.equal(far.keys[slot].intensity, 400, `a lamp 40 m away pulsed to ${far.keys[slot].intensity}`)
+  console.log(
+    `\n  pass-11 pulse: lamp slot ${slot} surged to ${spot.intensity.toFixed(1)} from ${quiet.toFixed(1)} on the sighting frame ` +
+      `(${((spot.intensity / quiet - 1) * 100).toFixed(0)}% on top of the drodd), settled after ${(returned * DT * 1000).toFixed(0)} ms of a ` +
+      `${(beast.EYE_FLARE_SECONDS * 1000).toFixed(0)} ms window, and did not move for a lamp 40 m away`,
+  )
+})
+
+check('pass-11: a footfall puff is in the frame, and the cap holds in the built world', () => {
+  // THE PASS-10 REVIEW'S FINDING, turned against this pass. Pass 10 shipped a trail
+  // with nineteen mutations, four world checks and a whole section of prose, and not one
+  // of them asked whether a mark was ever in front of a camera. "A puff exists" and "a
+  // puff is in a picture" are different claims, and only the second is one a reviewer
+  // ever sees — so this is a PROJECTION, against the real §16.5.8 staging, and it reports
+  // pixel coordinates rather than asserting a threshold on alpha.
+  const refreshCamera = () => {
+    const camera = game.camera
+    camera.updateProjectionMatrix()
+    camera.updateMatrixWorld(true)
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert()
+    return camera
+  }
+  // A puff is VISIBLE if it projects inside the frame and is still opaque enough to
+  // read. The alpha floor is `PUFF_FADE`-aware for the trail's reason: a puff inside its
+  // own ramp is still arriving and the harness's `wait` can catch one there.
+  const VISIBLE_ALPHA = 0.2
+  // READ OFF THE BUFFER AND NOTHING ELSE, and both halves of that are corrections. The
+  // first version projected a centre built from `worldOf(puff.x)`, and `puff.x` is
+  // ALREADY folded into the drawn copy by `_advancePuffs` — so the centre was folded
+  // twice and sat a whole period away from the puff it was measuring, which inflated the
+  // span from 52 px to 208 and put the "inside the frame" verdict on a point that is not
+  // where the puff is. The second read slot 0 for every puff. So: the four corners come
+  // out of the built geometry, the centre is their centroid, and the span is the widest
+  // pair among them. Nothing here needs to know about §3.3's fold, which is the point —
+  // a check that has to re-derive the fold to look at the buffer is a check with its own
+  // copy of the bug.
+  const inFrame = (puff, index, time) => {
+    const camera = refreshCamera()
+    const position = game.creatureView.puffGeometry.attributes.position
+    const corners = []
+    for (let i = 0; i < 4; i += 1) {
+      const vertex = index * 4 + i
+      corners.push(
+        new THREE.Vector3(position.getX(vertex), position.getY(vertex), position.getZ(vertex)).project(camera),
+      )
+    }
+    const toPixels = (p) => ({ x: (p.x * 0.5 + 0.5) * 1280, y: (-p.y * 0.5 + 0.5) * 720 })
+    const screen = corners.map(toPixels)
+    const centre = {
+      x: screen.reduce((sum, p) => sum + p.x, 0) / 4,
+      y: screen.reduce((sum, p) => sum + p.y, 0) / 4,
+    }
+    // THE SPAN IS AN AXIS-ALIGNED BOUNDING BOX, because that is what `findEyes` measures:
+    // `tools/png-luma.mjs` rejects a blob when `maxX - minX > EYE_MAX_SPAN` OR
+    // `maxY - minY > EYE_MAX_SPAN`. The first version of this took the widest PAIR of
+    // corners, which is the square's diagonal and is 1.41x the box — a gate that mirrors
+    // another file's test has to measure what that file measures, or it is measuring its
+    // own convenience.
+    const spanX = Math.max(...screen.map((p) => p.x)) - Math.min(...screen.map((p) => p.x))
+    const spanY = Math.max(...screen.map((p) => p.y)) - Math.min(...screen.map((p) => p.y))
+    return {
+      x: centre.x,
+      y: centre.y,
+      span: Math.max(spanX, spanY),
+      spanX,
+      spanY,
+      depth: corners[0].z,
+      alpha: beast.puffAlpha(time - puff.born),
+      visible: centre.x >= 0 && centre.x < 1280 && centre.y >= 0 && centre.y < 720 && beast.puffAlpha(time - puff.born) > VISIBLE_ALPHA,
+    }
+  }
+  // THE CHASE VIEW, staged exactly as `capture.js` stages it. `placeCreature` takes a
+  // straight dx/dz in the CANONICAL frame, which is what `creaturePosition` is.
+  const chase = cap.captureView('creature-chasing')
+  {
+    const seconds = chase.steps
+      .slice(chase.steps.findIndex((step) => step.op === 'creature') + 1)
+      .filter((step) => step.op === 'wait')
+      .reduce((total, step) => total + step.seconds, 0)
+    const spec = chase.steps.find((step) => step.op === 'creature')
+    game.restart()
+    // `start()` as well: `restart()` alone leaves the phase at RESET, and §9.3 says no
+    // figure may be shown in that phase, so the world would correctly decline to draw
+    // one and the dust would never be advanced. Every check that needs a live world says
+    // both.
+    game.start()
+    run(game, 1.6)
+    placeCreature(game, 0, -spec.metres)
+    game.creature = beast.createCreature({ state: spec.state, awareness: 1 })
+    game.dismissing = false
+    game.dismissElapsed = 0
+    game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
+    run(game, seconds)
+    const field = game.creaturePuffs
+    assert.ok(field.laid > 0, `${chase.id} is staged for ${seconds}s and laid no puff at all`)
+    assert.ok(field.puffs.length > 0, `${chase.id} laid ${field.laid} puffs and every one of them is already dead`)
+    const projected = field.puffs.map((puff, index) => inFrame(puff, index, game.animTime))
+    const seen = projected.filter((entry) => entry.visible)
+    assert.ok(
+      seen.length > 0,
+      `${chase.id} laid ${field.puffs.length} puff(s) and NONE of them is inside the frame — they project to ` +
+        `${projected.map((e) => `${e.x.toFixed(0)},${e.y.toFixed(0)}`).join(' ')} in a 1280x720 shot. The dust is in no ` +
+        'picture, which is the pass-10 bug this check exists for. Give the chase longer, or stage it further out.',
+    )
+    // ...and they are in frame where the CAMERA can see them, which means the built
+    // billboard is at a sane distance rather than projected from a stale matrix. The
+    // harness's own control: a point at 3 m and one at 26 m must not land on the same
+    // pixel, or nothing measured in screen space here means anything.
+    assert.ok(
+      seen.some((entry) => entry.span > 4),
+      `every visible puff is ${Math.max(...seen.map((e) => e.span)).toFixed(1)} px across, which is a speck rather than a puff`,
+    )
+    // AND THE SPAN IS PAST `EYE_MAX_SPAN`, which is the other half of the dust's safety:
+    // `tools/png-luma.mjs` flood-fills every compact blob at or above `EYE_MIN` 150 and
+    // rejects anything spanning more than 14 px, so a puff the finder can see is a blob
+    // the finder must reject. A puff INSIDE that span could be read as the creature's
+    // eye and would cost `creatureContrast` its anchor.
+    const widest = Math.max(...projected.map((entry) => entry.span))
+    const widestOf = projected.reduce((a, b) => (b.span > a.span ? b : a))
+    assert.ok(widest > 14, `a puff spans ${widestOf.spanX.toFixed(1)} x ${widestOf.spanY.toFixed(1)} px here, which is inside EYE_MAX_SPAN 14 and could be read as an eye`)
+    // AND IT IS A REAL CHASE AT THE SHUTTER, not a stalk wearing a chase's filename.
+    assert.equal(game.creature.state, 'chase', `${chase.id} waits ${seconds}s and the creature is no longer chasing`)
+    console.log(
+      `\n  pass-11 dust in frame: ${chase.id} laid ${field.laid} puff(s), ${field.puffs.length} alive, ` +
+        `${seen.length} inside the frame at ${seen.map((e) => `${e.x.toFixed(0)},${e.y.toFixed(0)}`).join(' ')}; ` +
+        `widest ${widestOf.spanX.toFixed(0)}x${widestOf.spanY.toFixed(0)} px at ${widestOf.depth.toFixed(2)} in NDC depth, against EYE_MAX_SPAN 14`,
+    )
+  }
+  // THE CAP, in the BUILT world rather than in a reducer: walk the creature far enough to
+  // want more puffs than `PUFF_MAX` and require the buffer to hold exactly `PUFF_MAX`
+  // quads with alpha on every one of them. This is the claim that distinguishes a cap
+  // from a comment, and only the scene can see it — the reducer's own list is the same
+  // length either way.
+  {
+    game.restart()
+    game.start()
+    run(game, 1.6)
+    placeCreature(game, 0, -9)
+    game.creature = beast.createCreature({ state: 'chase', awareness: 1 })
+    game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
+    // `PUFF_MAX` is set against 5.2 / 0.45 x 0.95 = 11 puffs ALIVE, and 0.95 s of
+    // walking at 5.2 m/s is 4.94 m, which is 5.5 seconds and 330 frames. The first
+    // version of this loop asked for `ceil(11) + 4` FRAMES, which is 1.4 m of road and
+    // three puffs — and it failed with "the cap walk laid 2, which is not more than the
+    // cap", which is the right failure for the right reason: a cap you cannot reach is a
+    // comment. The walk is sized in METRES and the frame count follows from it.
+    const metres = (beast.SPEED_CEILING / beast.FOOTFALL_STRIDE_METRES) * beast.PUFF_LIFE + 3
+    const want = Math.ceil(metres / (beast.SPEED_CEILING * DT))
+    let creatureX = 0
+    for (let i = 0; i < want; i += 1) {
+      creatureX += beast.SPEED_CEILING * DT
+      game.creaturePosition = { x: hood.canonicalCoord(game.player.pos.x) + creatureX, z: hood.canonicalCoord(game.player.pos.z) - 9 }
+      game.update(DT)
+    }
+    assert.ok(game.creaturePuffs.laid > beast.PUFF_MAX, `the cap walk laid ${game.creaturePuffs.laid}, which is not more than the cap`)
+    const colour = game.creatureView.puffGeometry.attributes.color
+    let lit = 0
+    for (let puff = 0; puff < beast.PUFF_MAX; puff += 1) {
+      if (colour.getW(puff * 4) > 0) lit += 1
+    }
+    assert.equal(game.creaturePuffs.puffs.length, beast.PUFF_MAX, `the field holds ${game.creaturePuffs.puffs.length}, not PUFF_MAX`)
+    assert.equal(lit, beast.PUFF_MAX, `only ${lit} of the buffer's ${beast.PUFF_MAX} quads carry a puff, so the rest are stale`)
+    assert.equal(game.creatureView.puffs.visible, true)
+    assert.equal(
+      game.creatureView.puffGeometry.attributes.position.count,
+      beast.PUFF_MAX * 4,
+      'the puff buffer is not sized to the cap, so a version that grew the field would write past it',
+    )
+  }
+  // AND IT IS RELEASED WITH THE WORLD, which §15's teardown is the only place to see.
+  {
+    const view = game.creatureView
+    game.dispose()
+    assert.equal(view.puffs.parent, null, 'the puff field was left on the scene after dispose')
+    assert.equal(view.haze.parent, null, 'the shimmer was left on the scene after dispose')
+    assert.equal(view._geometries.includes(view.puffGeometry), false, 'and its geometry was not released')
+    assert.equal(view._geometries.includes(view.hazeGeometry), false, 'and the shimmer geometry was not')
+    assert.equal(view._materials.includes(view.puffMaterial), false, 'and the puff material was not')
+    assert.equal(view._materials.includes(view.hazeMaterial), false, 'and the shimmer material was not')
+  }
+})
 
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down

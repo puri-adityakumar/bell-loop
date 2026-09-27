@@ -93,7 +93,11 @@ import {
   streetNodeToWorld,
   wrap,
 } from './neighborhood.js'
-import { hash32 } from './hash.js'
+// ITERATION 2, PASS 11. `flickerAt` joins `hash32` for the lamp the creature is
+// standing under: the strobe is a function of the tick index, so the same tick
+// asked for twice — once to build the frame, once to measure it — gives the same
+// answer, which is the same property pass 7 needed the vending ballast to have.
+import { flickerAt, hash32 } from './hash.js'
 
 // ---------------------------------------------------------------------------
 // the states (§6.1)
@@ -2825,6 +2829,731 @@ export function dripStep(trail, frame = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 11 — THE PRESENCE THAT IS NOT THE BODY
+//
+// Pass 10 gave the creature three things that are all ON or IN the figure: a
+// breath, two elbowed arms, a viscous trail, a flare. This pass is about the four
+// that are AROUND it, and the whole design argument is one sentence. A 2.80 m
+// figure at ninety metres in sodium fog is a smudge, and the only things a design
+// can give a player instead of a better smudge are the things the figure DOES to
+// the air, to the light and to the ground around it.
+//
+// FOUR EFFECTS, AND THE SPLIT IS BY WHAT EACH ONE NEEDS TO BE TRUE:
+//
+//  1. `hazeAmount` / `hazeLayers` — a column of `HAZE_LAYERS` additive quads
+//     within `HAZE_RADIUS`, so the creature has an edge that is not its
+//     silhouette. A FUNCTION of (distance, time): a falloff curve and a table of
+//     six numbers.
+//  2. `lampDread` — the nearest sodium lamp strobes while the creature is standing
+//     under it, out of `hash.js`'s own `flickerAt` and a per-lamp seed. It is
+//     `flickerAt` rather than a fourth sine for the reason §12.2 gives for the
+//     vending machine's bad tube: a hashed dropout is an EVENT, and two sines and
+//     an avalanche are incommensurate.
+//  3. `lampPulse` — the eye flare's OWN envelope, on the lamp rather than on the
+//     eye, so one clock and one curve drive two effects on the same frame. That is
+//     the sync claim, and it is only checkable if it is literally the same number.
+//  4. `puffStep` — dust at the footfalls, on `dripStep`'s reducer discipline.
+//
+// All four are pure, seeded, and take either `(distance, time, options)` or a frame
+// object. None of them reads a clock, allocates a closure, or can produce a NaN
+// from one: the same total-function contract `creaturePose` keeps, for the same
+// reason — a render loop that throws is a browser that stops.
+// ---------------------------------------------------------------------------
+
+// --- 1. THE HEAT HAZE --------------------------------------------------------
+
+/**
+ * HAZE_RADIUS — the creature's shimmer reaches this far, and no further. 30 m.
+ *
+ * BEFORE: nothing. The figure had exactly one edge, the one its geometry made.
+ * AFTER: a second edge, and it is only an edge inside 30 m.
+ *
+ * The brief asked for "within ~30 m" and this is the number it asked for, but the
+ * reason it is 30 rather than 90 is the reason the whole effect exists. §6.1's
+ * apparition has to be noticed at ninety metres, and a shimmer at ninety metres is
+ * not a shimmer: at that range the fog's own luma gradient between the road and the
+ * sky is larger than anything a 0.006-alpha quad could add, so the effect would be
+ * invisible in the one frame it was built for. 30 m is also 0.46 of the apparition's
+ * own range, which is what keeps the Act I telegraph — the one figure that MUST stay
+ * a rumour — with no shimmer at all by construction rather than by a test.
+ *
+ * The other half of the number is `EYE_PIXEL_FLOOR`: the eye is held at 7 px at any
+ * range, which is a promise that the eye is legible everywhere. The haze has no such
+ * promise and must not acquire one, because a shimmer that is 7 px at 90 m is a
+ * second signal in the frame and §4 already has three.
+ */
+export const HAZE_RADIUS = 30
+
+/**
+ * HAZE_FADE_METRES — the last 12 m of the radius are a smoothstep, not a cut.
+ *
+ * BEFORE: n/a. AFTER 12.
+ *
+ * A hard edge at `HAZE_RADIUS` is a circle of shimmer that switches on, and the eye
+ * finds a circle that switches on long before it finds a shimmer. The smoothstep
+ * (`u * u * (3 - 2u)`, below) is chosen over a linear ramp for the reason `eyeFlare`
+ * uses a squared fall: it is C1 at BOTH ends, so neither the arrival at 18 m nor the
+ * disappearance at 30 m has a corner in its derivative for the eye to find. The inner
+ * bound is therefore 18 m, and 18 m is `SPEED_CEILING` 5.2 x 3.5 s — inside three and
+ * a half seconds of the finale's closing run, which is the window the effect has to
+ * cover and no more.
+ */
+export const HAZE_FADE_METRES = 12
+
+/**
+ * HAZE_LAYERS — six bands in the column. The brief's "4-6", and the upper end.
+ *
+ * BEFORE: none. AFTER 6, which is 90 vertices and 48 triangles for the whole effect.
+ *
+ * Six rather than four because the column has to read as RISING and not as a box:
+ * four bands of 0.76 m are four stripes, and six of 0.51 m are close enough together
+ * that the eye integrates them into one soft column while the top and bottom of the
+ * stack are still visibly doing different work. The cost is the reason there is no
+ * cylinder and no noise texture: a scrolling texture is one more sampler and a
+ * second UV set on a material the rest of the creature shares, and this is 48
+ * triangles of CPU-written vertices.
+ */
+export const HAZE_LAYERS = 6
+
+/**
+ * HAZE_BASE_Y / HAZE_SPAN — the column in metres, floor up.
+ *
+ * BEFORE: n/a. AFTER 0.10 and 3.05.
+ *
+ * `HAZE_SPAN` overshoots the crown (`CREATURE_SHAPE.height` 2.80) by 0.25 m on
+ * purpose: a shimmer that stops exactly at the top of the head is a hat, and the
+ * top band has to be above the thing it is shimmering around. `HAZE_BASE_Y` 0.10 m
+ * keeps the bottom band off the road plane, for the same reason pass 10's
+ * `DRIP_LIFT` does and with the same number's reasoning — pass 8's water is the
+ * lowest surface on the ground and a coplanar band would z-fight it.
+ */
+export const HAZE_BASE_Y = 0.1
+export const HAZE_SPAN = 3.05
+
+/**
+ * HAZE_HALF_WIDTH — how far the shimmer stands off the figure's axis, 0.62 m.
+ *
+ * BEFORE: n/a. AFTER 0.62.
+ *
+ * §12.1's shoulder span is 0.40 m, so a band of alpha is centred 0.62 m out — 0.42 m
+ * clear of the silhouette at the shoulder and 0.50 m clear at the hip (0.24). The
+ * band cannot touch the body, and that is the constraint, because this effect is
+ * additive and the creature gate measures a body against its LOCAL SURROUND: a
+ * shimmer painted over the figure raises the body's own luma and moves the one
+ * measurement in the repository with 0.013 of headroom. The two bright bands sit
+ * either side of the figure and the middle of every band is transparent, which is
+ * also what heat shimmer actually looks like — the distortion is at the edges of a
+ * hot column, not in the middle of it.
+ */
+export const HAZE_HALF_WIDTH = 0.62
+
+/**
+ * HAZE_PEAK — the alpha at the crest of ONE band, before the bands sum. 0.006.
+ *
+ * BEFORE: n/a. AFTER 0.006, and the number is small because additive luma near
+ * black is not a linear quantity.
+ *
+ * `HAZE_COLOUR` below is a pale grey whose linear luma is 0.218, so one band at
+ * 0.006 adds 0.0013 linear light, and the surface the shimmer sits on in
+ * `creature-stalking.png` measures about 19 of 255 — 0.0065 linear. A pixel is inside
+ * at most `HAZE_OVERLAP` 2 bands, which is 0.0026 linear, and re-encoding that gives
+ * about +5 levels of sRGB on that surround: a readable shimmer. Ten levels would be a
+ * grey pillar and fifty a light, and `verify.mjs` measures the real worst pixel in the
+ * renderer's own colour space and requires it inside [2, 12] levels, because a ceiling
+ * alone is satisfied by a shimmer too faint to see.
+ */
+export const HAZE_PEAK = 0.006
+
+/**
+ * HAZE_BAND_HEIGHT / HAZE_BAND_FILL / HAZE_OVERLAP — the column's own grid, and how
+ * many bands are lit at ONE PIXEL.
+ *
+ * BEFORE: n/a. AFTER 0.508 m, 0.62 and 2.
+ *
+ * A band is `HAZE_BAND_FILL` 0.62 of the pitch in half-height, so it is 1.24 of the
+ * pitch tall and a point on the column is inside `ceil(1.24) = 2` of them. It is a
+ * ceiling rather than a mean because that is what the luma budget needs: a pixel is
+ * lit by at most two bands, so two is the worst case a gate may measure, and using the
+ * 1.24 mean would understate the brightest pixel in the frame by 40%.
+ *
+ * The three are constants rather than arithmetic inside the loop for the reason
+ * `TRAIL_MAX` is a constant rather than a computed capacity: the view's grid is a
+ * fixed thing, and the number the luma budget is computed from has to be the same
+ * number the view was built with. `verify.mjs` re-derives the coverage by walking the
+ * bands' actual extents and asserts it equals this, so a retune of `HAZE_BAND_FILL`
+ * that pushed the coverage to three would fail the budget rather than quietly making
+ * it wrong.
+ */
+export const HAZE_BAND_HEIGHT = HAZE_SPAN / HAZE_LAYERS
+export const HAZE_BAND_FILL = 0.62
+export const HAZE_OVERLAP = Math.ceil(2 * HAZE_BAND_FILL)
+
+/**
+ * HAZE_DRIFT_HZ / HAZE_DRIFT_METRES — the ripple: 0.8 Hz, 0.2 m.
+ *
+ * BEFORE: n/a. AFTER 0.8 and 0.2.
+ *
+ * 0.8 Hz is a 1.25 s period, and the period is the claim: a shimmer that moves faster
+ * than about 1.5 Hz reads as a wobble on the lens rather than as hot air, and one
+ * slower than about 0.3 Hz is a column of fog with a slow lean in it. 0.2 m of travel
+ * is a third of `HAZE_HALF_WIDTH`, so the band never leaves the figure's silhouette
+ * — the effect is distortion around a shape, and a shimmer that wanders off and
+ * reveals the edge it was hiding is worse than no shimmer at all.
+ *
+ * It is driven off `time` and the view's own hashed `offset` and never off an
+ * accumulator, for the reason `vendingFlicker` is: a capture that steps to a given
+ * time has to get the same shimmer, and `verify-world.mjs` can then drive the world
+ * to the same time twice and require the buffer back bit-identical.
+ */
+export const HAZE_DRIFT_HZ = 0.8
+export const HAZE_DRIFT_METRES = 0.2
+
+/**
+ * HAZE_COLOUR — the shimmer's tint, as a hex.
+ *
+ * BEFORE: n/a. AFTER 0x7b818a, a pale cool grey.
+ *
+ * Pale and desaturated on purpose, and both halves of that are decisions. PALE
+ * because a shimmer is refracted streetlight: it has to read as light rather than as
+ * a grey stain, and at a fixed alpha a pale colour gets there where a dark one would
+ * have to be brighter than its own fog. COOL because the sodium family is the only
+ * warm thing in this world and §12.2's rule is that the families never mix — a warm
+ * shimmer would put a second orange in a frame whose orange all belongs to lamps,
+ * and the lamp is about to start flickering because of the creature standing in it.
+ *
+ * It is asserted against `PALETTE.sodium`'s channel order in `verify.mjs` for the
+ * same reason the trail's `DRIP_COLOUR` is: a later pass that repaints the shimmer
+ * warm would break the family rule invisibly.
+ */
+export const HAZE_COLOUR = 0x7b818a
+
+/**
+ * `nearness` — the shared smoothstep both pass-11 radii are built on, 0..1.
+ *
+ * BEFORE: n/a. AFTER one function, used twice.
+ *
+ * A smoothstep over the last `fade` metres of `radius`: exactly 1 inside, exactly 0
+ * at the edge, and C1 at both ends so nothing in the frame has a corner in its
+ * derivative. The haze and the lamp dread both need "how near is near", and two
+ * copies of that curve is how a shimmer at 30 m and a strobe at 12 m drift apart
+ * until one of them is retuned and nobody notices the other moved.
+ *
+ * BEFORE this function existed, the lamp reused `hazeAmount`, which was wrong in a
+ * way only arithmetic catches: `hazeAmount` is a NEAR-ness (1 close, 0 far) and it
+ * was being used as a far-ness, so every lamp read a weight of zero at zero metres
+ * and the strobe was a function that always returned 1. The parameters are the reason
+ * the two effects cannot share one curve outright — the radii are 30 and 12 — so they
+ * share the SHAPE and pass their own numbers.
+ *
+ * @param {number} distance metres
+ * @param {number} radius the effect's own reach
+ * @param {number} fade the ramp at the edge
+ * @returns {number} 0..1, 1 near and 0 far
+ */
+export function nearness(distance, radius, fade) {
+  const d = Number.isFinite(distance) ? Math.max(0, distance) : 0
+  const r = Number.isFinite(radius) && radius > 0 ? radius : 0
+  const f = Number.isFinite(fade) && fade > 0 ? Math.min(fade, r) : r
+  if (r <= 0) return 0
+  if (d >= r) return 0
+  if (d <= r - f) return 1
+  const u = (r - d) / f
+  return u * u * (3 - 2 * u)
+}
+
+/**
+ * hazeAmount — how much shimmer is on at a distance. 0..1.
+ *
+ * The whole of the distance half of the effect, and it is `1` well inside the radius
+ * and a smoothstep to `0` at it (see `HAZE_FADE_METRES`). A creature at zero
+ * distance gets the full column, one at 40 m gets nothing at all, and a NaN gets
+ * nothing at all rather than throwing.
+ *
+ * @param {number} distance metres to the camera
+ * @returns {number} 0..1
+ */
+export function hazeAmount(distance) {
+  return nearness(distance, HAZE_RADIUS, HAZE_FADE_METRES)
+}
+
+/**
+ * `hazeLayers` — the column, one descriptor per band, all of it a function of the
+ * four numbers the caller already has.
+ *
+ * The shape of the return is `{y, halfWidth, halfHeight, alpha, warp}`, and each of
+ * the five is a number the view can multiply into a fixed grid without deciding
+ * anything: the grid's row and column layout is geometry (like `SEGMENTS.limb`),
+ * while every distance, alpha and offset is decided here.
+ *
+ * WHY FOUR INPUTS AND NOT A CREATURE
+ * ----------------------------------
+ * `time`, `offset`, `amount` and `scale`, and nothing else. The world already passes
+ * `time` and `offset` to `creaturePose` on the same frame, so the view can hand the
+ * same two numbers back here and the two draws cannot disagree about which instant
+ * they are on — a shimmer running on a different clock from the figure it is
+ * shimmering around is a bug that no screenshot can see and no replay can reproduce.
+ *
+ * @param {object} [options]
+ * @param {number} [options.time] the world's clock, seconds
+ * @param {number} [options.offset] `CreatureView`'s hashed flicker phase
+ * @param {number} [options.amount] `hazeAmount` x the pose's presence, 0..1
+ * @param {number} [options.scale] the pose's own figure scale
+ * @returns {{y:number, halfWidth:number, halfHeight:number, alpha:number, warp:number}[]}
+ */
+export function hazeLayers(options = {}) {
+  const time = Number.isFinite(options.time) ? options.time : 0
+  const offset = Number.isFinite(options.offset) ? options.offset : 0
+  const amount = Number.isFinite(options.amount) ? Math.max(0, Math.min(1, options.amount)) : 0
+  const scale = Number.isFinite(options.scale) && options.scale > 0 ? options.scale : 1
+  const band = HAZE_BAND_HEIGHT
+  const wave = time * HAZE_DRIFT_HZ * Math.PI * 2
+  const layers = []
+  for (let index = 0; index < HAZE_LAYERS; index += 1) {
+    // The band's own share of the rise, so the stack starts at the floor and ends
+    // `HAZE_SPAN` above it without a cumulative sum that would let a retune of
+    // `HAZE_BASE_Y` move the whole column twice.
+    const u = (index + 0.5) / HAZE_LAYERS
+    // Two sines on unrelated phases per band: the travel steps 1.7 rad per band so no
+    // two bands are ever in step, and the alpha's own sine runs at half the rate of
+    // the travel, so a band brightens as it leans rather than translating at a
+    // constant brightness — which is what makes it read as air rather than as a
+    // sliding rectangle.
+    const travel = Math.sin(wave + offset + index * 1.7)
+    const breathe = 0.5 + 0.5 * Math.sin(wave * 0.5 + offset * 0.7 + index * 2.3)
+    // The vertical taper: full strength in the middle of the column and a third of it
+    // at the top and bottom bands, so the stack has ends that fade rather than a top
+    // edge that stops.
+    const taper = 0.35 + 0.65 * Math.sin(Math.PI * u)
+    layers.push({
+      y: HAZE_BASE_Y + band * (index + 0.5),
+      // Hot air spreads as it rises, so the column is a cone and not a box: 0.72 of
+      // the base width at the floor and 1.28 at the top.
+      halfWidth: HAZE_HALF_WIDTH * (0.72 + 0.56 * u) * scale,
+      halfHeight: band * HAZE_BAND_FILL * scale,
+      alpha: HAZE_PEAK * amount * taper * (0.55 + 0.45 * breathe),
+      warp: HAZE_DRIFT_METRES * travel,
+    })
+  }
+  return layers
+}
+
+// --- 2 & 3. THE LAMP UNDER THE CREATURE --------------------------------------
+
+/**
+ * LAMP_DREAD_RADIUS — how close the creature has to be to a lamp to affect it. 12 m.
+ *
+ * BEFORE: nothing. The sodium family ran on `update()`'s three sines and on the one
+ * failing vending ballast, and the creature had no relationship with either.
+ * AFTER 12 m, and the creature's presence is one of the inputs to a lamp's level.
+ *
+ * 12 m is `LAMP_POOL_DIAMETER` 18 m's inner two thirds and roughly a fifth of a lamp
+ * spacing, and it is chosen so the effect is LOCAL: a lamp 12 m away is a lamp the
+ * player is looking past, and one at 30 m is a lamp the player is looking AT. A
+ * creature that dims every lamp on the street is not a presence in a place, it is a
+ * global dimmer, and the brief's words were "the nearest lamp".
+ */
+export const LAMP_DREAD_RADIUS = 12
+
+/**
+ * LAMP_DREAD_FADE — the 6 m in which the creature's influence ramps off.
+ *
+ * BEFORE: n/a. AFTER 6, on the same smoothstep as `HAZE_FADE_METRES`.
+ *
+ * Without it the lamp would switch from clean to strobing as the creature crossed an
+ * invisible circle, and an invisible circle is the most artificial thing a game can
+ * draw. 6 m is half the radius, so the lamp is at half strength at 9 m — inside the
+ * pool it lights, which is the only place the player can see the change happen.
+ */
+export const LAMP_DREAD_FADE = 6
+
+/**
+ * LAMP_DREAD_HZ / LAMP_DREAD_FLOOR / LAMP_DREAD_DEPTH / LAMP_DREAD_ONE_IN — the
+ * strobe's own numbers, handed straight to `flickerAt`.
+ *
+ * BEFORE: n/a. AFTER 11 Hz, 0.30, 0.46, one in three.
+ *
+ * Every one of them is a different choice from the vending machine's
+ * (`VENDING_FLICKER_HZ` 8, floor 0.30, depth 0.42, one in 8), and the differences are
+ * the design:
+ *
+ *  - **11 Hz against 8.** Two bad ballasts in one world should not share a period,
+ *    and at 11 Hz the strobe is a flicker rather than a pulse.
+ *  - **one in three against one in eight.** A lamp that drops to its floor on a third
+ *    of its ticks is strobing, which is the word the brief used. A lamp that drops on
+ *    an eighth is a fitting with a bad ballast, which is what the vending machine
+ *    already is, and two of those on one street is a fault report.
+ *  - **floor 0.30, the same as the vending machine's.** This one is deliberately the
+ *    SAME number, and the reason is that both are about the same thing: a light that
+ *    goes fully out is a DEAD light, and a dead lamp is street furniture. What is
+ *    happening under this one is that something is standing in it, and something
+ *    standing in a pool does not switch it off — it draws what it can.
+ *  - **depth 0.46 against 0.42**, so the wobble between dropouts is deeper as well as
+ *    the dropouts themselves: a strobe that is only ever at 1 or at the floor is a
+ *    square wave, and a player can learn a square wave.
+ */
+export const LAMP_DREAD_HZ = 11
+export const LAMP_DREAD_FLOOR = 0.3
+export const LAMP_DREAD_DEPTH = 0.46
+export const LAMP_DREAD_ONE_IN = 3
+
+/** The region of the mix that owns the DROPOUT pattern; 'LDDR' in ASCII. */
+const LAMP_DREAD_SALT = 0x4c444452
+
+/** The region that owns each lamp's own seed; 'LDSE', one step along. */
+const LAMP_DREAD_SEED_SALT = 0x4c444453
+
+/**
+ * `lampDreadSeed` — one lamp's own seed, derived from the run's seed and its index.
+ *
+ * BEFORE: n/a. AFTER: `hash32(seed, index, LAMP_DREAD_SEED_SALT)`.
+ *
+ * The index is the lamp's slot in the four-light pool (`LAMP_LIGHTS` in `world.js`),
+ * not its position, and that is deliberate: the pool re-aims as the player walks, so
+ * "slot 0" is a different physical lamp on every corner of the grid, and keying the
+ * seed to a lamp's coordinates would mean a seed that changed as the player moved —
+ * a lamp that strobed one way on the way up the street and another on the way back.
+ * The index is stable, and the pass-7 `dressingLog` discipline is the same one: a
+ * per-caller seed typed at the call site is a seed two people will change differently.
+ *
+ * @param {number} seed the run's seed
+ * @param {number} index the lamp's slot in the light pool
+ * @returns {number} an unsigned 32-bit integer
+ */
+export function lampDreadSeed(seed, index) {
+  return hash32(
+    Number.isFinite(seed) ? seed : 0,
+    Number.isFinite(index) ? index : 0,
+    LAMP_DREAD_SEED_SALT,
+  )
+}
+
+/**
+ * `lampDread` — the multiplier on one lamp while the creature is near it.
+ *
+ * Returns exactly `1` when the creature is outside `LAMP_DREAD_RADIUS`, and inside
+ * it a blend between `1` and `flickerAt`'s stepped level, weighted by proximity. Two
+ * properties are load-bearing and both are asserted:
+ *
+ *  - **the lamp RECOVERS.** The weight falls to zero at the radius, so a creature
+ *    that walks on leaves the lamp clean behind it, and "the lamp recovers after it
+ *    leaves" is a fact about the function rather than about a frame someone watched.
+ *  - **the same tick twice gives the same answer.** `flickerAt` is a function of
+ *    `floor(t * hz)`, so a lamp asked for a tick once to build and once to measure
+ *    cannot disagree — which is what makes a strobe testable at all.
+ *
+ * The proximity weight is `nearness(d, LAMP_DREAD_RADIUS, LAMP_DREAD_FADE)`, the
+ * same curve the shimmer uses on its own radius, and the reuse is not a coincidence to
+ * be admired but a decision: one smoothstep in the file, so a retune of one is a
+ * retune of both and there is no second "how near is near" to fall out of step.
+ *
+ * @param {number} distance metres from the creature to the lamp
+ * @param {number} time seconds on the world's own clock
+ * @param {{seed?: number, salt?: number}} [options]
+ * @returns {number} a multiplier in `[LAMP_DREAD_FLOOR, 1]`
+ */
+export function lampDread(distance, time, options = {}) {
+  const weight = nearness(distance, LAMP_DREAD_RADIUS, LAMP_DREAD_FADE)
+  if (weight <= 0) return 1
+  const seed = Number.isFinite(options.seed) ? options.seed : 0
+  const salt = Number.isFinite(options.salt) ? options.salt : LAMP_DREAD_SALT
+  const t = Number.isFinite(time) ? time : 0
+  const level = flickerAt(seed, Math.floor(t * LAMP_DREAD_HZ), salt, {
+    phaseSalt: (salt ^ 0x9e3779b9) >>> 0,
+    floor: LAMP_DREAD_FLOOR,
+    depth: LAMP_DREAD_DEPTH,
+    oneIn: LAMP_DREAD_ONE_IN,
+  })
+  // `1 - weight * (1 - level)`: under the lamp `weight` is 1 and the lamp IS the
+  // strobe; at the edge of the radius it is clean.
+  return 1 - weight * (1 - level)
+}
+
+/**
+ * LAMP_PULSE_GAIN — the peak the lamp's glow gains on the eye flare, as a
+ * multiplier. 0.45.
+ *
+ * BEFORE: n/a. AFTER 0.45, i.e. up to 1.45x on the frame the creature spots you.
+ *
+ * The brief asks for a "single deterministic pulse" and this is why it is a GAIN on
+ * the existing level and not an additive constant: an additive pulse would be a
+ * brightness the lamp could not reach under a strobe, and two terms fighting over one
+ * channel is how a lamp ends up brighter in the dark than in the light. A multiplier
+ * is a term that composes with `lampDread` in either order.
+ *
+ * 0.45 is under half, and the ceiling is the creature's own eye: `EYE_FLARE_GAIN` is
+ * 2.2 and the eye is a 7 px unfogged additive quad, so the lamp's 45% arrives as a
+ * swell across a whole pool of road while the eye arrives as a point. The lamp is the
+ * echo and the eye is the event, and the order of those two is the whole of the
+ * composition.
+ */
+export const LAMP_PULSE_GAIN = 0.45
+
+/**
+ * `lampPulse` — the flare's envelope, on the lamp instead of on the eye.
+ *
+ * `lampPulse(flare) === 1 + LAMP_PULSE_GAIN * clampUnit(flare)`, and that identity IS
+ * the audio-visual sync claim. The brief asks for the eye's flare and the lamp's
+ * glow to land together; a second curve with a second length and a second peak would
+ * be two events that happen to be near each other, and a machine-checked sync has to
+ * be one number read twice. `verify.mjs` asserts the identity over the whole window
+ * rather than restating the arithmetic.
+ *
+ * @param {number} flare `pose.eyeFlare`, 0..1
+ * @returns {number} 1..(1 + LAMP_PULSE_GAIN)
+ */
+export function lampPulse(flare) {
+  const f = Number.isFinite(flare) ? Math.max(0, Math.min(1, flare)) : 0
+  return 1 + LAMP_PULSE_GAIN * f
+}
+
+// --- 4. THE FOOTFALL DUST ----------------------------------------------------
+
+/**
+ * FOOTFALL_STRIDE_METRES — metres of ground between one footfall's puff and the
+ * next. 0.45.
+ *
+ * BEFORE: nothing. The creature moved through dust without disturbing any.
+ * AFTER 0.45, which is EXACTLY HALF `DRIP_STRIDE_METRES` 0.9, and the halving is
+ * the claim: two feet, and one puff under each of them per stride. A puff laid on the
+ * same 0.9 m cadence as the trail would be one puff per two footfalls, which is a
+ * thing that shuffles rather than a thing that walks.
+ *
+ * The frame-rate argument is `DRIP_STRIDE_METRES`' and it is not repeated: the
+ * carrier is metres, the remainder is carried rather than floored, and the same walk
+ * in 60 frames and in 600 frames lays the same puffs in the same places.
+ */
+export const FOOTFALL_STRIDE_METRES = 0.45
+
+/**
+ * PUFF_MAX — puffs alive at once. 10.
+ *
+ * BEFORE: none, so there was no ceiling to have. AFTER 10, and the cap is
+ * load-bearing rather than decorative, which is the only interesting thing about a
+ * cap: at §10.2's finale speed 5.2 m/s and `PUFF_LIFE` 0.95 s the creature wants 11
+ * puffs alive and gets 10, so the oldest is evicted mid-run. Below about 6 a tier-0
+ * chase (2.2 m/s, 4.6 puffs wanted) would be near the cap on every step and the dust
+ * would pop.
+ *
+ * Ten is also the draw-call budget's answer, on the same argument as `TRAIL_MAX` 16:
+ * the whole field is ONE mesh of ten quads with a per-quad vertex alpha, so the cap
+ * costs vertices and nothing else.
+ */
+export const PUFF_MAX = 10
+
+/**
+ * PUFF_LIFE / PUFF_FADE — how long a puff is up, and how long it takes to arrive.
+ *
+ * BEFORE: n/a. AFTER 0.95 s and 0.22 s.
+ *
+ * 0.95 s is long enough to read as a puff of dust hanging in the light and short
+ * enough that a chase does not leave a permanent cloud behind it — a trail of hanging
+ * dust is a map of everywhere the thing has been, and this world resets its maze every
+ * bell, so the information stops being information. It is also the number `PUFF_MAX` is
+ * set against (5.2 m/s x 0.95 s / 0.45 m = 11 wanted).
+ *
+ * 0.22 s to reach full strength, which is `DRIP_SPREAD`'s argument in the other
+ * direction: a mark that appears instantly is a decal switching on, and a puff that
+ * appears instantly is a sprite switching on. Both are a quarter of a stride at tier 0
+ * and both are short enough to be invisible as a delay.
+ */
+export const PUFF_LIFE = 0.95
+export const PUFF_FADE = 0.22
+
+/**
+ * PUFF_RADIUS / PUFF_SPREAD — the puff's own size, 0.24 m growing to 0.39 m.
+ *
+ * BEFORE: n/a. AFTER 0.24, 0.62.
+ *
+ * 0.24 m is a foot's worth of dust, and it is bounded by the same rejection the trail
+ * is: at the 7.8 m the chase view puts the creature's feet, a 0.48 m puff spans about
+ * 30 px of a 720-tall frame, which is past `tools/png-luma.mjs`'s own `EYE_MAX_SPAN`
+ * 14, so the eye-finder cannot take one for the creature's eye even before the luma
+ * floor rejects it. That is asserted arithmetically in `verify.mjs` and against the
+ * built material in `verify-world.mjs`.
+ *
+ * `PUFF_SPREAD` 0.62 is how much it grows over its life, and a puff that does not grow
+ * is a decal that shrinks; a puff that grows by 62% and fades over 0.95 s reads as
+ * dust losing its density.
+ */
+export const PUFF_RADIUS = 0.24
+export const PUFF_SPREAD = 0.62
+
+/**
+ * PUFF_RISE / PUFF_LIFT — how far up it goes, and how high off the road it starts.
+ *
+ * BEFORE: n/a. AFTER 0.40 m and 0.06 m.
+ *
+ * Dust rises because it is dust and not because it is a sprite, and 0.4 m over 0.95 s
+ * is slow enough to watch happening. `PUFF_LIFT` 0.06 m is `DRIP_LIFT`'s argument: the
+ * puff hangs in the AIR above the road rather than lying on it, so it needs no
+ * polygon offset and cannot z-fight pass 8's water, and the 0.06 is a billboard's
+ * centre height rather than a plane.
+ */
+export const PUFF_RISE = 0.4
+export const PUFF_LIFT = 0.06
+
+/**
+ * PUFF_OPACITY / PUFF_COLOUR — the puff's own brightness, 0.3 of a warm grey.
+ *
+ * BEFORE: n/a. AFTER 0.3, `0x6f6754`.
+ *
+ * It is a BLEND and can never reach 1: an opaque puff is a hole cut in the road, and
+ * this file already has a family of holes (the trail) and a gate that measures one of
+ * them. The composite is what matters and it is checked as a composite: 0.3 of a
+ * 0.139-linear-luma grey over the darkest asphalt in the design lands around luma 58
+ * of 255, which is unmistakably a puff and nowhere near `EYE_MIN` 150. The colour is
+ * warm because it is ROAD dust under SODIUM light, and cooler than the sodium itself,
+ * because a puff that is the same colour as the lamp it is standing in is a lamp.
+ */
+export const PUFF_OPACITY = 0.3
+export const PUFF_COLOUR = 0x6f6754
+
+/** The region of the mix that owns each puff's shape, so a replay is identical. */
+const PUFF_SALT = 0x50554646
+
+/**
+ * `puffAlpha` — a puff's strength at a given age, 0..1.
+ *
+ * `PUFF_FADE` up and a squared tail down, which is `dripAlpha`'s two segments with
+ * the names changed: a linear tail is visible as a puff being switched off, and this
+ * has no corner in it. Alpha is a pure function of the age, so among a set of puffs
+ * the oldest is always the faintest and always the next to go.
+ *
+ * @param {number} age seconds since the footfall
+ * @returns {number} 0..1
+ */
+export function puffAlpha(age) {
+  if (!Number.isFinite(age) || age < 0) return 0
+  if (age >= PUFF_LIFE) return 0
+  if (age < PUFF_FADE) return age / PUFF_FADE
+  const u = (age - PUFF_FADE) / (PUFF_LIFE - PUFF_FADE)
+  return (1 - u) * (1 - u)
+}
+
+/**
+ * `puffRadius` — a puff's radius at a given age, metres. 0.24 -> 0.39.
+ *
+ * Growth is linear in `age` and therefore exactly `PUFF_SPREAD` at `PUFF_LIFE`, which
+ * is what makes the constant above a boundary rather than a shape: a check can ask
+ * for the radius at the end of the life and get the documented number back.
+ *
+ * @param {number} age seconds since the footfall
+ * @returns {number} metres, `0` once the puff is gone
+ */
+export function puffRadius(age) {
+  if (!Number.isFinite(age) || age < 0 || age >= PUFF_LIFE) return 0
+  return PUFF_RADIUS * (1 + PUFF_SPREAD * (age / PUFF_LIFE))
+}
+
+/**
+ * `puffLift` — a puff's height off the road at a given age, metres.
+ *
+ * @param {number} age seconds since the footfall
+ * @returns {number} metres
+ */
+export function puffLift(age) {
+  if (!Number.isFinite(age) || age < 0 || age >= PUFF_LIFE) return 0
+  return PUFF_LIFT + PUFF_RISE * (age / PUFF_LIFE)
+}
+
+/** An empty field: fresh arrays, so a caller cannot reach in and edit one it was given. */
+export function createPuffField() {
+  return { puffs: [], laid: 0, suppressed: 0, spare: 0 }
+}
+
+/**
+ * `puffStep` — one frame of footfall dust, as a pure reducer.
+ *
+ * `dripStep` is the model and the shape is the same, deliberately, because the two
+ * are the same kind of thing: a decal field keyed to metres walked, with a cap, a
+ * seeded per-mark shape, and a stand-off. The rules:
+ *
+ *  1. **Nothing while the creature is not there.** `present: false` is §7.4's banish
+ *     and the Act I telegraph, and a telegraph that dusts the road it has not walked
+ *     to is the same bug `dripStep` was written to prevent.
+ *  2. **Nothing for standing still.** The carrier is `walked`, so a present and
+ *     motionless creature accumulates nothing and breathes no dust.
+ *  3. **`clear: false` suppresses the puff and counts it.** This is the §16.5.5 pupil
+ *     stand-off, and it matters MORE here than it does for the trail: a trail mark is
+ *     a dark decal and a puff is a bright one, and the pass-3 gate measures the luma of
+ *     the HOLE in `portal-located.png`. A puff standing in that hole would fill it.
+ *     `suppressed` is published so a check can require the rule to have fired.
+ *  4. **The cap evicts the OLDEST**, which `puffAlpha` has already made the faintest,
+ *     and the survivor list is oldest-first so the two statements cannot disagree.
+ *
+ * @param {object} field from `createPuffField`
+ * @param {object} [frame]
+ * @param {number} [frame.walked] metres covered this frame
+ * @param {number} [frame.dx] this frame's x delta, for the foot that planted it
+ * @param {number} [frame.dz] this frame's z delta
+ * @param {number} [frame.x] the drawn x to lay it at
+ * @param {number} [frame.z] the drawn z
+ * @param {number} [frame.time] the world's clock, for the puff's age
+ * @param {boolean} [frame.present] is the figure on screen
+ * @param {boolean} [frame.clear] is this spot outside the portal stand-off
+ * @param {number} [frame.seed] the run's seed
+ * @returns {{field: object, laid: object|null}} the new field and the new puff
+ */
+export function puffStep(field, frame = {}) {
+  const before = field && Array.isArray(field.puffs) ? field : createPuffField()
+  const walked = Number.isFinite(frame.walked) ? Math.max(0, frame.walked) : 0
+  if (frame.present !== true || walked <= 0) {
+    return { field: before, laid: null }
+  }
+  // The remainder is CARRIED, not floored — see `DRIP_STRIDE_METRES`, and the
+  // frame-rate-independence check in `verify.mjs` is the one that holds this honest.
+  const spare = before.spare + walked
+  if (spare < FOOTFALL_STRIDE_METRES) {
+    return { field: { ...before, spare }, laid: null }
+  }
+  const count = Math.floor(spare / FOOTFALL_STRIDE_METRES)
+  const remaining = spare - count * FOOTFALL_STRIDE_METRES
+
+  const time = Number.isFinite(frame.time) ? frame.time : 0
+  const seed = Number.isFinite(frame.seed) ? frame.seed : 0
+  const clear = frame.clear !== false
+  const dx = Number.isFinite(frame.dx) ? frame.dx : 0
+  const dz = Number.isFinite(frame.dz) ? frame.dz : 0
+  // Which foot planted it: the one on the outside of the turn, alternating by PARITY
+  // rather than by a coin, so the same walk lays the same puffs in the same order.
+  // The offset is wider than the trail's (`CREATURE_SHAPE.hip / 2 + 0.06`) because
+  // dust comes off a stride rather than off a drip line.
+  const travel = Math.hypot(dx, dz)
+  const lateral = travel > 1e-6 ? CREATURE_SHAPE.hip / 2 + 0.1 : 0
+  const px = travel > 1e-6 ? -dz / travel : 1
+  const pz = travel > 1e-6 ? dx / travel : 0
+  const x = Number.isFinite(frame.x) ? frame.x : 0
+  const z = Number.isFinite(frame.z) ? frame.z : 0
+
+  const puffs = before.puffs.slice()
+  let laid = before.laid
+  let suppressed = before.suppressed
+  let newest = null
+  for (let n = 0; n < count; n += 1) {
+    if (!clear) {
+      suppressed += 1
+      continue
+    }
+    const salt = hash32(seed, laid, PUFF_SALT)
+    const side = laid % 2 === 0 ? 1 : -1
+    laid += 1
+    newest = {
+      x: x + px * lateral * side,
+      z: z + pz * lateral * side,
+      born: time,
+      // ±22% on the radius and a half-turn of spin, from two different regions of the
+      // same mix — a row of identical circles at a dead run of pixels is a row of dots,
+      // and the eye finds the repeat in three.
+      radius: PUFF_RADIUS * (0.78 + 0.44 * ((salt & 0xffff) / 0xffff)),
+      spin: (((salt >>> 16) & 0xffff) / 0xffff) * Math.PI,
+    }
+    puffs.push(newest)
+  }
+  const alive = puffs.length > PUFF_MAX ? puffs.slice(puffs.length - PUFF_MAX) : puffs
+  return { field: { puffs: alive, laid, suppressed, spare: remaining }, laid: newest }
+}
+
 /**
  * creaturePose — every number the view needs for one frame, and nothing else.
  *
@@ -2853,8 +3582,9 @@ export function dripStep(trail, frame = {}) {
  *   player, for §10's eye flare; `null`/absent before it has
  * @param {{fov?: number, viewportHeight?: number}} [frame.view] camera numbers
  * @returns {object} `present`, `scale`, `presence`, `eye`, `eyeSize`, `eyeFlare`,
- *   `pitch`, `roll`, `heave`, `scan`, `redden`, `push`, `lift`, `spin`, `breath`,
- *   `sway`, `legSwing`, `armSwing`, `armElbow`, `stride`, `state`
+ *   `haze` (pass 11: the shimmer's strength, 0..1), `pitch`, `roll`, `heave`,
+ *   `scan`, `redden`, `push`, `lift`, `spin`, `breath`, `sway`, `legSwing`,
+ *   `armSwing`, `armElbow`, `stride`, `state`
  */
 export function creaturePose(creature, frame = {}) {
   const state = typeof creature?.state === 'string' ? creature.state : 'dormant'
@@ -2901,6 +3631,15 @@ export function creaturePose(creature, frame = {}) {
     legSwing: 0,
     armSwing: 0,
     armElbow: 0,
+    // PASS 11 — the heat haze's own strength, 0..1. It is a DISTANCE and a
+    // PRESENCE and nothing else, and the distance half is `hazeAmount`, which is
+    // exactly 0 at `HAZE_RADIUS` and so leaves §6.1's ninety-metre apparition with no
+    // shimmer by construction. The presence half is applied at the END of this
+    // function rather than here, because it has to be the FINAL presence: the
+    // re-emergence fade, the banish fade and §8.2's last-of-a-chase fade all live
+    // below, and a shimmer that outlived the figure it was shimmering around would be
+    // a column of hot air standing in an empty street.
+    haze: 0,
   }
 
   // §6.1's edge-of-vision positioning. The offset is *proportional* to how near the
@@ -2973,6 +3712,10 @@ export function creaturePose(creature, frame = {}) {
 
   pose.presence = clampUnit(pose.presence)
   pose.eye = clampUnit(pose.eye)
+  // PASS 11. The shimmer rides the FINAL presence, and it is zero for a figure that
+  // is not there — `hazeAmount(0)` is 1, so the only thing standing between a banished
+  // creature's shimmer and a column of hot air over an empty road is this line.
+  pose.haze = pose.present ? clampUnit(hazeAmount(distance) * pose.presence) : 0
   if (pose.presence === 0) pose.present = false
   return pose
 }

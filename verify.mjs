@@ -8271,9 +8271,34 @@ section('Street furniture II (iteration 2, pass 7)')
  * @returns {string} the body including its braces, or '' if there is no such method
  */
 function methodBody(code, name) {
-  const at = code.indexOf(`\n  ${name}(`)
+  // THREE SHAPES, because pass 11 needed a top-level `export function` and the old
+  // two-space-only search returned the empty string for it — which reads as "the claim
+  // failed" rather than as "the helper could not find the function", the same way a
+  // default parameter read as a two-character body. A helper that fails silently is
+  // worse than no helper.
+  const shapes = [`\n  ${name}(`, `\n  static ${name}(`, `\nexport function ${name}(`, `\nfunction ${name}(`]
+  let at = -1
+  for (const shape of shapes) {
+    at = code.indexOf(shape)
+    if (at >= 0) break
+  }
   if (at < 0) return ''
-  const open = code.indexOf('{', at)
+  // THE OPENING BRACE IS THE FIRST ONE AT PAREN DEPTH ZERO, and finding it that way is
+  // not a nicety. `code.indexOf('{', at)` finds the `{` of a DEFAULT PARAMETER — and
+  // every method in this repository that takes a context object writes
+  // `(context = {})`, so the old version returned the two characters `{}` for all of
+  // them and every claim scoped to one silently tested the empty string, which fails
+  // every predicate and so looks like a broken source rather than a broken helper. It
+  // was found by pass 11's first claim run, which failed five claims at once on an
+  // unmutated tree.
+  let parens = 0
+  let open = -1
+  for (let i = at; i < code.length; i += 1) {
+    if (code[i] === '(') parens += 1
+    else if (code[i] === ')') parens -= 1
+    else if (code[i] === '{' && parens === 0) { open = i; break }
+  }
+  if (open < 0) return ''
   let depth = 0
   for (let i = open; i < code.length; i += 1) {
     if (code[i] === '{') depth += 1
@@ -10816,13 +10841,24 @@ function creatureFidelityClaims(view, world, street, creature) {
   // 3. THE TRAIL IS ONE MESH WITH A REAL PER-MARK ALPHA. The `itemSize === 4` is the
   //    load-bearing half: three.js enables `USE_COLOR_ALPHA` from it, and a
   //    three-component attribute compiles, runs, and discards the alpha.
+  //
+  //    SCOPED TO `_buildTrail`'s OWN BODY, and that scoping is not tidiness — it is the
+  //    fix for a mutation that went quiet. Pass 11 added `_buildHaze` and `_buildPuffs`,
+  //    which are the same shape (one `BufferGeometry`, a four-component `colours`
+  //    attribute, `vertexColors: true`), so the `BufferAttribute(colours, 4)` regex used
+  //    to be searched against the whole file found a SECOND unmutated occurrence after
+  //    the trail's was broken, and the "a three-component vertex colour" mutation broke
+  //    no claim at all. `verify.mjs` reported it as caught by nothing; the harness was
+  //    right and the claim was about the wrong text. A whole-file regex in a file that
+  //    has grown two more instances of the same idiom is a claim about the idiom.
+  const trailBody = methodBody(code, '_buildTrail')
   claim(
     'the whole trail is one mesh, and its fade is a real per-mark alpha',
-    /new Float32Array\(TRAIL_MAX \* 4 \* 4\)/.test(code)
-      && /new THREE\.BufferAttribute\(colours, 4\)/.test(code)
-      && /vertexColors: true/.test(code)
+    /new Float32Array\(TRAIL_MAX \* 4 \* 4\)/.test(trailBody)
+      && /new THREE\.BufferAttribute\(colours, 4\)/.test(trailBody)
+      && /vertexColors: true/.test(trailBody)
       && (code.match(/new THREE\.Mesh\(geometry, this\.trailMaterial\)/g) ?? []).length === 1
-      && !/InstancedMesh/.test(code),
+      && !/InstancedMesh/.test(trailBody),
     "sixteen marks as sixteen meshes is sixteen draw calls for something the eye reads as a stain, and an instanced pool has no per-instance alpha in stock three.js so the fade would silently become nothing",
   )
   // 4. THE MARK IS A DARK BLEND ON THE ROAD, not a light and not a hole. It is
@@ -10830,7 +10866,6 @@ function creatureFidelityClaims(view, world, street, creature) {
   //    the three material properties that make it a a decal at all. The additive
   //    exclusion is scoped to `_buildTrail`'s own body, because the EYE in the same
   //    file is additive and a whole-file negative would be a claim about nothing.
-  const trailBody = methodBody(code, '_buildTrail')
   claim(
     'the mark is a dark, blended, fogged decal',
     /color: DRIP_COLOUR/.test(trailBody)
@@ -10878,10 +10913,22 @@ function creatureFidelityClaims(view, world, street, creature) {
   //    asked of `streetView`. A mark stored in drawn coordinates is 448 m from its
   //    own road after the first wrap, and a mark inside the §16.5.5 stand-off is a
   //    decal between the gate and the camera the portal gate measures.
+  // 8. THE MARKS ARE FOLDED ON THE WAY OUT, in the drawn copy, and the stand-off is
+  //    asked of `streetView`. A mark stored in drawn coordinates is 448 m from its
+  //    own road after the first wrap, and a mark inside the §16.5.5 stand-off is a
+  //    decal between the gate and the camera the portal gate measures.
+  //
+  //    The world's two halves are scoped to `_advanceTrail` for the second time in this
+  //    pass, and for the same reason as claim 3: pass 11's `_advancePuffs` is the same
+  //    five decisions written a second time, so a whole-file search for the stand-off
+  //    call finds `_advancePuffs`'s copy after `_advanceTrail`'s is mutated away, and
+  //    the mutation silently stops proving anything. The claim is about the trail's
+  //    fold, so it reads the trail's fold.
+  const trailWorld = methodBody(world, '_advanceTrail')
   claim(
     'the trail is folded into the drawn copy and kept out of the portal stand-off',
-    /mark\.x \+ origin\.x, z: mark\.z \+ origin\.z/.test(world)
-      && /clear: this\.streetView\.clearOfPortals\(drawn\.x, drawn\.z\)/.test(world)
+    /mark\.x \+ origin\.x, z: mark\.z \+ origin\.z/.test(trailWorld)
+      && /clear: this\.streetView\.clearOfPortals\(drawn\.x, drawn\.z\)/.test(trailWorld)
       && /clearOfPortals\(x, z\) \{/.test(street)
       && /const cx = x - this\.origin\.x/.test(street)
       && /const cz = z - this\.origin\.z/.test(street)
@@ -11034,6 +11081,964 @@ test('every creature-fidelity claim can actually fail, and a mutation names the 
   }
   assert.ok(mutations.length >= 18, `only ${mutations.length} mutations, which is fewer than this pass needs`)
   console.log(`\n  pass-10 claims: 10 source contracts, ${mutations.length} mutations, every one caught`)
+})
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 11 — the presence that is not the body
+//
+// WHAT THIS SECTION CLAIMS, AND WHY EACH CLAIM IS HERE RATHER THAN IN THE WORLD
+// ---------------------------------------------------------------------------
+// Four effects, split by what each one is ABOUT rather than by convenience:
+//
+//  1. the HEAT HAZE is two functions — a falloff and a table of six bands — so
+//     "it dies at 30 m", "it is C1 at both ends of the ramp", "it is a column and
+//     not a box", "it is a pale COOL grey in a world whose only warm thing is the
+//     sodium" and "the worst pixel it can make is a shimmer and not a light" are all
+//     measurements of arithmetic. The last one is a real luma budget in the
+//     renderer's own colour space, and it is the same model pass 9's sky budget uses
+//     so the two cannot disagree about what "bright" means.
+//  2. the LAMP DREAD is a function of (distance, time, seed), so "it strobes", "it
+//     recovers", "the same tick twice agrees", "two lamps are not in step" and "it is
+//     exactly 1 outside the radius" are five short sweeps.
+//  3. the LAMP PULSE is an IDENTITY — `lampPulse(flare) === 1 + GAIN * eyeFlare(...)`
+//     — and that identity is the audio-visual sync claim. Asserted as an identity over
+//     the whole window rather than restated as arithmetic, because a second envelope
+//     with its own length and peak would be two events near each other rather than one.
+//  4. the PUFF FIELD is a REDUCER, so "one puff per footfall", "none for standing
+//     still", "the cap holds and evicts the oldest", "the same walk in 60 frames and in
+//     600 lays the same puffs" and "a gate suppresses the ones at a portal" are the
+//     same five short loops the trail already has, which is why this is a copy rather
+//     than a new idea.
+//
+// WHAT IT DELIBERATELY DOES NOT CLAIM
+// ------------------------------------
+// That any of the four is in a photograph. §16.5's creature views are staged at 1.9 m,
+// 9 m and 17 m, which are inside the shimmer's radius and inside one lamp's dread
+// radius, but "the camera can see it" is a projection, a camera, and `creature.js` has
+// none of those three. It is measured in `verify-world.mjs` against the real capture
+// staging, and the check there reports pixel coordinates rather than a threshold on
+// alpha — the pass-10 review's finding, which is that a mark can be at full strength
+// and still be under the camera.
+// ---------------------------------------------------------------------------
+
+section('Creature fidelity II (iteration 2, pass 11)')
+
+/** The surround the haze's budget is measured against: 19 of 255, as measured. */
+const HAZE_SURROUND = 19 / 255
+
+/**
+ * The renderer's own colour model, re-derived rather than shared.
+ *
+ * A `THREE.Color` holds LINEAR components, a peak is applied to those, and only then is
+ * the result encoded to sRGB — so multiplying a hex's luma in sRGB and calling it a
+ * contribution understates the result badly, because the sRGB curve is steep near
+ * black. Pass 9's budget comment records the version of this mistake reading that sky's
+ * moon at 3.3 where the renderer produces 21.4. Two harnesses sharing a colour helper
+ * is a shared bug waiting to be found by whichever one is edited, so this section has
+ * its own pair with that history written on it.
+ */
+const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+const toSrgb = (l) => (l <= 0.0031308 ? l * 12.92 : 1.055 * l ** (1 / 2.4) - 0.055)
+/** The Rec.709 luma of a hex, in LINEAR light. */
+const linearLuma = (hex) =>
+  0.2126 * toLinear(((hex >> 16) & 0xff) / 255) +
+  0.7152 * toLinear(((hex >> 8) & 0xff) / 255) +
+  0.0722 * toLinear((hex & 0xff) / 255)
+/** 0..255 as the renderer would encode a linear light. */
+const encodeLuma = (linear) => (0.2126 * toSrgb(linear) + 0.7152 * toSrgb(linear) + 0.0722 * toSrgb(linear)) * 255
+
+/**
+ * HAZE_INNER — the view's `HAZE_INNER_FRACTION`, read out of the source.
+ *
+ * The band is an annulus and this is the hole in the middle of it, and the claim is
+ * that the figure never comes near the hole. That is a claim about the VIEW's geometry
+ * and a claim about the pure module's `HAZE_HALF_WIDTH`, and neither harness can import
+ * the other: `verify.mjs` may not import `creatureView.js` because that file touches
+ * Three.js. So the number is read from the source the way pass 7 reads `LIT_ONE_IN` and
+ * pass 8 reads the water constants, and a view that retuned the fraction without
+ * updating this gate fails rather than quietly widening the gap.
+ */
+const HAZE_INNER = (() => {
+  const found = /const HAZE_INNER_FRACTION = ([\d.]+)/.exec(stripProse(CREATURE_VIEW_SOURCE))
+  assert.ok(found, 'creatureView.js no longer has a HAZE_INNER_FRACTION, so the shimmer has no hole in it')
+  return Number(found[1])
+})()
+
+test('the shimmer is a column that dies at 30 m, and its worst pixel is a shimmer', () => {
+  // 1. THE RADIUS, which is the brief's ~30 m and the number §6.1's apparition depends
+  // on. The interesting assertion is the NEGATIVE one: `hazeAmount` is exactly 0 at
+  // and beyond the radius, so the ninety-metre telegraph has no shimmer by
+  // construction rather than by a test that could be retuned past.
+  assert.equal(beast.hazeAmount(beast.HAZE_RADIUS), 0, 'the shimmer is still on at its own radius')
+  assert.equal(beast.hazeAmount(beast.HAZE_RADIUS + 0.001), 0)
+  assert.equal(beast.hazeAmount(1e6), 0)
+  for (let d = beast.HAZE_RADIUS; d <= 200; d += 1) {
+    assert.equal(beast.hazeAmount(d), 0, `the shimmer reaches ${d} m`)
+  }
+  assert.equal(beast.hazeAmount(0), 1, 'a creature in your face has no shimmer')
+  // 2. C1 AT BOTH ENDS. A curve that arrives at 1 with a non-zero slope and departs to
+  // 0 with one has a corner in its derivative, and a corner in a distance falloff is a
+  // circle in the frame that switches on. Sampled rather than asserted symbolically,
+  // because the smoothstep's virtue IS the shape of the derivative.
+  const inside = beast.HAZE_RADIUS - beast.HAZE_FADE_METRES
+  const slope = (d) => Math.abs((beast.hazeAmount(d + 0.01) - beast.hazeAmount(d - 0.01)) / 0.02)
+  assert.ok(Math.abs(slope(inside)) < 0.02, `the shimmer arrives at ${inside} m with a slope of ${slope(inside).toFixed(4)}`)
+  assert.ok(Math.abs(slope(beast.HAZE_RADIUS - 0.01)) < 0.02, `and leaves at the radius with a slope of ${slope(beast.HAZE_RADIUS - 0.01).toFixed(4)}`)
+  // 3. MONOTONE, because a shimmer that brightens as you walk AWAY from it is not a
+  // falloff. The whole ramp, sampled at a fifth of the fade's finest step.
+  let previous = 2
+  for (let d = 0; d <= beast.HAZE_RADIUS; d += 0.05) {
+    const amount = beast.hazeAmount(d)
+    assert.ok(amount <= previous + 1e-12, `the shimmer rises from ${amount} to ${previous} between ${d.toFixed(2)} and ${(d + 0.05).toFixed(2)} m`)
+    assert.ok(amount >= 0 && amount <= 1, `hazeAmount(${d.toFixed(2)}) is ${amount}`)
+    previous = amount
+  }
+  // 4. AND THE POSE CARRIES IT, multiplied by the FINAL presence, so a figure fading
+  // out of the world takes its shimmer with it. The half that matters is the `dormant`
+  // one: `hazeAmount(0)` is 1, so nothing but the presence test stands between a
+  // banished creature and a column of hot air over an empty road.
+  assert.equal(beast.creaturePose({ state: 'chase' }, { time: 1, distance: 9 }).haze, 1)
+  assert.equal(beast.creaturePose({ state: 'chase' }, { time: 1, distance: 90 }).haze, 0, 'a chase at 90 m still shimmers')
+  assert.equal(beast.creaturePose({ state: 'telegraph' }, { time: 1, distance: 90 }).haze, 0, "§6.1's apparition shimmers")
+  assert.equal(beast.creaturePose({ state: 'dormant' }, { time: 1, distance: 0 }).haze, 0, 'a creature that is not there is shimmering')
+  assert.equal(beast.creaturePose(null, { distance: 0 }).haze, 0)
+  // ...and it rides the DISMISSAL, which is the interesting half: a dismissing creature
+  // is `present` and its presence is decaying, so a shimmer that ignored the fade
+  // would be the last thing to leave the frame.
+  const fading = beast.creaturePose({ state: 'dormant' }, { time: 1, distance: 0, dismiss: 1, elapsed: 0.3 })
+  assert.ok(fading.present, 'a dismissing figure is not drawn at all')
+  assert.ok(fading.haze < 1 && fading.haze > 0, `a dismissing figure's shimmer is ${fading.haze}`)
+})
+
+test('the shimmer is six bands of one additive column, and none of them can be an eye', () => {
+  const layers = beast.hazeLayers({ time: 3.3, offset: 0.61, amount: 1, scale: 1 })
+  // 1. THE BAND COUNT, the brief's "4-6" read as a bound rather than a suggestion. It
+  // fails if a later edit takes the effect up to seven "because one more reads better".
+  assert.equal(layers.length, beast.HAZE_LAYERS, 'the column is not the documented number of bands')
+  assert.ok(beast.HAZE_LAYERS >= 4 && beast.HAZE_LAYERS <= 6, `HAZE_LAYERS is ${beast.HAZE_LAYERS}, outside the brief's 4-6`)
+  // 2. IT IS A COLUMN, not a box: a band near the floor is NARROWER than a band near the
+  // crown, because hot air spreads as it rises. A constant width is a curtain, and a
+  // curtain hanging beside a figure is a wall.
+  const floor = layers[0].halfWidth
+  const crown = layers[layers.length - 1].halfWidth
+  assert.ok(crown > floor * 1.5, `the column is ${(floor * 100).toFixed(0)} cm at the floor and ${(crown * 100).toFixed(0)} cm at the crown, which is a curtain`)
+  // 3. AND IT CLEARS THE FIGURE. This is the load-bearing geometric claim: the shimmer
+  // is ADDITIVE and `creatureContrast` measures a body against its local surround, and
+  // `creature-stalking.png` has 0.013 of headroom on that number.
+  //
+  //    THE COMPARISON IS PER HEIGHT, and that is a correction rather than a refinement.
+  //    The first version of this check asked every band to clear the SHOULDER half-span
+  //    (0.20 m), which is the wrong question twice over: the narrowest band is the one at
+  //    the FLOOR, where the only part of the rig with any width at all is the leg pair at
+  //    `hip / 2` 0.12 m, and the widest part of the figure is at 2.32 m where the bands
+  //    are 60% wider. Measured against the shoulder the floor band came out 0.085 m
+  //    clear and the check failed its own 0.1 m floor — a number that is right about the
+  //    body and wrong about the question. What a curtain may not touch is the body AT
+  //    ITS OWN HEIGHT, so that is what is compared, at every scale in the table.
+  const bodyRadiusAt = (y) =>
+    (y <= beast.CREATURE_SHAPE.armRoot ? beast.CREATURE_SHAPE.hip / 2 : beast.CREATURE_SHAPE.shoulder / 2)
+  let tightest = Infinity
+  for (const state of beast.PRESENTATION_STATES) {
+    const { scale } = beast.presentationFor(state)
+    for (const layer of beast.hazeLayers({ time: 0, offset: 0, amount: 1, scale })) {
+      const inner = layer.halfWidth * HAZE_INNER
+      const gap = inner - bodyRadiusAt(layer.y) * scale
+      if (gap < tightest) tightest = gap
+      assert.ok(
+        gap > 0.05,
+        `${state} at scale ${scale}: the band at ${layer.y.toFixed(2)} m has an inner edge ${inner.toFixed(3)} m from the axis and the body is ${(bodyRadiusAt(layer.y) * scale).toFixed(3)} m wide there`,
+      )
+    }
+  }
+  // ...and the conservative bound as well, because a retune that widened every band
+  // could satisfy the per-height test at the floor and still close on the shoulder. At
+  // the narrowest band this is 0.085 m, and at the 17 m the stalking view uses 0.085 m
+  // is 2.5 px — which is why the number is checked rather than assumed.
+  const narrowest = Math.min(...beast.hazeLayers({ time: 0, offset: 0, amount: 1, scale: 1 }).map((l) => l.halfWidth * HAZE_INNER))
+  assert.ok(
+    narrowest > beast.CREATURE_SHAPE.shoulder / 2,
+    `the narrowest band's inner edge is ${narrowest.toFixed(3)} m from the axis and the widest part of the figure is ${(beast.CREATURE_SHAPE.shoulder / 2).toFixed(3)} m`,
+  )
+  // 4. DETERMINISTIC, and a pure function of its four inputs. The same four numbers
+  // give the same six bands, and a shimmer driven by an accumulator would not.
+  for (const t of [0, 1.7, 12.25]) {
+    assert.deepEqual(
+      beast.hazeLayers({ time: t, offset: 0.61, amount: 0.7, scale: 1.04 }),
+      beast.hazeLayers({ time: t, offset: 0.61, amount: 0.7, scale: 1.04 }),
+      `the shimmer at t=${t} is not reproducible`,
+    )
+  }
+  // 5. IT MOVES, and slowly. The brief said "shimmer" and a shimmer that does not move
+  // is a fog patch: over two seconds the bands have to travel, they have to stay inside
+  // their own drift bound, and their ALPHA has to move too — a band that slides at a
+  // constant brightness is a sliding rectangle, and a rectangle is what this avoids.
+  const start = beast.hazeLayers({ time: 0, offset: 0, amount: 1, scale: 1 })
+  let moved = 0
+  let breathe = 0
+  for (let t = 0; t < 2; t += 1 / 120) {
+    const now = beast.hazeLayers({ time: t, offset: 0, amount: 1, scale: 1 })
+    for (let i = 0; i < now.length; i += 1) {
+      moved = Math.max(moved, Math.abs(now[i].warp - start[i].warp))
+      breathe = Math.max(breathe, Math.abs(now[i].alpha - start[i].alpha))
+      assert.ok(Math.abs(now[i].warp) <= beast.HAZE_DRIFT_METRES + 1e-9, `a band travelled ${now[i].warp} m`)
+      assert.ok(now[i].alpha > 0, `a band at t=${t} is at zero alpha inside the column`)
+    }
+  }
+  assert.ok(moved > 0.05, `the shimmer moved ${moved.toFixed(4)} m in two seconds, which is a fog patch`)
+  assert.ok(breathe > 0, 'the bands slide at a constant brightness, which is a sliding rectangle')
+  // 6. THE LUMA BUDGET, in the renderer's own colour space. The worst pixel is the
+  // brightest single band multiplied by the number of bands one pixel can be inside, and
+  // the COVERAGE is re-derived from the bands' own extents rather than read off
+  // `HAZE_OVERLAP`, so a retune of `HAZE_BAND_FILL` that pushed a third band over one
+  // pixel would fail here rather than quietly making the documented budget wrong.
+  let coverage = 0
+  for (let y = 0; y <= beast.HAZE_SPAN; y += 0.002) {
+    let count = 0
+    for (const layer of beast.hazeLayers({ time: 0, offset: 0, amount: 1, scale: 1 })) {
+      if (Math.abs(y - (layer.y - beast.HAZE_BASE_Y)) <= layer.halfHeight) count += 1
+    }
+    if (count > coverage) coverage = count
+  }
+  assert.equal(coverage, beast.HAZE_OVERLAP, `a pixel is inside ${coverage} bands and HAZE_OVERLAP says ${beast.HAZE_OVERLAP}`)
+  let peak = 0
+  for (let t = 0; t < 6; t += 1 / 240) {
+    for (const layer of beast.hazeLayers({ time: t, offset: 0.61, amount: 1, scale: 1 })) {
+      peak = Math.max(peak, layer.alpha)
+    }
+  }
+  const hazeLin = linearLuma(beast.HAZE_COLOUR)
+  const added = peak * coverage * hazeLin
+  const before = encodeLuma(toLinear(HAZE_SURROUND))
+  const after = encodeLuma(toLinear(HAZE_SURROUND) + added)
+  assert.ok(after - before > 2, `the shimmer adds ${(after - before).toFixed(2)} levels, which is too faint to read`)
+  assert.ok(after - before < 12, `the shimmer adds ${(after - before).toFixed(2)} levels, which is a grey pillar rather than a shimmer`)
+  // 7. AND THE CEILING THAT MATTERS IS `EYE_MIN` 150. The shimmer alone has to stay far
+  // below the luma the eye-finder flood-fills at, or a creature frame could report an
+  // eye where there is only a column of hot air.
+  const alone = encodeLuma(peak * coverage * hazeLin)
+  assert.ok(alone < 60, `the shimmer on its own is luma ${alone.toFixed(1)}, and EYE_MIN is 150`)
+  // 8. COOL, and §12.2's rule is that the two light families never mix. A warm shimmer
+  //    would put a second orange in a frame whose orange all belongs to the sodium —
+  //    and the sodium is about to start flickering because of the creature in it.
+  const hex = beast.HAZE_COLOUR
+  const r = (hex >> 16) & 255
+  const g = (hex >> 8) & 255
+  const b = hex & 0xff
+  assert.ok(b >= g && g >= r, `HAZE_COLOUR 0x${hex.toString(16)} is warm (${r}, ${g}, ${b}), and the sodium family owns the warm end`)
+  assert.notEqual(hex, 0x0a0a0d, 'the shimmer is painted in the creature body colour')
+  console.log(
+    `\n  pass-11 shimmer: ${beast.HAZE_LAYERS} bands over ${beast.HAZE_SPAN} m, radius ${beast.HAZE_RADIUS} m with a ` +
+      `${beast.HAZE_FADE_METRES} m C1 ramp, coverage ${coverage} band(s), worst pixel +${(after - before).toFixed(2)} luma on a ` +
+      `19-level surround (${alone.toFixed(1)} alone, EYE_MIN 150)`,
+  )
+})
+
+test('the lamp the creature stands under strobes, and recovers when it walks on', () => {
+  const seed = beast.lampDreadSeed(1337, 0)
+  // 1. IT IS 1 OUTSIDE THE RADIUS, exactly, and the word is "exactly": the recovery
+  // claim is a fact about the function rather than about a frame somebody watched, and a
+  // function that returned 0.999 there would leave every lamp on the street 0.1% wrong.
+  for (const d of [beast.LAMP_DREAD_RADIUS, beast.LAMP_DREAD_RADIUS + 0.01, 40, 1e6]) {
+    assert.equal(beast.lampDread(d, 1.0, { seed }), 1, `a lamp ${d} m away is at ${beast.lampDread(d, 1.0, { seed })}`)
+  }
+  // 2. IT STROBES UNDER THE LAMP. "Strobes" is a claim about a RATE and a DEPTH, so
+  // both are measured over four seconds: the level has to reach the floor (a dropout is
+  // an event, and a smooth curve would pass a monotonicity test), and it has to come
+  // back up (a lamp that only ever went down would be a lamp that had failed, not one
+  // that is being disturbed).
+  // SWEPT OVER TICKS, not over samples, and that is a correction rather than a
+  // restatement. The first version of this check sampled at 240 Hz and counted the
+  // SAMPLES sitting on the floor, which measures the fraction of TIME the lamp is dark
+  // (103.75 samples a second) rather than the number of EVENTS (3.67 ticks a second).
+  // Both numbers are true and they are not the claim: `flickerAt` is stepped, so a
+  // dropout is a tick and a tick is what a player sees as a flash. Counting ticks is
+  // also what makes the rate comparable with `LAMP_DREAD_HZ` at all.
+  let lowest = 1
+  let highest = 0
+  let dropouts = 0
+  const ticks = Math.round(4 * beast.LAMP_DREAD_HZ)
+  for (let tick = 0; tick < ticks; tick += 1) {
+    // Three samples inside the tick, and the tick's level is whichever of them the
+    // stepped function returned — which is all three, by the assertion below.
+    for (const inside of [0.1, 0.5, 0.9]) {
+      const level = beast.lampDread(0.5, (tick + inside) / beast.LAMP_DREAD_HZ, { seed })
+      lowest = Math.min(lowest, level)
+      highest = Math.max(highest, level)
+    }
+    if (beast.lampDread(0.5, tick / beast.LAMP_DREAD_HZ, { seed }) <= beast.LAMP_DREAD_FLOOR + 1e-9) dropouts += 1
+  }
+  assert.ok(lowest <= beast.LAMP_DREAD_FLOOR + 1e-9, `the strobe bottoms out at ${lowest.toFixed(3)} against a floor of ${beast.LAMP_DREAD_FLOOR}`)
+  assert.ok(highest > 0.95, `the strobe never comes back up (best ${highest.toFixed(3)}), so it is a failing lamp and not a flickering one`)
+  // The RATE, read off the same sweep rather than off the constant: at `LAMP_DREAD_HZ`
+  // 11 with one dropout in three, roughly 3.7 dropouts a second is what the function
+  // produces, and a fixture that drops three times a second is a strobe. Below about one
+  // it is a bad ballast — which is the vending machine, and §12.2's rule is that the two
+  // families do not share a character — and above about eight it is a fault nobody can
+  // look at.
+  const rate = dropouts / 4
+  assert.ok(rate > 1 && rate < 8, `the lamp drops out ${rate.toFixed(2)} times a second, which is neither a flicker nor a strobe`)
+  // ...and the rate is the DOCUMENTED one, not merely a plausible one: `LAMP_DREAD_HZ`
+  // ticks a second with one in `LAMP_DREAD_ONE_IN` a dropout is
+  // `HZ / ONE_IN` = 3.67, and `flickerAt` is a hash so the count is a binomial around it.
+  // Asserted as a window because a hash's exact count is not a constant, which is the
+  // difference between "seeded" and "written down".
+  const expected = beast.LAMP_DREAD_HZ / beast.LAMP_DREAD_ONE_IN
+  assert.ok(Math.abs(rate - expected) < expected * 0.35, `the lamp drops out ${rate.toFixed(2)} times a second against a documented ${expected.toFixed(2)}`)
+  // 3. IT IS STEPPED, and that is the property that makes it testable at all: the same
+  // tick asked for twice — once to build the frame, once to measure it — has to agree,
+  // because `flickerAt` is a function of the tick INDEX and a level that moved inside a
+  // tick would be a level the renderer and the gate could each see differently.
+  const tick = 1 / beast.LAMP_DREAD_HZ
+  for (let i = 0; i < 40; i += 1) {
+    const t = 3 + i * tick * 0.5
+    assert.equal(beast.lampDread(0.5, t, { seed }), beast.lampDread(0.5, t + tick * 0.4, { seed }), `the level moved inside tick ${i}`)
+  }
+  // ...and it is a function of the SEED, which is the whole of D10 for this effect: two
+  // lamps under two creatures never share a pattern, and the seed is DERIVED rather than
+  // typed at the call site, for pass 7's reason.
+  const other = beast.lampDreadSeed(1337, 1)
+  assert.notEqual(seed, other, 'two lamps in the pool share a seed, so they strobe in lockstep')
+  // The claim is about the DROPOUT PATTERN, and it is measured as one. The first version
+  // of this check counted how many of 200 samples the two lamps agreed on, which came out
+  // at 22 and read as a failure: two independent 1-in-3 strobes agree on about a third
+  // of their ticks by chance, because most agreement is both of them sitting at their
+  // own maximum. What "two lamps" means is that they do not drop out on the same TICKS,
+  // and that is what is compared.
+  const dark = (s2, tick) => (beast.lampDread(0.5, tick / beast.LAMP_DREAD_HZ, { seed: s2 }) <= beast.LAMP_DREAD_FLOOR + 1e-9)
+  let bothDark = 0
+  let eitherDark = 0
+  for (let tick = 0; tick < 60; tick += 1) {
+    const a = dark(seed, tick)
+    const b = dark(other, tick)
+    if (a && b) bothDark += 1
+    if (a || b) eitherDark += 1
+  }
+  assert.ok(eitherDark > 0, 'neither lamp ever drops out, so there is no pattern to differ')
+  assert.notEqual(bothDark, 0, 'the two lamps are in step on every tick, which is one lamp with two meshes')
+  // ...and the overlap is consistent with independence rather than with a shared stream:
+  // two 1-in-3 patterns of length 60 give ~6.7 coincident dark ticks in the mean, and a
+  // shared seed gives 20.
+  assert.ok(bothDark < eitherDark * 0.6, `${bothDark} of ${eitherDark} dark ticks coincide, which is a shared stream`)
+  // 4. AND IT RECOVERS MONOTONICALLY as the creature walks out, which is the brief's
+  // "recovering after it leaves". Monotone in the ENVELOPE rather than in the value —
+  // the strobe is a square wave and its own max/min are not monotone, so the assertion
+  // is on the window mean, which is what a player perceives as the lamp coming back.
+  let previous = -1
+  for (let d = 0; d <= beast.LAMP_DREAD_RADIUS + 2; d += 0.25) {
+    let sum = 0
+    for (let t = 0; t < 2; t += 1 / 11) sum += beast.lampDread(d, t, { seed })
+    const mean = sum / (2 * 11)
+    assert.ok(mean >= previous - 1e-9, `the lamp's mean level FELL from ${previous.toFixed(3)} to ${mean.toFixed(3)} as the creature walked from ${(d - 0.25).toFixed(2)} m to ${d.toFixed(2)} m away`)
+    previous = mean
+  }
+  assert.ok(previous > 0.99, `a lamp at ${beast.LAMP_DREAD_RADIUS + 2} m is at a mean of ${previous.toFixed(3)}, not fully recovered`)
+  // 5. AND IT IS LOCAL: a lamp twice the radius away is untouched, which is the
+  // difference between a presence in a place and a global dimmer.
+  const near = beast.lampDread(2, 1.0, { seed })
+  const far = beast.lampDread(beast.LAMP_DREAD_RADIUS * 2, 1.0, { seed })
+  assert.ok(near < far, `a lamp 2 m away reads ${near.toFixed(3)} and one ${beast.LAMP_DREAD_RADIUS * 2} m away reads ${far.toFixed(3)}`)
+  // 6. TOTAL, because a NaN distance in a render loop is a lamp that never comes back.
+  for (const bad of [NaN, Infinity, -3, 'x', undefined, null]) {
+    const value = beast.lampDread(bad, 1.0, { seed })
+    assert.ok(Number.isFinite(value) && value >= beast.LAMP_DREAD_FLOOR - 1e-9 && value <= 1, `lampDread(${bad}) is ${value}`)
+  }
+  console.log(
+    `\n  pass-11 lamp dread: radius ${beast.LAMP_DREAD_RADIUS} m with a ${beast.LAMP_DREAD_FADE} m ramp, ` +
+      `${beast.LAMP_DREAD_HZ} Hz, floor ${beast.LAMP_DREAD_FLOOR}, ${rate.toFixed(2)} dropouts/s, ` +
+      `range ${lowest.toFixed(2)}-${highest.toFixed(2)} under the lamp and exactly 1 outside it`,
+  )
+})
+
+test('the eye flare pulses the lamp with its own envelope, once', () => {
+  // THE IDENTITY, over the whole window rather than at two sampled instants, because
+  // this is the audio-visual sync claim and a sync claim is about a CURVE. A second
+  // envelope with its own length and its own peak would be two events that happen to be
+  // near each other; `lampPulse` is the flare's envelope with a gain on it, so the two
+  // are the same number read twice and they cannot drift.
+  for (let t = 0; t < beast.EYE_FLARE_SECONDS * 1.5; t += 1 / 240) {
+    const flare = beast.eyeFlare(t)
+    const pulse = beast.lampPulse(flare)
+    assert.equal(pulse, 1 + beast.LAMP_PULSE_GAIN * flare, `at t=${t.toFixed(3)} the lamp is at ${pulse} for a flare of ${flare}`)
+  }
+  // 1. EXACTLY 1 outside the window, on both sides. A pulse that never returned to 1
+  // would be a lamp left 45% bright for ever after one sighting, and a run has four of
+  // those.
+  assert.equal(beast.lampPulse(beast.eyeFlare(null)), 1, 'a null flare pulses the lamp')
+  assert.equal(beast.lampPulse(beast.eyeFlare(beast.EYE_FLARE_SECONDS)), 1, 'the pulse outlives the window')
+  assert.equal(beast.lampPulse(beast.eyeFlare(beast.EYE_FLARE_SECONDS + 5)), 1)
+  assert.equal(beast.lampPulse(0), 1)
+  // 2. THE PEAK IS `1 + GAIN` and the gain is under half, because the ceiling is the
+  // creature's own eye: `EYE_FLARE_GAIN` 2.2 arrives on a 7 px unfogged additive quad
+  // and this arrives across a whole pool of road. The lamp is the echo and the eye is
+  // the event, and the order of those two is the composition.
+  assert.equal(beast.lampPulse(1), 1 + beast.LAMP_PULSE_GAIN)
+  assert.ok(beast.LAMP_PULSE_GAIN > 0.2, 'the lamp does not move at all, which is not a sync')
+  assert.ok(beast.LAMP_PULSE_GAIN < 0.5, `the lamp gains ${(beast.LAMP_PULSE_GAIN * 100).toFixed(0)}%, which is louder than the eye it is echoing`)
+  assert.ok(beast.LAMP_PULSE_GAIN < beast.EYE_FLARE_GAIN / 4, 'the echo is louder than the event')
+  // 3. ONE PULSE, not a beat: the envelope is strictly falling after its first frame,
+  // so a player cannot be shown a second brightening inside the window.
+  let rising = 0
+  for (let t = 0; t < beast.EYE_FLARE_SECONDS; t += 1 / 240) {
+    if (beast.lampPulse(beast.eyeFlare(t + 1 / 120)) > beast.lampPulse(beast.eyeFlare(t))) rising += 1
+  }
+  assert.equal(rising, 0, 'the lamp pulse rises again inside the window, so it beats')
+  // 4. AND IT COMPOSES WITH THE STROBE rather than fighting it. The two are multiplied
+  // in `world.js`, and the reason that is safe is that a GAIN cannot exceed a base it
+  // is applied to: the brightest a drodded lamp ever gets is `1 + GAIN` times its own
+  // top tick, which is a lamp surging to its own maximum, never a lamp exceeding it.
+  const seed = beast.lampDreadSeed(1337, 0)
+  let worst = 0
+  let reached = 0
+  let plainSum = 0
+  let pulsedSum = 0
+  let samples = 0
+  for (let t = 0; t < beast.EYE_FLARE_SECONDS; t += 1 / 480) {
+    const plain = beast.lampDread(0.5, t, { seed })
+    const composed = plain * beast.lampPulse(beast.eyeFlare(t))
+    worst = Math.max(worst, composed)
+    if (composed > plain) reached += 1
+    plainSum += plain
+    pulsedSum += composed
+    samples += 1
+  }
+  // A GAIN cannot exceed the base it is applied to, so the composed level never rises
+  // above the lamp's own top tick: a strobing lamp surges to its maximum and no further.
+  assert.ok(worst <= 1 + beast.LAMP_PULSE_GAIN + 1e-9, `the composed lamp level reached ${worst.toFixed(3)}, above its own top tick`)
+  // ...and it does not get SWALLOWED either, which is the failure a multiplier can have:
+  // if the strobe's dropouts always landed on the flare's bright frames, the pulse would
+  // be arithmetic that never reaches the screen. Sampled at 480 Hz — twice the strobe
+  // rate — so a window of one tick cannot hide between two samples.
+  // A proportion rather than a count, and the reason is worth recording: the window's
+  // last sample is a float accumulation away from the envelope's zero, so `eyeFlare` can
+  // return exactly 0 one step before the loop's bound and cost one sample its lift. The
+  // claim is "the pulse is applied across the window", not "every single sample of it".
+  assert.ok(reached >= samples * 0.95, `the pulse lifted the lamp on only ${reached} of ${samples} samples of the window`)
+  const meanLift = pulsedSum / plainSum
+  assert.ok(meanLift > 1.05, `the pulse lifts the lamp's mean level by ${((meanLift - 1) * 100).toFixed(1)}%, which is under the eye's own 120% and too small to read`)
+  console.log(
+    `\n  pass-11 lamp pulse: 1 -> ${(1 + beast.LAMP_PULSE_GAIN).toFixed(2)} on the same envelope as the eye flare ` +
+      `(${beast.EYE_FLARE_SECONDS} s, peak ${beast.EYE_FLARE_GAIN} on the eye)`,
+  )
+})
+
+test('a footfall lays one puff, and a standing creature lays none', () => {
+  // THE CARRIER IS METRES, not frames and not the drawn gait, and the first claim is
+  // the one an accumulator gets wrong: the same walk has to produce the same field in
+  // 60 frames and in 600. `dripStep` above is the same test on the same model and this
+  // one is a copy of it deliberately — two reducers that are the same kind of thing
+  // should be gated the same way, or the second one is the one nobody re-reads.
+  const walk = (seconds, fps) => {
+    const steps = Math.round(seconds * fps)
+    const dt = 1 / fps
+    const speed = 2.2
+    let field = beast.createPuffField()
+    for (let i = 0; i < steps; i += 1) {
+      const x = i * speed * dt
+      field = beast.puffStep(field, {
+        walked: speed * dt,
+        dx: speed * dt,
+        dz: 0,
+        x,
+        z: 0,
+        time: i * dt,
+        present: true,
+        clear: true,
+        seed: 1337,
+      }).field
+    }
+    return field
+  }
+  const sixty = walk(3, 60)
+  const sixHundred = walk(3, 600)
+  assert.equal(sixty.laid, Math.floor((2.2 * 3) / beast.FOOTFALL_STRIDE_METRES), `a 6.6 m walk laid ${sixty.laid} puffs`)
+  assert.equal(sixHundred.laid, sixty.laid, 'the dust depends on the frame rate')
+  // The SHAPES are identical, because they are hashed from the puff's own index and not
+  // from the frame. The POSITIONS are not, and cannot be: a puff is laid where the
+  // creature happened to be when the footfall completed, so a finer frame resolves the
+  // foot to a different millimetre. The bound is ONE COARSE FRAME of travel, which is
+  // the coarse frame's own resolution of where the foot landed, and it is asserted rather
+  // than assumed. (This is the trail's frame-rate test above, on the same model and for
+  // the same reason; the first version of this one compared positions exactly and failed
+  // by 3 cm, which is 1/60th of a second of walking and not a defect.)
+  assert.deepEqual(
+    sixty.puffs.map((p) => [p.radius.toFixed(9), p.spin.toFixed(9)]),
+    sixHundred.puffs.map((p) => [p.radius.toFixed(9), p.spin.toFixed(9)]),
+    'the same walk lays differently SHAPED puffs at 600 fps than at 60',
+  )
+  const oneFrame = (2.2 * 3) / 60
+  for (let i = 0; i < sixty.puffs.length; i += 1) {
+    const gap = Math.abs(sixHundred.puffs[i].x - sixty.puffs[i].x)
+    assert.ok(gap < oneFrame, `puff ${i} is ${gap.toFixed(4)} m apart between the two frame rates`)
+  }
+  // 2. AND THE STRIDE IS HALF THE TRAIL'S, which is the claim that makes it dust and not
+  // a stain: two feet, one puff each, per stride.
+  assert.equal(beast.FOOTFALL_STRIDE_METRES * 2, beast.DRIP_STRIDE_METRES, 'a puff is not laid once per footfall')
+  // 3. NOTHING FOR STANDING STILL, and the reason is the carrier rather than a test: a
+  // present and motionless creature accumulates nothing, and the drawn stride — which
+  // advances for a standing creature — is not what it is keyed to.
+  let still = beast.createPuffField()
+  for (let i = 0; i < 600; i += 1) {
+    still = beast.puffStep(still, { walked: 0, x: 0, z: 0, time: i / 60, present: true, clear: true, seed: 1337 }).field
+  }
+  assert.equal(still.laid, 0, 'a standing creature is breathing dust')
+  // ...and nothing while it is not there at all, which is §7.4's banish and the Act I
+  // telegraph: a telegraph that dusts a road it has not walked to is the bug this
+  // reducer exists to prevent.
+  let absent = beast.createPuffField()
+  for (let i = 0; i < 600; i += 1) {
+    absent = beast.puffStep(absent, { walked: 2.2 / 60, x: i, z: 0, time: i / 60, present: false, clear: true, seed: 1337 }).field
+  }
+  assert.equal(absent.laid, 0, 'a banished creature is still dusting the road')
+  // 4. THE CAP, and the eviction order. §10.2's finale wants 5.2 / 0.45 x 0.95 = 11
+  // puffs alive and gets `PUFF_MAX` 10, so the cap is load-bearing and the oldest is
+  // the one that goes — which `puffAlpha` has already made the faintest, so "oldest
+  // fades first" and "oldest goes first" are the same statement.
+  let over = beast.createPuffField()
+  for (let i = 0; i < beast.PUFF_MAX + 40; i += 1) {
+    over = beast.puffStep(over, { walked: 0.5, x: i * 0.5, z: 0, time: i / 60, present: true, clear: true, seed: 1337 }).field
+  }
+  assert.equal(over.puffs.length, beast.PUFF_MAX, `the field holds ${over.puffs.length} puffs, not PUFF_MAX`)
+  // The order is NON-DECREASING, not strictly increasing, and the first version of this
+  // assertion said `>` and failed on a tie that is not a defect. Two footfalls can land
+  // inside one frame: `walked: 0.5` per frame against a 0.45 m stride carries a spare, and
+  // once the spare reaches 0.9 a single frame lays two puffs at the same `born`. Their
+  // alphas are then equal too, so "the oldest is the faintest" is still true as a
+  // non-strict statement — and a strict reading of it would have pushed for a tie-break
+  // the design does not have and does not need.
+  const ages = over.puffs.map((p) => p.born)
+  for (let i = 1; i < ages.length; i += 1) {
+    assert.ok(ages[i] >= ages[i - 1], 'the survivor list is not oldest-first, so the cap could evict the faintest and keep the darkest')
+  }
+  assert.equal(ages[0], Math.min(...ages), 'the head of the list is not the oldest puff in it')
+  // ...and the evictions really were evictions, read against the cap rather than against
+  // the list. 50 frames of `walked: 0.5` lay 55 puffs, not 50: 0.5 m per frame against a
+  // 0.45 m stride leaves a 0.05 m spare every frame, and every ninth frame that spare
+  // crosses a whole stride and lays a second. The count is arithmetic and is asserted as
+  // such rather than assumed, because "it laid more than I asked for" is exactly the
+  // sentence a reviewer should not have to take on trust.
+  assert.equal(over.laid, 55, `the over-cap walk laid ${over.laid}, not the 55 its own stride arithmetic gives`)
+  // 5. AND A GATE SUPPRESSES THEM, which for dust matters MORE than for the trail: a
+  // trail mark is a dark decal and a puff is a bright one, and the pass-3 gate measures
+  // the luma of the HOLE in `portal-located.png`.
+  let gated = beast.createPuffField()
+  for (let i = 0; i < 60; i += 1) {
+    gated = beast.puffStep(gated, { walked: 2.2 / 60, x: i * 0.1, z: 0, time: i / 60, present: true, clear: false, seed: 1337 }).field
+  }
+  assert.equal(gated.laid, 0, 'a puff was laid inside the portal stand-off')
+  assert.ok(gated.suppressed > 0, 'the stand-off fired and counted nothing, so the rule cannot be required')
+  // 6. DETERMINISTIC, and the form of the claim is the point: the same walk, driven
+  // twice, has to produce the same field down to the last seeded radius. A
+  // `Math.random` in a puff's shape, or a clock read in the view, would pass every check
+  // above and fail this one.
+  assert.deepEqual(walk(2, 60), walk(2, 60), 'the same walk laid two different fields')
+  // 7. THE PUFF'S OWN CURVES, and the two that make it dust rather than a decal: it
+  // GROWS over its life and it RISES, and it fades with no corner in the tail.
+  assert.equal(beast.puffRadius(0), beast.PUFF_RADIUS, 'a puff does not start at its own radius')
+  assert.ok(
+    Math.abs(beast.puffRadius(beast.PUFF_LIFE * 0.999) - beast.PUFF_RADIUS * (1 + beast.PUFF_SPREAD)) < 1e-3,
+    'a puff does not end at PUFF_RADIUS x (1 + PUFF_SPREAD)',
+  )
+  // Sampled just short of the end, and the reason is in the next two lines: a dead puff
+  // is placed at the GROUND (`puffLift(PUFF_LIFE)` is 0), so the two endpoints of the
+  // life are 0.06 and 0 and the curve between them is what "rises" means.
+  assert.ok(beast.puffLift(beast.PUFF_LIFE * 0.99) > beast.puffLift(0) * 2, 'dust does not rise')
+  assert.equal(beast.puffRadius(beast.PUFF_LIFE), 0, 'a dead puff still has a radius')
+  assert.equal(beast.puffLift(beast.PUFF_LIFE), 0)
+  assert.equal(beast.puffAlpha(beast.PUFF_LIFE), 0)
+  assert.equal(beast.puffAlpha(-1), 0)
+  assert.ok(beast.puffAlpha(beast.PUFF_FADE) > 0.9, 'a puff never reaches full strength')
+  let previous = 2
+  for (let age = beast.PUFF_FADE; age < beast.PUFF_LIFE; age += 0.005) {
+    const alpha = beast.puffAlpha(age)
+    assert.ok(alpha <= previous + 1e-12, `the puff's alpha rose from ${previous.toFixed(4)} to ${alpha.toFixed(4)} at ${age.toFixed(3)} s`)
+    previous = alpha
+  }
+  // 8. AND IT CANNOT BE FOUND AS THE CREATURE'S EYE. `tools/png-luma.mjs` rejects any
+  // blob spanning more than `EYE_MAX_SPAN` 14 px, and at the 7.8 m the chase view puts
+  // the creature's feet a 0.48 m puff is about 30 px across — so the shape test alone
+  // rejects it, before the luma floor is consulted. This is `DRIP_RADIUS`'s bound in the
+  // other direction: a dark 15 px mark is invisible to the finder, and a bright 30 px one
+  // is too big to be an eye.
+  const pixels = (metres, distance, viewportHeight, fov = 72) =>
+    (metres / distance) * (viewportHeight / 2) / Math.tan((fov * Math.PI) / 360)
+  const widest = pixels(beast.PUFF_RADIUS * 2 * (1 + beast.PUFF_SPREAD), 7.8, 720)
+  assert.ok(widest > 14, `a puff at 7.8 m spans ${widest.toFixed(1)} px, which is INSIDE EYE_MAX_SPAN 14 and could be read as an eye`)
+  // ...and it is a BLEND, so it can never reach 1 and can never be a hole cut in the
+  // road. The composite is what matters and it is checked as a composite.
+  assert.ok(beast.PUFF_OPACITY < 1, 'an opaque puff is a hole cut in the road')
+  assert.ok(beast.PUFF_OPACITY > 0.15, 'a puff too faint to see is not a footfall')
+  const puffLin = linearLuma(beast.PUFF_COLOUR)
+  const composite = encodeLuma(toLinear(HAZE_SURROUND) * (1 - beast.PUFF_OPACITY) + puffLin * beast.PUFF_OPACITY)
+  assert.ok(composite > 30, `a puff over a 19-level surround composites to luma ${composite.toFixed(1)}, which is too faint to see`)
+  assert.ok(composite < 150, `a puff composites to luma ${composite.toFixed(1)}, and EYE_MIN is 150`)
+  // ...and it is COOLER than the sodium it stands in, because a puff that is the same
+  // colour as the lamp it is standing in is a lamp.
+  assert.ok(paletteLuma('sodium') > encodeLuma(puffLin), 'the dust is brighter than the lamp above it')
+  // 9. TOTAL, for the same reason `lampDread` is: a NaN in a render loop is a puff that
+  // never dies and a field that never stops growing.
+  for (const bad of [NaN, Infinity, -1, 'x', undefined, null]) {
+    const out = beast.puffStep(beast.createPuffField(), { walked: bad, x: bad, z: bad, dx: bad, dz: bad, time: bad, present: true, seed: bad })
+    assert.ok(Number.isFinite(out.field.laid) && Number.isFinite(out.field.spare), `puffStep walked ${bad} produced ${JSON.stringify(out.field)}`)
+    assert.ok(
+      Number.isFinite(beast.puffAlpha(bad)) && Number.isFinite(beast.puffRadius(bad)) && Number.isFinite(beast.puffLift(bad)),
+      `the puff curves of ${bad} are not finite`,
+    )
+  }
+  console.log(
+    `\n  pass-11 dust: one puff per ${beast.FOOTFALL_STRIDE_METRES} m (half the trail's ${beast.DRIP_STRIDE_METRES}), ` +
+      `cap ${beast.PUFF_MAX} (the finale wants ${(beast.SPEED_CEILING / beast.FOOTFALL_STRIDE_METRES * beast.PUFF_LIFE).toFixed(1)}), ` +
+      `life ${beast.PUFF_LIFE} s, a ${widest.toFixed(0)} px blob at 7.8 m compositing to luma ${composite.toFixed(0)} of 255`,
+  )
+})
+
+/**
+ * `creaturePresenceClaims` — pass 11's source contracts, as predicates over a source
+ * string.
+ *
+ * The same shape as `creatureFidelityClaims` and for the same reason: a gate expressed
+ * as `assert.ok` can only ever run on the real file, and a gate that can only run on the
+ * real file cannot be asked whether it would have caught the bug.
+ *
+ * ELEVEN OF THIS PASS'S PROPERTIES ARE INVISIBLE TO ANY MEASUREMENT OF THE PURE MODULE,
+ * and they are all visible as a pattern of what is written: that the shimmer is ONE mesh
+ * of `HAZE_LAYERS` x 4 quads rather than six of them; that its per-band alpha rides on a
+ * FOUR-component vertex colour (three.js sets `USE_COLOR_ALPHA` from `itemSize === 4`, so
+ * a three-component attribute compiles, runs, and silently throws the alpha away — which
+ * for the shimmer is a column of solid grey, at 48 triangles, in every frame); that it is
+ * `AdditiveBlending` and `fog: false`, which are the two halves of "a shimmer is light
+ * and is a depth cue of its own"; that the dust is the opposite on both counts
+ * (`NormalBlending`, `fog: true`) and is therefore not a floor-level light source; that
+ * both new surfaces sit at `renderOrder` 0 and the eye keeps its lift; that the WORLD
+ * asks `creature.js` for the lamp level rather than computing one, and asks for the
+ * pulse from the pose's `eyeFlare` rather than from a second clock; that the two fields
+ * share ONE measurement of the creature's move; and that all three new scene objects are
+ * removed on dispose.
+ *
+ * EVERY REGEX IS SCOPED TO A METHOD BODY, and that is the lesson of this pass's first two
+ * repair mutations rather than a style preference: `creatureFidelityClaims` had two
+ * whole-file searches that found a SECOND copy of the text they were looking for the
+ * moment pass 11 wrote the second copy, and both of those mutations went quiet without
+ * either one failing. A claim about one method is written against that method.
+ *
+ * @param {string} view `creatureView.js`, comments NOT yet stripped
+ * @param {string} world `world.js`
+ * @param {string} creature `creature.js`
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function creaturePresenceClaims(view, world, creature) {
+  const code = stripProse(view)
+  // The other two are stripped too, and pass 10's version of this function did not strip
+  // them — it had no whole-file negative over `creature.js` to make it matter. Pass 11
+  // has one ("nothing in the pass is unseeded"), and it fired on pass 11's OWN PROSE:
+  // `puffStep`'s comment says a `Math.random` in a puff's shape would break the field, and
+  // an unstripped search for `Math.random` cannot tell that sentence from the bug it
+  // describes. A negative claim over source has to be made over the CODE.
+  const worldCode = stripProse(world)
+  const creatureCode = stripProse(creature)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+  const haze = methodBody(code, '_buildHaze')
+  const puffs = methodBody(code, '_buildPuffs')
+  const presentHaze = methodBody(code, '_presentHaze')
+  const presentPuffs = methodBody(code, '_presentPuffs')
+  const presentAll = methodBody(code, 'present')
+  const dread = methodBody(worldCode, '_writeLampDread')
+  const advance = methodBody(worldCode, '_advancePuffs')
+  const trailAdvance = methodBody(worldCode, '_advanceTrail')
+  const walk = methodBody(worldCode, '_measureWalk')
+
+  // 1. THE SHIMMER IS ONE MESH of `HAZE_LAYERS` bands of four quads, and the band count
+  //    is read out of the pure module rather than typed here. Six meshes would be six
+  //    draw calls for something the eye integrates into one column.
+  claim(
+    'the shimmer is one mesh of HAZE_LAYERS bands, with a real per-vertex alpha',
+    /const quads = HAZE_LAYERS \* 4/.test(haze)
+      && /new Float32Array\(quads \* 4 \* 4\)/.test(haze)
+      && /new THREE\.BufferAttribute\(colours, 4\)/.test(haze)
+      && /vertexColors: true/.test(haze)
+      && (code.match(/new THREE\.Mesh\(geometry, this\.hazeMaterial\)/g) ?? []).length === 1
+      && !/InstancedMesh/.test(haze),
+    "six bands as six meshes is six draw calls for one column, an instanced pool has no per-instance alpha in stock three.js so the fade would become nothing, and a three-component colour attribute compiles and discards the alpha — which for the shimmer is a column of solid grey",
+  )
+  // 2. IT IS ADDITIVE AND UNFOGGED, which are two halves of one claim. Additive because a
+  //    shimmer is refracted light; a blended pale grey over near-black asphalt is a grey
+  //    stain. `fog: false` because additive plus fog is a fog-coloured ADD, and the
+  //    shimmer's own `hazeAmount` falloff — exactly 0 at 30 m — is the better depth cue.
+  claim(
+    'the shimmer is additive and unfogged, and the eye keeps its lift',
+    /blending: THREE\.AdditiveBlending/.test(haze)
+      && /fog: false/.test(haze)
+      && /side: THREE\.DoubleSide/.test(haze)
+      && /const HAZE_RENDER_ORDER = 0/.test(code)
+      && /this\.haze\.renderOrder = HAZE_RENDER_ORDER/.test(haze)
+      && /const EYE_RENDER_ORDER = ([1-9]\d*)/.exec(code) !== null
+      && /eye\.renderOrder = EYE_RENDER_ORDER/.test(code),
+    'a blended shimmer is a grey stain, a fogged additive one adds the fog colour, and a single-sided ring vanishes from half the bearings — while any of the three landing after EYE_RENDER_ORDER would be the pass-6 wire bug wearing a column of hot air',
+  )
+  // 3. THE BAND IS AN ANNULUS, and this is the claim the creature gate rests on: the
+  //    alpha is 0 on the inner edge and 1 on the outer, and the inner edge is a FRACTION
+  //    of the outer rather than a second number. An additive curtain painted over the
+  //    figure raises the body's own luma against its local surround, and
+  //    `creature-stalking.png` has 0.013 of headroom on that measurement.
+  claim(
+    'a band is an annulus, and its inner edge is a fraction of the outer',
+    /const alpha = \[0, 1, 1, 0\]/.test(presentHaze)
+      && /colours\[at4 \+ 3\] = layer\.alpha \* alpha\[i\]/.test(presentHaze)
+      && /const inner = outer \* HAZE_INNER_FRACTION/.test(presentHaze)
+      && /const HAZE_INNER_FRACTION = (0\.[1-9])/.test(code),
+    'a band with alpha across its middle is a curtain painted over the creature, and the one measurement in the repository that cannot afford it is a body against its own local surround',
+  )
+  // 4. AND THE SHIMMER IS A SIBLING OF THE FIGURE, positioned from the frame rather than
+  //    parented: a shimmer parented to `root` would travel with the creature, and this is
+  //    supposed to be air standing where the creature is standing.
+  claim(
+    'the shimmer and the dust are siblings of the figure, not children',
+    /this\.haze\.position\.set\(position\.x, 0, position\.z\)/.test(presentHaze)
+      && /this\.haze\.rotation\.y = context\.yaw/.test(presentHaze)
+      && /scene\.add\(this\.haze\)/.test(haze)
+      && /scene\.add\(this\.puffs\)/.test(puffs)
+      && !/this\.root\.add\(this\.(haze|puffs)\)/.test(code),
+    'a shimmer parented to the creature is a property of the creature and travels with it, and a puff parented to it is a puff that follows the thing that kicked it up',
+  )
+  // 5. THE DUST IS THE OPPOSITE ON BOTH COUNTS, and the pair is the reason it is dust.
+  //    `NormalBlending` because dust occludes and does not emit — an additive puff is a
+  //    light source at floor level, which is exactly what the eye-finder is looking for
+  //    — and `fog: true` because a puff is a depth cue over the road, and an unfogged
+  //    bright billboard at 40 m is a floating light.
+  claim(
+    'the dust is a blended, fogged, billboarded decal and not an additive one',
+    /new Float32Array\(PUFF_MAX \* 4 \* 4\)/.test(puffs)
+      && /new THREE\.BufferAttribute\(colours, 4\)/.test(puffs)
+      && /blending: THREE\.NormalBlending/.test(puffs)
+      && /opacity: PUFF_OPACITY/.test(puffs)
+      && /color: PUFF_COLOUR/.test(puffs)
+      && /fog: true/.test(puffs)
+      && /const PUFF_RENDER_ORDER = 0/.test(code)
+      && /this\.puffs\.renderOrder = PUFF_RENDER_ORDER/.test(puffs)
+      && /applyQuaternion\(camera\.quaternion\)/.test(presentPuffs)
+      && /puffRadius\(time - puff\.born\)/.test(presentPuffs)
+      && /puffLift\(time - puff\.born\)/.test(presentPuffs)
+      && /puffAlpha\(time - puff\.born\)/.test(presentPuffs)
+      && !/AdditiveBlending/.test(puffs),
+    "additive dust is a floor-level light the eye-finder can find, an unfogged one floats in the distance, and a puff laid in the ground plane instead of on the camera's basis is a sliver edge-on rather than a puff",
+  )
+  // 6. THE WORLD ASKS `creature.js` for the lamp level, and for the pulse off the POSE.
+  //    This is the most important contract in the pass: a level computed in `world.js`
+  //    would be a second definition of a moment the pure harness tests, and a pulse read
+  //    from a clock of its own would be two events that happen to be near each other
+  //    rather than one.
+  claim(
+    'the world asks the pure module for the lamp level, the pulse and the seeds',
+    /beast\.lampDread\(distance, this\.animTime, \{ seed: beast\.lampDreadSeed\(this\.seed, i\) \}\)/.test(dread)
+      && /beast\.lampPulse\(pose\.eyeFlare\)/.test(dread)
+      && /distance < beast\.LAMP_DREAD_RADIUS/.test(dread)
+      && /LAMP_LIGHT_INTENSITY \* level \* \(near \? pulse : 1\)/.test(dread)
+      && /LAMP_BOUNCE_INTENSITY \* level \* \(near \? pulse : 1\)/.test(dread),
+    'a lamp level computed in the world is a second definition of a moment the pure harness tests, a pulse off a clock of its own is two events rather than one sync, and a bounce left steady under a drodded key is sodium returning off a road that has gone dark',
+  )
+  // 7. AND THE PULSE REACHES ONLY A LAMP THE CREATURE IS NEAR, because the brief said
+  //    "nearby" and a lamp across the street swelling on the creature's behalf is a lie
+  //    about where the light came from.
+  claim(
+    'the pulse is gated on the same radius the drodd is',
+    /const near = distance < beast\.LAMP_DREAD_RADIUS/.test(dread)
+      && (dread.match(/\(near \? pulse : 1\)/g) ?? []).length === 2,
+    'an ungated pulse is every lamp on the street answering one sighting, and a radius the two terms do not share is a rule with two numbers',
+  )
+  // 8. THE TWO FIELDS SHARE ONE MEASUREMENT of the creature's move, and the cache is keyed
+  //    on the frame's own `drawn` object. Two measurements of one move is one too many:
+  //    the second reads the record the first has just advanced and lays nothing at all.
+  claim(
+    'the trail and the dust share one measurement of the frame\'s move',
+    /const \{ dx, dz, walked, jumped \} = this\._measureWalk\(drawn, dt\)/.test(advance)
+      && /const \{ dx, dz, walked, jumped \} = this\._measureWalk\(drawn, dt\)/.test(trailAdvance)
+      && /if \(this\._walkFor === drawn\) return this\._walk/.test(walk)
+      && /walked > beast\.SPEED_CEILING \* step \* 1\.5/.test(walk),
+    "the trail would be laid from this frame's move and the dust from zero, and the two would drift a frame apart for the whole run; a cache keyed on anything but the frame's own object hands back a measurement taken against the last run's position after a wipe",
+  )
+  // 9. THE DUST IS THE PURE REDUCER'S, folded into the drawn copy and kept out of the
+  //    portal stand-off — which for a BRIGHT decal matters more than for a dark one,
+  //    because the pass-3 gate measures the luma of the hole.
+  claim(
+    'the dust is the pure reducer\'s, folded into the drawn copy and out of the pupil',
+    /beast\.puffStep\(this\.creaturePuffs, \{/.test(advance)
+      && /this\.creaturePuffs = beast\.createPuffField\(\)/.test(worldCode)
+      && /puff\.x \+ origin\.x, z: puff\.z \+ origin\.z/.test(advance)
+      && /clear: this\.streetView\.clearOfPortals\(drawn\.x, drawn\.z\)/.test(advance)
+      && /puffs: this\._advancePuffs\(drawn, pose\.present, dt\)/.test(worldCode),
+    'a field the world builds for itself is a field the pure harness cannot test, a puff in drawn coordinates is 448 m from its own road after the first wrap, and a bright puff standing in the pupil stand-off fills the hole the pass-3 gate measures',
+  )
+  // 10. AND ALL THREE NEW OBJECTS ARE RELEASED. §15's teardown is a definition of done,
+  //     and every one of these is a SIBLING of `root` rather than a child, so removing
+  //     the figure does not remove them.
+  claim(
+    'the shimmer, the dust and their materials are released on dispose',
+    /this\.scene\?\.remove\(this\.haze\)/.test(code)
+      && /this\.scene\?\.remove\(this\.puffs\)/.test(code)
+      && /this\._materials\.push\(this\.hazeMaterial\)/.test(haze)
+      && /this\._materials\.push\(this\.puffMaterial\)/.test(puffs)
+      && /this\.haze\.visible = false/.test(presentAll)
+      && /this\.puffs\.visible = false/.test(presentAll),
+    "three siblings of the figure are left attached to a dead scene, which never shows up as a bug and is exactly the debt pass 19 exists to sweep; and a shimmer left hanging in the air where a banished creature stood is the one artefact this pass could ship that nothing else would notice",
+  )
+  // 11. AND NOTHING NEW IS UNSEEDED OR WALL-CLOCKED. D10 is the repository's rule and
+  //     §16.5 needs each of fourteen frames to be reproducible twice.
+  claim(
+    'nothing in the pass is unseeded, wall-clocked, or read from a second clock',
+    !/Math\.random/.test(code + worldCode + creatureCode)
+      && !/Date\.now|performance\.now|new Date/.test(code + worldCode + creatureCode)
+      && /const salt = hash32\(seed, laid, PUFF_SALT\)/.test(creatureCode)
+      && /flickerAt\(seed, Math\.floor\(t \* LAMP_DREAD_HZ\)/.test(creatureCode)
+      // Scoped to `lampDreadSeed`'s own body, which is the third time in this pass that a
+      // whole-file search has found a second copy of the text it was looking for: the
+      // file already had a `return hash32(` at line 796 from an earlier slice, so
+      // mutating this pass's own `return hash32(` left the regex satisfied and the
+      // mutation proved nothing. The claim is about this function's seed, so it reads
+      // this function.
+      && /return hash32\(/.test(methodBody(creatureCode, 'lampDreadSeed')),
+    'D10 is the rule and §16.5 needs each of fourteen frames reproducible twice, so an unseeded puff shape or a wall-clock drift is a frame that cannot be re-taken',
+  )
+  return claims
+}
+
+test('the presence claims are the source contracts, and every one holds', () => {
+  const claims = creaturePresenceClaims(CREATURE_VIEW_SOURCE, WORLD_SOURCE, CREATURE_SOURCE)
+  const broken = claims.filter((entry) => !entry.ok)
+  assert.deepEqual(broken, [], `${broken.map((entry) => `${entry.name} — ${entry.why}`).join(' | ')}`)
+  assert.ok(claims.length >= 11, `the presence section has ${claims.length} claims, fewer than the ${11} it needs`)
+  console.log(`\n  pass-11 claims: ${claims.length} source contracts, every one holding`)
+})
+
+test('every presence claim can actually fail, and a mutation names the one it breaks', () => {
+  // TWELVE MUTATIONS, and the choice of which properties to break is the point: each
+  // one is a way this pass could have shipped a feature that exists, is pure, is
+  // deterministic, and is invisible.
+  const mutations = [
+    ['the shimmer drawn as two meshes', 'two draw calls for a column the eye integrates into one, and the bands would sort against each other',
+      'the shimmer is one mesh of HAZE_LAYERS bands, with a real per-vertex alpha',
+      'this.haze = new THREE.Mesh(geometry, this.hazeMaterial)', 'this.haze = new THREE.Mesh(geometry, this.hazeMaterial); this.haze2 = new THREE.Mesh(geometry, this.hazeMaterial)'],
+    ['the shimmer colour buffer sized for RGB', 'the vertex colour array is three floats per vertex, so the four-component attribute cannot be filled and three.js discards the alpha — which for the shimmer is a column of solid grey, at 48 triangles, in every frame',
+      'the shimmer is one mesh of HAZE_LAYERS bands, with a real per-vertex alpha',
+      'const colours = new Float32Array(quads * 4 * 4)', 'const colours = new Float32Array(quads * 4 * 3)'],
+    ['the puff colour buffer sized for RGB', 'the same for the dust, where it means ten puffs that never fade',
+      'the dust is a blended, fogged, billboarded decal and not an additive one',
+      'const colours = new Float32Array(PUFF_MAX * 4 * 4)', 'const colours = new Float32Array(PUFF_MAX * 4 * 3)'],
+    ['an instanced shimmer', 'a pool has no per-instance alpha in stock three.js, so the bands would not fade at all',
+      'the shimmer is one mesh of HAZE_LAYERS bands, with a real per-vertex alpha',
+      'this.haze = new THREE.Mesh(geometry, this.hazeMaterial)', 'this.haze = new THREE.InstancedMesh(geometry, this.hazeMaterial, 2)'],
+    ['a blended shimmer', "a blended pale grey over near-black asphalt is a grey stain with an edge, not light. The replacement spans the comment above it because `blending: THREE.AdditiveBlending,` appears THREE times in this file — the eyes and the portal rings are additive too — and a one-line from mutates whichever comes first, which is the eye, and then the shimmer claim passes on a broken tree",
+      'the shimmer is additive and unfogged, and the eye keeps its lift',
+      '      // Additive is the mechanism: a shimmer is light, and a blended pale grey over\n      // near-black asphalt is a grey stain with an edge.\n      blending: THREE.AdditiveBlending,',
+      '      // Additive is the mechanism: a shimmer is light, and a blended pale grey over\n      // near-black asphalt is a grey stain with an edge.\n      blending: THREE.NormalBlending,'],
+    ['a fogged shimmer', 'additive plus fog is a fog-coloured ADD, and hazeAmount is a better depth cue',
+      'the shimmer is additive and unfogged, and the eye keeps its lift',
+      '      fog: false,\n      vertexColors: true,\n    })\n    this._materials.push(this.hazeMaterial)', '      fog: true,\n      vertexColors: true,\n    })\n    this._materials.push(this.hazeMaterial)'],
+    ['a one-sided ring', 'the two far sides of the column vanish and the shimmer is only ever on one bearing',
+      'the shimmer is additive and unfogged, and the eye keeps its lift',
+      '      side: THREE.DoubleSide,', '      side: THREE.FrontSide,'],
+    ['the shimmer drawn after the eye', 'a bright additive column sorted after the eye washes the one mark the creature gate anchors on',
+      'the shimmer is additive and unfogged, and the eye keeps its lift',
+      'const HAZE_RENDER_ORDER = 0', 'const HAZE_RENDER_ORDER = 2'],
+    ['the eye put back in the depth sort', 'the pass-6 claim is about the eye and pass 11 must not undo it',
+      'the shimmer is additive and unfogged, and the eye keeps its lift',
+      'const EYE_RENDER_ORDER = 1', 'const EYE_RENDER_ORDER = 0'],
+    ['alpha across the middle of the band', 'the curtain is painted over the creature, and creature-stalking has 0.013 of headroom',
+      'a band is an annulus, and its inner edge is a fraction of the outer',
+      'const alpha = [0, 1, 1, 0]', 'const alpha = [1, 1, 1, 1]'],
+    ['the inner edge promoted to its own number', 'a second number for the hole is a second number to retune, and the gate reads the fraction',
+      'a band is an annulus, and its inner edge is a fraction of the outer',
+      'const inner = outer * HAZE_INNER_FRACTION', 'const inner = outer * 0.98'],
+    ['the shimmer parented to the creature', 'a shimmer that travels with the creature is a property of the creature, not air standing where it is',
+      'the shimmer and the dust are siblings of the figure, not children',
+      '    this.scene.add(this.haze)', '    this.root.add(this.haze)'],
+    ['additive dust', 'additive dust is a light source at floor level, which is exactly what the eye-finder looks for',
+      'the dust is a blended, fogged, billboarded decal and not an additive one',
+      '      color: PUFF_COLOUR,\n      transparent: true,\n      opacity: PUFF_OPACITY,\n      depthWrite: false,\n      blending: THREE.NormalBlending,',
+      '      color: PUFF_COLOUR,\n      transparent: true,\n      opacity: PUFF_OPACITY,\n      depthWrite: false,\n      blending: THREE.AdditiveBlending,'],
+    ['an unfogged puff', 'a bright unfogged billboard at 40 m is a floating light',
+      'the dust is a blended, fogged, billboarded decal and not an additive one',
+      '      fog: true,\n      vertexColors: true,\n    })\n    this._materials.push(this.puffMaterial)', '      fog: false,\n      vertexColors: true,\n    })\n    this._materials.push(this.puffMaterial)'],
+    ['puffs laid in the ground plane', 'a ground quad edge-on is a sliver, not a puff',
+      'the dust is a blended, fogged, billboarded decal and not an additive one',
+      'this._puffRight.set(1, 0, 0).applyQuaternion(camera.quaternion)\n      this._puffUp.set(0, 1, 0).applyQuaternion(camera.quaternion)',
+      'this._puffRight.set(1, 0, 0)\n      this._puffUp.set(0, 1, 0)'],
+    ['the puff size frozen at birth', 'a puff that does not grow is a decal that shrinks, and `puffRadius` is the growth curve',
+      'the dust is a blended, fogged, billboarded decal and not an additive one',
+      'const radius = puffRadius(time - puff.born) * (seeded / PUFF_RADIUS)', 'const radius = seeded'],
+    ['the lamp level computed in the world', 'a second definition of a moment the pure harness tests, which is the bug this pass had to avoid',
+      'the world asks the pure module for the lamp level, the pulse and the seeds',
+      'beast.lampDread(distance, this.animTime, { seed: beast.lampDreadSeed(this.seed, i) })', '1'],
+    ['the pulse off a clock of its own', 'two events that happen to be near each other are not a sync',
+      'the world asks the pure module for the lamp level, the pulse and the seeds',
+      'beast.lampPulse(pose.eyeFlare)', '1'],
+    ['the per-lamp seed dropped', 'one seed for four slots is one lamp with four meshes',
+      'the world asks the pure module for the lamp level, the pulse and the seeds',
+      'beast.lampDreadSeed(this.seed, i)', 'this.seed'],
+    ['the bounce left steady', 'sodium returning off a road that has gone dark',
+      'the world asks the pure module for the lamp level, the pulse and the seeds',
+      'bounce.intensity = LAMP_BOUNCE_INTENSITY * level * (near ? pulse : 1)', 'bounce.intensity = LAMP_BOUNCE_INTENSITY'],
+    ['the pulse ungated', 'every lamp on the street answers one sighting',
+      'the pulse is gated on the same radius the drodd is',
+      'const near = distance < beast.LAMP_DREAD_RADIUS', 'const near = true'],
+    ['the walk measured twice', 'the trail is laid from this frame and the dust from zero, and they drift a frame apart for the whole run',
+      "the trail and the dust share one measurement of the frame's move",
+      'const { dx, dz, walked, jumped } = this._measureWalk(drawn, dt)\n    this.creaturePuffs',
+      'const previous = this._creatureDrawn\n    this._creatureDrawn = { x: drawn.x, z: drawn.z }\n    const dx = previous ? drawn.x - previous.x : 0\n    const dz = previous ? drawn.z - previous.z : 0\n    const walked = Math.hypot(dx, dz)\n    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0\n    const jumped = walked > beast.SPEED_CEILING * step * 1.5\n    this.creaturePuffs'],
+    ['the jump test dropped', "a §8.3 re-emergence lays ninety metres of dust in one frame, and the cap would hide it rather than stop it",
+      "the trail and the dust share one measurement of the frame's move",
+      'walked > beast.SPEED_CEILING * step * 1.5', 'false'],
+    ['the cache keyed on the clock', "after a §10.4 wipe the first frame would be handed a measurement taken against the last run's position",
+      "the trail and the dust share one measurement of the frame's move",
+      'if (this._walkFor === drawn) return this._walk', 'if (false) return this._walk'],
+    ['a world-built puff field', 'a field the world builds for itself is a field the pure harness cannot test',
+      "the dust is the pure reducer's, folded into the drawn copy and out of the pupil",
+      'beast.puffStep(this.creaturePuffs, {', 'this.creaturePuffs.puffs.concat([])'],
+    ['the puffs stored in drawn coordinates', "a puff in drawn coordinates is 448 m from its own road after the first wrap",
+      "the dust is the pure reducer's, folded into the drawn copy and out of the pupil",
+      'puff.x + origin.x, z: puff.z + origin.z', 'puff.x, z: puff.z'],
+    ['the stand-off dropped for the dust', 'a bright puff standing in the pupil stand-off fills the hole the pass-3 gate measures',
+      "the dust is the pure reducer's, folded into the drawn copy and out of the pupil",
+      'clear: this.streetView.clearOfPortals(drawn.x, drawn.z),\n      seed: this.seed,\n    }).field', 'clear: true,\n      seed: this.seed,\n    }).field'],
+    ['the shimmer left on the scene', "a sibling of the figure is not removed with it, and §15's teardown is the check that would notice",
+      'the shimmer, the dust and their materials are released on dispose',
+      'this.scene?.remove(this.haze)', ''],
+    ['the dust left on the scene', 'a 40-vertex buffer and a material attached to a dead scene',
+      'the shimmer, the dust and their materials are released on dispose',
+      'this.scene?.remove(this.puffs)', ''],
+    ['the shimmer left hanging after a banish', 'a column of hot air standing where a creature used to be',
+      'the shimmer, the dust and their materials are released on dispose',
+      '      this.haze.visible = false\n      this.puffs.visible = false', ''],
+    ['an unseeded puff shape', 'D10 is the rule, and an unseeded puff is a frame that cannot be re-taken',
+      'nothing in the pass is unseeded, wall-clocked, or read from a second clock',
+      'const salt = hash32(seed, laid, PUFF_SALT)', 'const salt = Math.floor(Math.random() * 0xffffffff)'],
+    ['a wall-clock drodd', 'a level read from a clock that does not replay is a lamp nobody can re-photograph',
+      'nothing in the pass is unseeded, wall-clocked, or read from a second clock',
+      'flickerAt(seed, Math.floor(t * LAMP_DREAD_HZ)', 'flickerAt(seed, Math.floor(performance.now()),'],
+    ['the per-lamp seed made up at the call site', 'a seed typed at the call site is a seed two people will change differently (pass 7)',
+      'nothing in the pass is unseeded, wall-clocked, or read from a second clock',
+      '  return hash32(\n    Number.isFinite(seed) ? seed : 0,', '  return (\n    Number.isFinite(seed) ? seed : 0,'],
+  ]
+  for (const [label, why, claimName, from, to] of mutations) {
+    // A mutation has to exist in AT LEAST ONE of the three sources, and the "no claim
+    // broke" assertion below is what catches the other failure mode: a fragment that
+    // only appears in a COMMENT, which `replace` rewrites and `stripProse` then ignores,
+    // leaving every claim green.
+    const sources = [[CREATURE_VIEW_SOURCE, 'creatureView.js'], [WORLD_SOURCE, 'world.js'], [CREATURE_SOURCE, 'creature.js']]
+    if (!sources.some(([source]) => source.includes(from))) {
+      throw new Error(`the mutation "${label}" matches none of the three sources, so it is not testing anything`)
+    }
+    const broken = creaturePresenceClaims(
+      CREATURE_VIEW_SOURCE.replace(from, to),
+      WORLD_SOURCE.replace(from, to),
+      CREATURE_SOURCE.replace(from, to),
+    ).filter((entry) => !entry.ok)
+    assert.ok(
+      broken.some((entry) => entry.name === claimName),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${claimName}" — ${why}`,
+    )
+  }
+  assert.ok(mutations.length >= 20, `only ${mutations.length} mutations, which is fewer than this pass needs`)
+  console.log(`\n  pass-11 mutations: ${mutations.length} mutations, every one caught`)
 })
 
 // ---------------------------------------------------------------------------

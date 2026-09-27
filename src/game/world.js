@@ -533,6 +533,43 @@ export class LongQuietGame {
     this.creatureTrail = beast.createDripTrail()
     this._creatureDrawn = null
     this._trailDrawn = []
+    // PASS 11. `_measureWalk`'s one-frame cache. `_walkFor` is the identity of the
+    // `drawn` object the measurement was taken against and `_walk` is the result; both
+    // are null until the first frame, and `_measureWalk` recomputes while `_walkFor` is
+    // null because no `drawn` object is ever null.
+    this._walkFor = null
+    this._walk = null
+    /**
+     * ITERATION 2, PASS 11 — THE DUST FIELD, and it is `puffStep`'s for the reason the
+     * trail is `dripStep`'s: the world owns the clock the ages come from and the
+     * reducer is pure, so the whole field is reproducible from the frames that made it.
+     *
+     * It is a SEPARATE field from the trail rather than another list on it, and the
+     * reason is that they are keyed to different strides (`FOOTFALL_STRIDE_METRES`
+     * 0.45 against `DRIP_STRIDE_METRES` 0.9). One field keyed to one stride cannot
+     * carry two cadences, and a version that laid both from one accumulator would have
+     * to pick which one wins.
+     */
+    this.creaturePuffs = beast.createPuffField()
+    this._puffsDrawn = []
+    /**
+     * PASS 11 — WHAT THE CREATURE DID TO THE LAMPS, published for the same reason
+     * `dressingLog`, `waterLog` and `creatureTrail.suppressed` are: the claim is about
+     * WHICH lamp and HOW MUCH, and neither is recoverable from the lights' positions
+     * afterwards, because a strobing lamp and a steady one are the same lamp.
+     *
+     * `lamp` is the light-pool SLOT that was drodded (-1 when none was), `distance` is
+     * metres from the creature to it, `level` is the multiplier `lampDread` returned
+     * and `pulse` is the flare envelope the lamp was pulsed with. A world check reads
+     * all four, and the built `THREE.PointLight.intensity` it can also read is the
+     * product of the last two times the base.
+     *
+     * `distance` is finite on EVERY frame, and when nothing is drodded it is the distance
+     * to the nearest lamp that was considered. It has to be: `lampDread` reads a
+     * non-finite distance as zero — "directly under the lamp" — so a published `Infinity`
+     * here is a value a reader cannot feed back without inverting its meaning.
+     */
+    this.lampDread = { lamp: -1, level: 1, pulse: 1, distance: Infinity }
     // --- runtime ------------------------------------------------------------
     this.phase = this.store.get().phase ?? PHASE.START
     this.resetElapsed = 0
@@ -871,6 +908,93 @@ export class LongQuietGame {
       bounce.position.set(lamp.x, LAMP_BOUNCE_HEIGHT, lamp.z)
       bounce.intensity = LAMP_BOUNCE_INTENSITY
     }
+    // PASS 11. The aimed list is KEPT rather than discarded, and it is the whole of
+    // the lamp-dread mechanism's ability to know which lamp is which: the four lights
+    // are re-aimed only when the set of nearest lamps changes, so a version that read
+    // the creature's distance to a lamp from the light's own `position` would need the
+    // lights to exist before it could decide anything about them, and it would have to
+    // re-read four `Vector3`s a frame to do it. This is one array of plain records,
+    // written when the aim changes and read by `_writeLampDread` every frame.
+    this._lampAimed = lamps
+  }
+
+  /**
+   * `_writeLampDread` — what the creature does to the sodium family, every frame.
+   *
+   * ITERATION 2, PASS 11, and this is the only method in the file that writes
+   * `light.intensity` outside `_updateLampPool`'s aiming pass. It runs AFTER it, so it
+   * multiplies a base the aim has already established, and it runs every frame where
+   * the aim does not — which is the point: the aim is a position and the dread is a
+   * level, and a level that only changed when the position did would strobe four times
+   * a block and be steady in between.
+   *
+   * FOUR THINGS IT HAS TO GET RIGHT:
+   *
+   *  - **THE MULTIPLIER IS `lampDread`'s, not arithmetic here.** `creature.js` owns how
+   *    near is near and how a tick is hashed; a second copy of either in this file is
+   *    two definitions of one moment, which is the bug the pass-10 review found in
+   *    `worldOf` and the bug every "clever" world-level effect eventually grows.
+   *  - **THE SEED IS PER SLOT, from `lampDreadSeed`.** The four slots re-aim as the
+   *    player walks, so the seed is keyed to the slot and not to the lamp's position —
+   *    a lamp that strobed one way on the way up the street and another on the way back
+   *    is a lamp with two personalities. `lampDreadSeed(seed, i)` in the pure module is
+   *    where that decision is made, and this file only asks.
+   *  - **THE BOUNCE IS DIMMED WITH THE KEY.** `LAMP_BOUNCE_LIGHTS` takes the *nearest*
+   *    entries of the same list, so a strobing key with a steady bounce under it is a
+   *    light source that is being eaten from above, and the bounce is the sodium
+   *    returning off the road — if the road goes dark the bounce has nothing to return.
+   *  - **THE PULSE IS THE FLARE'S OWN ENVELOPE**, `lampPulse(pose.eyeFlare)`, applied
+   *    ONLY to a lamp the creature is within `LAMP_DREAD_RADIUS` of. A lamp across the
+   *    street swelling on the creature's behalf would be a lie about the light's
+   *    source, and the brief's word was "nearby".
+   *
+   * The result is published on `this.lampDread` so a check can ask which lamp, at what
+   * distance, by how much — none of which is recoverable from the lights afterwards.
+   *
+   * @param {{x:number,z:number}|null} drawn the creature's drawn position, or `null`
+   *   when there is no figure to have an effect (which is the §9.3/§10.4 case)
+   * @param {object|null} [pose] the frame's pose, for `eyeFlare`
+   */
+  _writeLampDread(drawn, pose = null) {
+    const pulse = pose ? beast.lampPulse(pose.eyeFlare) : 1
+    const lamps = this._lampAimed ?? []
+    let drodded = -1
+    let lowest = 1
+    let nearest = Infinity
+    let closest = Infinity
+    for (let i = 0; i < this.lampLights.length; i += 1) {
+      const light = this.lampLights[i]
+      const lamp = lamps[i]
+      if (!light || !light.visible || !lamp) continue
+      const distance = drawn ? Math.hypot(drawn.x - lamp.x, drawn.z - lamp.z) : Infinity
+      // THE NEAREST CONSIDERED LAMP is tracked separately from the nearest DRODDED one,
+      // and it is tracked at all. The first version of this published `Infinity` for any
+      // frame on which nothing was drodded, which reads correctly against the field's
+      // own name and is a trap for anything that reads it back: `nearness` treats a
+      // non-finite distance as ZERO — "standing directly under the lamp" — so a world
+      // check that fed the published distance into `lampDread` to verify the wiring got a
+      // full-strength strobe for a lamp with nothing near it, and correctly reported a
+      // fault that was in the record rather than in the light. A published measurement has
+      // to be a measurement.
+      if (distance < closest) closest = distance
+      // The level and the pulse are two terms on one channel and they compose, so the
+      // order they are multiplied in is not a decision — but the NEAR test is, and it
+      // is the same radius `lampDread` uses so "the lamp this pulse reached" and "the
+      // lamp this drodd reached" are the same set of lamps.
+      const near = distance < beast.LAMP_DREAD_RADIUS
+      const level = drawn
+        ? beast.lampDread(distance, this.animTime, { seed: beast.lampDreadSeed(this.seed, i) })
+        : 1
+      light.intensity = LAMP_LIGHT_INTENSITY * level * (near ? pulse : 1)
+      const bounce = this.bounceLights[i]
+      if (bounce && bounce.visible) bounce.intensity = LAMP_BOUNCE_INTENSITY * level * (near ? pulse : 1)
+      if (level < lowest) {
+        lowest = level
+        drodded = i
+        nearest = distance
+      }
+    }
+    this.lampDread = { lamp: drodded, level: lowest, pulse, distance: nearest === Infinity ? closest : nearest }
   }
 
   // -------------------------------------------------------------------------
@@ -1633,6 +1757,13 @@ export class LongQuietGame {
     const phase = this.store.get().phase ?? this.phase
     if (phase === PHASE.RESET || phase === PHASE.WON) {
       view.present(beast.creaturePose(null))
+      // PASS 11. There is no figure in this phase, so there is nothing for the sodium
+      // family to be afraid of, and the lamps go back to their base levels. Without
+      // this line the creature's last drodd would outlive it: `_updateLampPool` only
+      // re-aims when the nearest four lamps change, so a lamp drodded on the frame the
+      // player was caught would keep that level for the whole of §9.3's black and §10.4's
+      // card, and both are the moments where the world is supposed to be quiet.
+      this._writeLampDread(null)
       return
     }
 
@@ -1677,8 +1808,58 @@ export class LongQuietGame {
       yaw: this._creatureFacing,
       camera: this.camera,
       trail: this._advanceTrail(drawn, pose.present, dt),
+      // PASS 11. The dust is advanced by its own reducer on the same frame and with the
+      // same `walked` measurement, and the two are computed BEFORE `present` so the view
+      // is handed one consistent set of lists rather than three buffers written in an
+      // order that depends on which method ran first.
+      puffs: this._advancePuffs(drawn, pose.present, dt),
       time: this.animTime,
     })
+    // ...and the lamps, last, because the pulse is read off this frame's `eyeFlare` and
+    // a lamp pulsed on the PREVIOUS frame's flare is a lamp that is a frame behind the
+    // eye it is supposed to be echoing.
+    this._writeLampDread(drawn, pose)
+  }
+
+  /**
+   * `_measureWalk` — how far the creature moved THIS frame, in the drawn frame, once.
+   *
+   * ITERATION 2, PASS 11, and this method exists because two reducers need the same
+   * number and the first version of this pass measured it twice. Measuring it twice is
+   * not a duplication, it is a LOSS AT THE SEAM: the first call advances the
+   * previous-position record and the second call reads the position it has just
+   * written, so the trail would be laid from this frame's move and the dust from zero,
+   * and the two would drift apart by one frame's step for the whole run.
+   *
+   * The cache is keyed on the IDENTITY of the `drawn` object, and the key is worth
+   * stating because the obvious alternatives are wrong: `worldOf` returns one fresh
+   * object per frame and `_updateCreatureView` passes that same one to every consumer,
+   * so identity is exactly "this frame". A key on `animTime` breaks on a frame where
+   * the world is stepped twice in one tick, and a key on the COORDINATES recomputes
+   * the delta against the record it has just advanced and hands back zero.
+   *
+   * The four things in the result are the trail's own, and none of them is new: the
+   * delta is in the DRAWN frame because `creaturePosition` is canonical and the
+   * player's is not (§3.3's seam, and a canonical delta can be 448 m), and `jumped` is
+   * the derived placement test — a frame claiming more than one and a half frames'
+   * worth of `SPEED_CEILING` is §8.3's re-emergence rather than a walk.
+   *
+   * @param {{x: number, z: number}} drawn the creature's drawn position this frame
+   * @param {number} dt this frame's seconds
+   * @returns {{dx: number, dz: number, walked: number, jumped: boolean}}
+   */
+  _measureWalk(drawn, dt) {
+    if (this._walkFor === drawn) return this._walk
+    const previous = this._creatureDrawn
+    this._creatureDrawn = { x: drawn.x, z: drawn.z }
+    const dx = previous ? drawn.x - previous.x : 0
+    const dz = previous ? drawn.z - previous.z : 0
+    const walked = Math.hypot(dx, dz)
+    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0
+    const walk = { dx, dz, walked, jumped: walked > beast.SPEED_CEILING * step * 1.5 }
+    this._walkFor = drawn
+    this._walk = walk
+    return walk
   }
 
   /**
@@ -1723,13 +1904,10 @@ export class LongQuietGame {
    * @returns {object[]} the marks, folded into the copy being drawn
    */
   _advanceTrail(drawn, present, dt) {
-    const previous = this._creatureDrawn
-    this._creatureDrawn = { x: drawn.x, z: drawn.z }
-    const dx = previous ? drawn.x - previous.x : 0
-    const dz = previous ? drawn.z - previous.z : 0
-    const walked = Math.hypot(dx, dz)
-    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0
-    const jumped = walked > beast.SPEED_CEILING * step * 1.5
+    // PASS 11. `_measureWalk` used to be these six lines, in this method. It is now
+    // shared with `_advancePuffs` because both reducers are keyed to the same metres,
+    // and two measurements of one move are one measurement too many.
+    const { dx, dz, walked, jumped } = this._measureWalk(drawn, dt)
     this.creatureTrail = beast.dripStep(this.creatureTrail, {
       walked: jumped ? 0 : walked,
       dx,
@@ -1746,6 +1924,64 @@ export class LongQuietGame {
     out.length = 0
     for (const mark of this.creatureTrail.marks) {
       out.push({ x: mark.x + origin.x, z: mark.z + origin.z, born: mark.born, radius: mark.radius, spin: mark.spin })
+    }
+    return out
+  }
+
+  /**
+   * `_advancePuffs` — one frame of footfall dust, folded into the drawn copy.
+   *
+   * ITERATION 2, PASS 11, and it is `_advanceTrail` with the same five decisions and
+   * one difference. The five: the delta is taken in the DRAWN frame; the marks are
+   * stored CANONICALLY and folded on the way out; §16.5.5's portal stand-off is asked
+   * of `streetView`; a jump lays nothing; and the list handed over is the same array
+   * every frame. None of them is repeated here in prose because they are the SAME
+   * decisions and a second copy of each is a second place for them to drift.
+   *
+   * The difference is the WALKED MEASUREMENT, and it is a shared one rather than a
+   * second computation: this method takes the same `walked` the trail did on this
+   * frame, and the frame-rate independence that both depend on is then a property of
+   * ONE number. Computing it twice would give two numbers that agree to within a
+   * float and disagree the moment a placement landed on one of them.
+   *
+   * The `jumped` test is the trail's `SPEED_CEILING * dt * 1.5` argument unchanged, and
+   * it is load-bearing for dust in a way it is not for the trail: §8.3's re-emergence
+   * moves the creature ninety metres in one frame, and ninety metres of footfall dust
+   * would be two hundred puffs along a line through the player's feet. The cap would
+   * hold the BUFFER at ten and the field would still be a visible stripe of dirt
+   * pointing from the spawn to wherever the creature actually is.
+   *
+   * @param {{x: number, z: number}} drawn the creature's drawn position this frame
+   * @param {boolean} present is the figure on screen
+   * @param {number} dt this frame's seconds, for the jump test
+   * @returns {object[]} the puffs, folded into the copy being drawn
+   */
+  _advancePuffs(drawn, present, dt) {
+    // The SAME four numbers the trail just measured, and memoised on the frame's
+    // `drawn` object rather than recomputed. Calling it a second time is free and
+    // returns the identical object, which is what makes the order of these two calls in
+    // `view.present` irrelevant.
+    const { dx, dz, walked, jumped } = this._measureWalk(drawn, dt)
+    this.creaturePuffs = beast.puffStep(this.creaturePuffs, {
+      walked: jumped ? 0 : walked,
+      dx,
+      dz,
+      x: this.creaturePosition.x,
+      z: this.creaturePosition.z,
+      time: this.animTime,
+      present: present === true,
+      // PASS 11. The stand-off matters MORE here: a puff is BRIGHT, the pupil the pass-3
+      // gate measures is a dark hole, and a puff of lit dust standing in it would fill
+      // the hole the gate is measuring. The trail needs the rule for the same reason
+      // and gets it from the same call.
+      clear: this.streetView.clearOfPortals(drawn.x, drawn.z),
+      seed: this.seed,
+    }).field
+    const origin = this.streetView.origin
+    const out = this._puffsDrawn
+    out.length = 0
+    for (const puff of this.creaturePuffs.puffs) {
+      out.push({ x: puff.x + origin.x, z: puff.z + origin.z, born: puff.born, radius: puff.radius, spin: puff.spin })
     }
     return out
   }
@@ -2289,7 +2525,17 @@ export class LongQuietGame {
     this.spotElapsed = null
     this.creatureTrail = beast.createDripTrail()
     this._creatureDrawn = null
-    this.creatureView?.present(beast.creaturePose(null), { trail: [], time: this.animTime })
+    // PASS 11. The dust field and the lamp dread are run state for the same reason the
+    // trail is, and the cache is dropped with `_creatureDrawn` for the same reason: a
+    // stale `_walkFor` would hand the first frame after a wipe a measurement taken
+    // against the last run's position, which is a distance between two worlds. The
+    // lamps are released by the same call that clears the spot clock, because the pulse
+    // reads it.
+    this.creaturePuffs = beast.createPuffField()
+    this._walkFor = null
+    this._walk = null
+    this._writeLampDread(null)
+    this.creatureView?.present(beast.creaturePose(null), { trail: [], puffs: [], time: this.animTime })
     this._prompt = null
     // §14.3: the same two tells, wiped with everything else. The finale's level
     // goes back to zero because §10.4's wipe is the one place a full reset is
