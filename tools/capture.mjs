@@ -474,14 +474,47 @@ function measureProbe(id, shot, snapshot, baselineShot, baseline, entry, { floor
  * Returns the whole table rather than throwing on the first failure: a retune
  * wants every row's numbers, not the first thing that crossed a line, and a
  * per-row `fails` list is the sentence a human reads to decide what to change.
+ *
+ * REVIEW 15. WHICH SAMPLES A ROW IS GATED OVER
+ * -------------------------------------------------------
+ * `measureProbe` writes `entry.contrast` only once the frame has got that far, and
+ * a frame that resolved no creature — or resolved one at the wrong distance, or
+ * failed the anchor — never gets there. A row is therefore gated over the samples
+ * that WERE measured, and the ones that were not are counted and named.
+ *
+ * BEFORE this review: `samples.reduce((a, b) => a.contrast.eye ...)` over every
+ * sample of the row, which cannot be reached at all in the world this pass ships —
+ * the shimmer floor fails all twelve frames (that is the documented debt), the
+ * row table was gated on `report.failed === 0`, and so the eye floor, the one ROW
+ * claim in this file, was dead code: an instrument whose headline number was never
+ * computed. It is also not a hypothetical hazard: the real report's `telegraph`
+ * samples 2 and 3 resolved no creature at all, so calling this with the whole row
+ * dies on `a.contrast.eye` with a TypeError, which is the same class of failure
+ * this pass fixed in `verify.mjs`.
+ *
+ * A missing sample is NOT a failure of the row, and it is not a skip either. Two of
+ * the three telegraph samples finding no eye is §6.1's beat doing exactly what
+ * §6.1's beat is for, so demanding three resolvable eyes would be asking the design
+ * to stop flickering; and a row whose loudest sample is one frame called three is
+ * still a row whose loudest sample is what the floor is about. So the count is in
+ * the table, the peak is taken over what exists, and a row with NO measured sample
+ * at all is the one thing that throws — a run in which nothing was measured has no
+ * row claim to make.
  */
 function probeGates(rows) {
   const summary = []
   for (const row of CREATURE_PROBE_ROWS) {
-    const samples = rows.filter((entry) => entry.row === row.state)
-    if (samples.length !== row.waits.length) {
+    const all = rows.filter((entry) => entry.row === row.state)
+    if (all.length !== row.waits.length) {
       throw new Error(
-        `the ${row.state} row has ${samples.length} of ${row.waits.length} samples — re-run the whole probe before reading it`,
+        `the ${row.state} row has ${all.length} of ${row.waits.length} samples — re-run the whole probe before reading it`,
+      )
+    }
+    const samples = all.filter((entry) => entry.contrast)
+    if (samples.length === 0) {
+      throw new Error(
+        `the ${row.state} row has no sample that got as far as a contrast measurement, so its eye floor ` +
+          'has nothing to be measured against',
       )
     }
     const peak = samples.reduce((a, b) => (a.contrast.eye >= b.contrast.eye ? a : b))
@@ -495,13 +528,17 @@ function probeGates(rows) {
     summary.push({
       state: row.state,
       samples: samples.length,
+      // the samples of this row that failed BEFORE a contrast was read, kept so a
+      // reader of the table is told which rows it is a statement about two frames
+      // rather than three. `telegraph` is 1 of 3 in the report this pass shipped.
+      unmeasured: all.length - samples.length,
       flickers: PROBE_FLICKER_ROWS.includes(row.state),
       eye: { peak: peak.contrast.eye, quietest: quietest.contrast.eye, floor, id: peak.id },
       ratio: { worst: worst.contrast.ratio, id: worst.id, max: SILHOUETTE_MAX },
       observedSpread: Number((quietest.contrast.eye / peak.contrast.eye).toFixed(3)),
       shimmer: {
-        min: Number(Math.min(...samples.map((entry) => entry.shimmer.lift)).toFixed(3)),
-        max: Number(Math.max(...samples.map((entry) => entry.shimmer.lift)).toFixed(3)),
+        min: Number(Math.min(...samples.map((entry) => entry.shimmer?.lift ?? Number.NaN)).toFixed(3)),
+        max: Number(Math.max(...samples.map((entry) => entry.shimmer?.lift ?? Number.NaN)).toFixed(3)),
         floor: PROBE_SHIMMER_MIN,
       },
       fails,
@@ -586,12 +623,21 @@ async function main() {
       // meaning anything on anyone else's disk. The absolute path is still
       // needed to write the bytes, and that is `target`.
       const target = path.join(outDir, `${id}.png`)
+      // REVIEW 15. The probe's row is recorded from the ID, here, rather than inside
+      // `measureProbe`. A frame can fail BEFORE `measureProbe` is reached — the luma
+      // floor is the ordinary way, and this pass's own second run had two of twelve
+      // frames fail it — and a frame that fails there used to reach the row table
+      // without a `row` at all, so one dark frame silently removed a row's sample from
+      // the count the table is gated over. The row a frame belongs to is a property of
+      // its NAME; it should not depend on how far the frame got.
+      const probeRow = options.probe ? probeRowOf(id) : null
       const entry = {
         id,
         label: view.label,
         viewport: { ...view.viewport },
         file: path.posix.join(options.out.split(path.sep).join('/'), `${id}.png`),
         minLit: floor,
+        ...(probeRow ? { row: probeRow.state, sample: Number(/-(\d+)$/.exec(id)?.[1] ?? 0) } : {}),
       }
       try {
         await page.goto(`${origin}capture.html`, { waitUntil: 'domcontentloaded', timeout: VIEW_TIMEOUT_MS })
@@ -733,26 +779,52 @@ async function main() {
   // already exited non-zero with the failed frame named, and the row gates here
   // would only restate that in a less useful sentence. What this block owns is
   // the opposite case — every frame present, and the SET still not being true.
-  if (options.probe && report.failed === 0) {
+  //
+  // REVIEW 15. THE CONDITION IS "EVERY SAMPLE IS IN THE RUN", NOT
+  // "NOTHING FAILED", and the difference is the whole reason the eye floor is a
+  // gate rather than dead code.
+  //
+  // BEFORE: `report.failed === 0`. The world this pass ships fails its shimmer floor
+  // on all twelve frames — the documented, unanswered debt — so that condition was
+  // false in every run a person can actually make, and the row table below was
+  // never produced: no `probe` key in the report, no per-row eye verdict, and the
+  // eye floor this pass claims to enforce enforced nothing. A gate behind a
+  // condition no passing run can satisfy is a comment.
+  //
+  // AFTER: the table is built whenever the run covered the whole probe, over the
+  // samples that were MEASURED (`probeGates` names the rest), so a frame that went
+  // on to fail a later claim still contributes the eye reading it produced. The
+  // shimmer failures keep their own exit code — nothing here can turn a red run
+  // green — and a `--only` run says plainly that it is not a whole probe instead of
+  // throwing a row-count sentence at someone iterating on one composition.
+  if (options.probe) {
     const rows = report.captures.filter((entry) => entry.row)
-    try {
-      report.probe = probeGates(rows)
-    } catch (error) {
-      exitCode = 1
-      report.probeError = String(error.message ?? error)
-      console.log(`  FAIL  ${report.probeError}`)
-    }
-    for (const row of report.probe ?? []) {
-      const verdict = row.fails.length === 0 ? 'ok  ' : 'FAIL'
-      if (row.fails.length > 0) exitCode = 1
+    if (report.captures.length === CREATURE_PROBE_IDS.length) {
+      try {
+        report.probe = probeGates(rows)
+      } catch (error) {
+        exitCode = 1
+        report.probeError = String(error.message ?? error)
+        console.log(`  FAIL  ${report.probeError}`)
+      }
+      for (const row of report.probe ?? []) {
+        const verdict = row.fails.length === 0 ? 'ok  ' : 'FAIL'
+        if (row.fails.length > 0) exitCode = 1
+        console.log(
+          `  ${verdict}  ${row.state.padEnd(9)} eye ${row.eye.peak}/${row.eye.floor} peak` +
+            // the spread is printed, not judged: see `probeGates`. The pure harness
+            // gates the beat over a whole period; this is three frames' luck.
+            `${row.flickers ? `, observed spread ${row.observedSpread} (floor ${PROBE_FLICKER_SPREAD}, gated in verify.mjs)` : ''}  ` +
+            `worst ratio ${row.ratio.worst}/${row.ratio.max} (${row.ratio.id})  shimmer +${row.shimmer.min}..+${row.shimmer.max}` +
+            `${row.unmeasured > 0 ? `  [${row.samples} of ${row.samples + row.unmeasured} samples measured]` : ''}`,
+        )
+        for (const sentence of row.fails) console.log(`          ${sentence}`)
+      }
+    } else if (rows.length > 0) {
       console.log(
-        `  ${verdict}  ${row.state.padEnd(9)} eye ${row.eye.peak}/${row.eye.floor} peak` +
-          // the spread is printed, not judged: see `probeGates`. The pure harness
-          // gates the beat over a whole period; this is three frames' luck.
-          `${row.flickers ? `, observed spread ${row.observedSpread} (floor ${PROBE_FLICKER_SPREAD}, gated in verify.mjs)` : ''}  ` +
-          `worst ratio ${row.ratio.worst}/${row.ratio.max} (${row.ratio.id})  shimmer +${row.shimmer.min}..+${row.shimmer.max}`,
+        `capture: probe row gates skipped — ${report.captures.length} of ${CREATURE_PROBE_IDS.length} views in this ` +
+          'run, and a row claim is about every sample of every row',
       )
-      for (const sentence of row.fails) console.log(`          ${sentence}`)
     }
   }
 

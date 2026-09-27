@@ -1055,13 +1055,21 @@ async function run(id) {
   // about a second of wall clock at this renderer's rate, so a loop that is still
   // running lets the world take a clamped 0.05 s frame — or two — between the frame
   // that was drawn and the picture that was read. §16.5's `banish` is the case in
-  // point: its eye is 21 luma above the finder's floor of 150, its flicker is 7.7 Hz
-  // with a 0.13 s period, and 0.05 s of drift is 38% of a cycle of the very beat that
-  // sets that eye. The committed `banish.png` measured 171 and the next run of the
-  // same steps found nothing at all — not a change in the world, a change in when the
-  // shutter was pressed. A gallery whose creature frames are a coin flip is not a
-  // gallery, and §6.5's contract is that a set of steps is worth the same picture
-  // twice.
+  // point, and the pass named the wrong subject in it: this comment used to say its
+  // "eye is 21 luma above the finder's floor of 150" and that "the committed
+  // `banish.png` measured 171 and the next run of the same steps found nothing at
+  // all". There is no eye in that frame. REVIEW 15 measured it: §16.5.9 stages the
+  // banish at 1.9 m, so the figure's head projects to y = -446 on a 720 px frame and
+  // its face is not in the picture. The 171 was a lit WINDOW behind the creature —
+  // a 13 x 10 block at 185-188 with the creature taken out of the way — of which the
+  // creature's body then covered all but two columns, and a 0.05 s difference in
+  // where the body stands changes what those two columns read.
+  //
+  // The hold is right and the reason is stronger than the one this comment gave: what
+  // it fixed was not a creature's eye flickering but a gallery frame whose answer to
+  // "is there a creature in this picture" depended on when the shutter was pressed.
+  // A gallery whose creature frames are a coin flip is not a gallery, and §6.5's
+  // contract is that a set of steps is worth the same picture twice.
   holdLoop()
   shutterTime = game.animTime
   const state = store.get()

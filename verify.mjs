@@ -9054,12 +9054,27 @@ function captureReport() {
  * window near the threshold will cross it on some run and fail the gate for a
  * reason that has nothing to do with the pass. It will not, and the reason is the
  * same argument `png-luma.mjs` has been making since pass 2: brightness is not
- * what rejects scenery. In the current gallery the window's lit edge is a 2 x 9
- * sliver at 153-155 — three luma over `EYE_MIN`, and rejected at 18 px against a
- * 24 px area floor and at an aspect of 4.5 against a ceiling of 2. Brighten it as
- * far as it will go and it is still a sliver: the shape tests, not the threshold,
- * are what hold this line, which is the one thing the stale comment above them
- * kept getting wrong.
+ * what rejects scenery. In the committed gallery the window's lit edge is a 2 x 9
+ * sliver — 12 lit pixels at a mean of 152.3 and a peak of 153.1, inside an 18 px
+ * bounding box, so a 67% fill — and it is rejected three times over: 12 px
+ * against the 24 px area floor, 67% against the 70% fill, and an aspect of 4.5
+ * against a ceiling of 2. (REVIEW 15: the pass's own wording of this sentence
+ * quoted "a 2 x 9 sliver at 153-155 — three luma over `EYE_MIN`, and rejected at
+ * 18 px against a 24 px area floor". 18 is the bounding box, not the lit count
+ * the area floor is tested against, and the measured mean is 152.3, not 153.)
+ * Brighten it as far as it will go and it is still a sliver: the shape tests, not
+ * the threshold, are what hold this line, which is the one thing the stale comment
+ * above them kept getting wrong.
+ *
+ * AND IT REALLY IS A WINDOW, WHICH THE PASS ONLY ASSUMED. Staged with the same
+ * steps and `stagger`'s presence at 0 — the figure taken out of the picture and
+ * nothing else changed — the region behind that sliver reads 185-188 across
+ * x630-642 and y196-205: a 13 x 10 lit rectangle. The creature's own body covers
+ * all but two columns of it, which is also why the committed frame and the
+ * pre-pass-15 one disagree about whether there is an eye in the picture: the
+ * shutter moved the body, the body moved off the window, and the finder answered
+ * a different question. `capture/main.jsx`'s own comment on the held loop tells
+ * the same story from the other side and used to call the blob the creature's.
  *
  * WHY IT WAS NEVER CAUGHT
  * ////////////////////////
@@ -9073,13 +9088,19 @@ function captureReport() {
  *
  * WHAT THIS DOES
  * //////////////
- * The list of frames that owe an eye is DERIVED from the report rather than
- * written down, so a frame whose creature's head is out of the picture is
- * excluded by a measurement and a frame whose head has drifted out of it is
- * noticed. And the frames that are excluded are not simply dropped: the same
- * claim `street.png` gets above — a frame with no creature in it must resolve
- * nothing — is applied to them, which is what stops the next lit window from
- * being reported as a creature.
+ * The list of frames that owe an eye is still the three §16.5 views that stage a
+ * creature — REVIEW 15 corrected the pass's claim that it had become derived —
+ * and on each of them the HEAD test is a measurement read out of the report, so a
+ * frame whose creature's head is out of the picture is excluded by a measurement
+ * and a frame whose head has drifted out of it is noticed. The frames that are
+ * excluded are not simply dropped: the same claim `street.png` gets above — a
+ * frame with no creature in it must resolve nothing — is applied to them, which is
+ * what stops the next lit window from being reported as a creature.
+ *
+ * The list is a list, so it can leave something out, and two frames do: the
+ * pass-15 coverage assertion further down names them and fails if the set grows.
+ * Closing them properly is a re-frame and a re-shoot, which is a capture pass's
+ * work and not this one's.
  *
  * @param {object} parsed the capture report
  * @param {string} id a §16.5 view id
@@ -9262,6 +9283,54 @@ test('the eye-finder\'s own numbers hold on the shipped gallery, and brightness 
     `only ${readings.length} of ${CREATURE_FRAMES.length} gallery frames have a creature's head inside the picture ` +
       `(${excused.map((r) => `${r.id} by ${r.over.toFixed(0)} px`).join(', ') || 'none'}) — the eye claims here would be ` +
       'measured on almost nothing, which calls for a reframe rather than a relaxation',
+  )
+  // 1c. THE COVERAGE THE LIST DOES NOT HAVE — REVIEW 15.
+  //
+  // `CREATURE_FRAMES` is a list of three, and a list can leave something out. The
+  // capture report says which of the fourteen stage a creature at all, so this
+  // reads the frames that stage a figure and asks them the same question: if such
+  // a frame resolves an eye, is that eye within `PROBE_ANCHOR_MAX_PX` of the head
+  // the harness staged? Two of them say no, and both are real findings rather than
+  // harness noise:
+  //
+  //   `hammer-located` — 72 px at a mean of 192, 57 px from a telegraph staged at
+  //     Act I's range, with a "body" under it at a ratio of 7.1. It is the lit
+  //     12 x 6 window `PROBE_ANCHOR_MAX_PX`'s own comment in
+  //     `src/game/capture.js` cites as the reason that tolerance exists: the
+  //     motivating example, in the one frame nobody pointed the mechanism at.
+  //   `finale-headlights` — 64 px at a mean of 164 and a ratio of 1.10, 1829 px
+  //     from a head staged 1653 px outside the frame. The finale's own glare.
+  //
+  // Neither can be closed here: both want a re-frame, and the gallery is a
+  // capture pass's to re-shoot. What a review can do is stop them being
+  // INVISIBLE, which is what this is — a named set, asserted to be exactly the
+  // set, so a third frame joining it fails the gate, a re-frame that fixes one
+  // fails the gate and gets its line deleted, and nothing about the two is left
+  // only in a commit message. It is the same shape as the pinned `EYE_MIN` above:
+  // a value that is the contract, held so that a retune has to say so.
+  const KNOWN_OFFENDERS = ['finale-headlights', 'hammer-located']
+  const stagedRows = capture.CREATURE_PROBE_ROWS.map((row) => row.state)
+  const offenders = []
+  for (const row of parsed.captures) {
+    if (!stagedRows.includes(row.state?.creature) || !row.state?.where?.head) continue
+    const measured = creatureContrast(readFileSync(new URL(`./${capture.CAPTURE_DIR}/${row.id}.png`, import.meta.url)))
+    if (!measured.found) continue
+    const off = eyeAnchor(measured.eye, row.state.where.head).off
+    if (off > capture.PROBE_ANCHOR_MAX_PX) {
+      offenders.push({
+        id: row.id,
+        detail: `${row.id} resolves ${measured.eye.n} px at ${measured.eye.mean.toFixed(1)} luma, ${off.toFixed(0)} px ` +
+          `from a head staged at (${row.state.where.head.x.toFixed(0)}, ${row.state.where.head.y.toFixed(0)}), with a body ` +
+          `ratio of ${measured.ratio.toFixed(2)}`,
+      })
+    }
+  }
+  assert.deepEqual(
+    offenders.map((entry) => entry.id).sort(),
+    [...KNOWN_OFFENDERS].sort(),
+    `the frames that stage a creature and resolve an eye that is not near that creature's own head are now ` +
+      `${offenders.map((entry) => entry.detail).join('; ')} — which is not the set this file knows about. A new one is a ` +
+      'new false eye. A frame that has been fixed should have its line deleted here and be added to CREATURE_FRAMES.',
   )
   // 1b. THE MARGIN IS A MARGIN. Ten luma under the floor is a frame that passes by
   // rounding, and a pass-11 note that quotes only the comfortable frames is how a
@@ -11946,12 +12015,15 @@ test('at least one view in the gallery is staged so the creature lays a trail', 
   // ---------------------------------------
   // Because the three creature views photograph three different beats and only one
   // of them is a moment where a trail belongs. `creature-stalking` is a silhouette
-  // held at the edge of vision, framed to a measured contrast ratio of 0.607
-  // against a 0.62 floor — 0.013 of headroom, the tightest margin in the
-  // repository. Making it walk would move the figure out of the sodium pool that
-  // view exists to stand it in. `banish` is a connected swing at 1.9 m and §7.4's
-  // beat is the dismissal, not a decal. Demanding a trail of both would be a gate
-  // only satisfiable by wrecking two good frames.
+  // held at the edge of vision, framed to a measured contrast ratio of 0.572
+  // against a 0.62 floor — 0.048 of headroom, and the tightest margin on that
+  // gate in the repository. (REVIEW 15: this read 0.607 and "0.013 of headroom",
+  // which was the measurement of the gallery pass 15 replaced. The frame was
+  // re-shot whole, the ratio moved with it, and the ceiling did not.) Making it
+  // walk would move the figure out of the sodium pool that view exists to stand it
+  // in. `banish` is a connected swing at 1.9 m and §7.4's beat is the dismissal,
+  // not a decal. Demanding a trail of both would be a gate only satisfiable by
+  // wrecking two good frames.
   const views = capture.CAPTURE_VIEWS.filter((view) => view.steps.some((step) => step.op === 'creature'))
   assert.ok(views.length > 0, 'no view stages a creature, so this check can never fire')
   // The world-time a view hands the creature AFTER it is placed. `begin` settles
@@ -13471,6 +13543,21 @@ test('the flare settles, and it cannot cost the creature gate its anchor', () =>
   assert.ok(
     brightest < quietestEyeRow,
     `the telegraph's loudest eye is ${brightest.toFixed(3)}, which is not fainter than the next row's ${quietestEyeRow} — the apparition is no longer the faintest thing in the table`,
+  )
+  // ...and the separation is a SEPARATION and not a near-tie. REVIEW 15. The ceiling
+  // above is relative, which is the right CLAIM — "the apparition's eye is the
+  // faintest thing in the table" — but it is a weaker gate than the literal 0.55 it
+  // replaced, because the nearest row's own column is 0.8 after the same retune. A
+  // table with two rows 0.01 apart satisfies "fainter than" and reads as one row, and
+  // pass 15 moved the apparition's entire read onto its eye, so this is the gate that
+  // now has to hold that read. The gap is the claim: 0.2 as the table stands, held to
+  // 0.1 — twice the 0.05 the pairwise test at the top of this file uses for "apart in
+  // the frame", because this is two ROWS rather than two samples of one row.
+  assert.ok(
+    quietestEyeRow - brightest >= 0.1,
+    `the telegraph's loudest eye is ${brightest.toFixed(3)} and the next dimmest row's column is ${quietestEyeRow}, ` +
+      'which is not a gap a player could see — pass 15 moved this row\'s read off its body and onto its eye, and a ' +
+      'row whose eye matches the next one reads as that row',
   )
   assert.ok(dimmed > 100, `a telegraph's eye only dips ${dimmed} times in six seconds, so the beat is not running`)
   // ...and the eye's WORLD SIZE is untouched by the flare's brightness, because the
@@ -16279,9 +16366,13 @@ test('the shimmer boxes are the shimmer, and the reference is clear of it', () =
   // ...and it is not so far out that it has left the pool. A reference that is on the
   // kerb instead of in the fog is not a control for the band, it is a control for
   // something else entirely, and the honest way to hold that is against the picture:
-  // at the stand-off and the scale the probe measured, the reference is 39-54 px off
+  // at the stand-off and the scale the probe measured, the reference is 38-53 px off
   // the axis, which is the background the band is standing in front of.
-  const pxPerMetre = 30.1113
+  // (REVIEW 15: 30.1113 and "39-54" were stale — the probe report's own
+  // `where.pxPerMetre` is 29.3075 at this stand-off. The two bounds are wide enough
+  // that the conclusion is the same either way, which is exactly why a stale
+  // measurement in a gate is worth correcting rather than tolerating.)
+  const pxPerMetre = 29.3075
   const off = capture.PROBE_REFERENCE_INNER * pxPerMetre
   assert.ok(off > 20, `the reference is ${off.toFixed(1)} px off the axis, which is inside the figure's own shoulder`)
   assert.ok(off < 200, `the reference is ${off.toFixed(1)} px off the axis, which at 1280 wide is a different part of the picture`)

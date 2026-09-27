@@ -3003,21 +3003,34 @@ export const HAZE_HALF_WIDTH = 0.62
  * -0.40 / +0.30 and at 0.012 they are -0.28, -0.10, +0.18, +0.35, +0.56 — a mean of
  * about +0.05 against a floor of 0.6, and a sample-to-sample scatter of 0.7 on the
  * same row 0.18 s apart. So the doubling bought roughly a third of a luma of a
- * measurement whose own noise is larger than that, and it cost something real: with
- * the haze at 0.012 the eye finder could no longer resolve the eye in the SHIPPED
- * `banish.png` — the close-range §7.4 frame, where the figure is four metres away and
- * the doubled additive haze softens the eye quad's edge enough that the >=150
- * flood-fill no longer finds a compact blob. `verify.mjs` fails on that frame and it
- * is right to.
+ * measurement whose own noise is larger than that, and it cost something real.
  *
- * That is the whole argument for putting it back: an effect that is worth less than
- * its own measurement noise is not an effect that can be bought with a number, and
- * the number is not free. §4's three signals are still three signals — the shimmer
- * alone is 13 luma encoded against `EYE_MIN` 150, which `verify.mjs` asserts here and
- * did before. The shimmer's floor is a question for a pass that can answer it, and
- * this pass's answer is that the harness cannot yet: the control boxes sit inside
- * the same glow they are dividing out, so the differential measures the creature's
- * presence to about +/-0.3 luma and the shimmer to rather less than that.
+ * WHAT IT COST, MEASURED — AND THE PASS GOT THE MECHANISM WRONG. The pass's own note
+ * here said that at 0.012 "the eye finder could no longer resolve the eye in the
+ * SHIPPED `banish.png` — the figure is four metres away and the doubled additive
+ * haze softens the eye quad's edge", and that `verify.mjs` fails on that frame and
+ * is right to. REVIEW 15 re-shot that frame at 0, 0.006 and 0.012 and none of the
+ * three resolves an eye: §16.5.9 stages the banish at 1.9 m, not four metres, so
+ * the figure's head is 446 px above the top of its picture and there is no eye in
+ * the frame to lose. What the doubling moved is the SCENERY beside the creature.
+ * A lit window behind that frame is a 13 x 10 block at 185-188 with the figure
+ * taken out of the way; the figure's body covers all but two columns of it, and
+ * those two columns are what the finder sees — 152-155 at 0 and at 0.006 alike,
+ * and 138-141 at 0.012, which is under `EYE_MIN`. So the finder's answer on this
+ * frame is decided by how much of a house window the creature's body happens to be
+ * covering, and a run at a different world time answers differently. The frame
+ * `verify.mjs` fails on is the frame whose head is out of the picture, and it
+ * fails it for that reason at all three alphas.
+ *
+ * The decision is unchanged and the real evidence for it is better than the one the
+ * pass gave: an effect worth a third of a luma against 0.7 of noise, on a frame
+ * where its own alpha helps decide whether a house window reads as a creature's
+ * eye. That is a number with a real price attached, and the price is not the one
+ * the pass named. The shimmer's floor is a question for a pass that can answer it,
+ * and this pass's answer is that the harness cannot yet: the control boxes sit
+ * inside the same glow they are dividing out, so the differential measures the
+ * creature's presence to about +/-0.3 luma and the shimmer to rather less than
+ * that.
  */
 export const HAZE_PEAK = 0.006
 

@@ -716,7 +716,8 @@ export const CAPTURE_IDS = Object.freeze([...TWELVE_CAPTURE_IDS, ...EXTRA_CAPTUR
  *
  * `back: 25` and `metres: 17` are `creature-stalking`'s, measured: that frame
  * puts the pool between the lens and the figure and lands at a contrast ratio
- * of 0.607 against a 0.62 floor. `bearing: 6` keeps the figure off the exact
+ * of 0.572 against a 0.62 floor (body 45.0 against a surround of 78.7, measured
+ * off the committed PNG). `bearing: 6` keeps the figure off the exact
  * road axis without pushing it into the kerb.
  */
 export const CREATURE_PROBE_STANDOFF = Object.freeze({ back: 25, metres: 17, bearing: 6 })

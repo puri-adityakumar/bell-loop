@@ -324,9 +324,21 @@ export default luma
  * §4 promises three things stay readable at distance: the portals, the sodium
  * lamps and the thing hunting you. Only the first two are *fogged*, and the
  * lamps are far larger than an eye, so the eye is separated from both by size
- * as well as by brightness. 150 is measured, not guessed: the three real eyes in
- * the gallery sit at 234 (stalk), 228 (chase) and 171 (banish) mean, so the
- * floor has 21 luma of margin on the worst of them and 84 on the best.
+ * as well as by brightness. 150 is measured, not guessed — and the measurement
+ * changed under pass 15, so it is re-measured here:
+ *
+ *   REVIEW 15. BEFORE this line: "the three real eyes in the gallery
+ *   sit at 234 (stalk), 228 (chase) and 171 (banish) mean, so the floor has 21
+ *   luma of margin on the worst of them and 84 on the best." The 171 was not a
+ *   creature's eye. §16.5.9 stages the banish at 1.9 m, so the figure's head
+ *   projects to y = -446 on a 720 px frame and its face is not in its own
+ *   picture; the blob the finder was reading there is a lit window 650 px away
+ *   with a "body" underneath it at a ratio of 0.98, and this pass's own gate now
+ *   fails `banish.png` on exactly that. The two real eyes are the ones measured:
+ *   230.7 (stalk, 52 px) and 227.2 (chase, 55 px), so the floor has 77 luma of
+ *   margin on the worst of them and 81 on the best — and the margin is a
+ *   measurement, not a claim, which is why `verify.mjs` re-derives it from the
+ *   committed PNGs and holds the tightest one to ten levels.
  *
  * THE NUMBER IS NOT WHAT REJECTS SCENERY, AND AN EARLIER VERSION OF THIS COMMENT
  * SAID IT WAS. It claimed "the brightest thing anywhere in `street.png` — a lamp
@@ -337,12 +349,23 @@ export default luma
  * the three constants below this one. `street.png` at a 249 peak still reports
  * zero eyes, and `verify.mjs` asserts that frame and these three numbers
  * together, so the claim in this comment is a gate rather than an anecdote.
+ *
+ * AND THE SHAPE TESTS ARE WHAT HOLD `banish` NOW, WHICH CAN BE SHOWN RATHER THAN
+ * ARGUED. The window behind that frame is a 13 x 10 block at 185-188 with the
+ * creature's body taken out of the way (measured: `stagger`'s presence at 0 and
+ * the same steps), and the committed frame shows the 2 x 9 remainder the body
+ * does not cover: 12 lit pixels at a mean of 152.3 and a peak of 153.1, in an
+ * 18 px bounding box, at a 67% fill and an aspect of 4.5. It is rejected three
+ * times over — 12 px against the 24 px area floor, 67% against the 70% fill, and
+ * an aspect of 4.5 against a ceiling of 2 — and the aspect is the one that does
+ * the work, because it is scale-free: brighten that sliver as far as it will go
+ * and it is still a sliver.
  */
 export const EYE_MIN = 150
 /**
  * The eye quad's own size bounds, in pixels. `CREATURE_COLORS.eye` is a small
- * additive billboard, so a *hit* is a compact blob: 8x6 in the stalk frame, 7x6
- * in the chase frame, and 7x12 in the banish frame.
+ * additive billboard, so a *hit* is a compact blob: 8x6 in the stalk frame and
+ * 7x6 in the chase frame.
  *
  * THE SPANS ARE WRITTEN THE WAY THE CODE COMPARES THEM — `maxX - minX`, not the
  * inclusive pixel count — because that is the form `EYE_MAX_SPAN` is tested
@@ -353,13 +376,22 @@ export const EYE_MIN = 150
  * 14 px as the camera nears them; the lower bound rejects single-pixel specular
  * hits on kerbs and window frames.
  *
- * THE BANISH FRAME IS THE ONE TO WATCH, and it is the reason the numbers here
- * were re-measured rather than left alone. At 1.9 m the eye quad is at its
- * largest and the blob is 12 px tall against this 14 px ceiling — two pixels.
- * A comment that quoted only the two distant frames described a gallery in
- * which nothing was close, and a reader planning any change to the eye's size
- * would have had no idea how little room `banish` has. It is the creature's own
- * proximity doing that, not the finder being loose.
+ * REVIEW 15. THE "BANISH FRAME IS THE ONE TO WATCH" PARAGRAPH IS GONE,
+ * AND IT HAD TO BE. It read: "At 1.9 m the eye quad is at its largest and the
+ * blob is 12 px tall against this 14 px ceiling — two pixels… 7x12 in the banish
+ * frame." The 7x12 was not the creature's eye. §16.5.9 stages the banish at
+ * 1.9 m, so the figure's head is 446 px above the top of its own picture, there
+ * is no eye in the frame, and the blob the finder locked onto was a lit window
+ * 650 px from a head that is not in it — 54 px at 171.2 mean, five by nine, with
+ * a "body" under it at a ratio of 0.98. `verify.mjs` now fails that frame on the
+ * staged head, and `stagedHead` in that file is what says which frames owe an
+ * eye at all.
+ *
+ * So the frame with the least room is no longer `banish`: the widest thing a real
+ * eye measures in the shipped gallery is 8 px of a 14 px ceiling, six to spare.
+ * The margin is held on a different number now — `verify.mjs` re-derives both the
+ * span and the anchor of every eye it finds, so a retune that grew the quad finds
+ * out here rather than from a comment written before the retune.
  */
 export const EYE_MAX_SPAN = 14
 export const EYE_MIN_PIXELS = 4
@@ -378,8 +410,19 @@ export const EYE_MIN_FILL = 0.7
 export const EYE_MAX_ASPECT = 2
 /**
  * The area floor, in lit pixels. See the AREA note in `findEyes`: it separates
- * the two real eyes (49 and 70 px) from the largest square, solid impostor in
- * the gallery (9 px, a lit window in `hammer-located`).
+ * the two real eyes (52 and 55 px, re-measured off the committed gallery) from
+ * the largest solid square impostor in it.
+ *
+ * REVIEW 15. The impostor this used to name — "a lit window in
+ * `hammer-located`, 9 px" — is no longer what `hammer-located.png` contains, and
+ * the file that cites it (`PROBE_ANCHOR_MAX_PX` in `src/game/capture.js`) is
+ * still right about the shape and wrong about the size: that frame's window now
+ * resolves 72 px at a mean of 192, in a 12 x 6 box, which passes every test in
+ * this section — the area floor by 48 px, the fill at 100%, and the aspect at
+ * exactly 2.0 against a ceiling of 2. Nothing here rejects it, which is the
+ * point of the ANCHOR: a window can be square, solid and bright and still be
+ * scenery. `verify.mjs` names it as a known offender and fails if the set of such
+ * frames grows.
  */
 export const EYE_MIN_AREA = 24
 /** Rows measured below the eye quad, and the columns either side of it. */
@@ -500,7 +543,10 @@ function findEyes(width, height, at) {
  * translucent by design (§6.1's apparition is a hole in the fog, not an object
  * in it), and a loose threshold here would be the decorative gate pass 2's review
  * caught with a better formula. The measured value on the shipped
- * `creature-stalking.png` is 0.607.
+ * `creature-stalking.png` is 0.572 (body 45.0 against a surround of 78.7), and
+ * `creature-chasing.png` is 0.274. The 0.607 this line used to quote was the
+ * measurement of the gallery pass 15 replaced; the ceiling did not move, but a
+ * number that names a PNG has to name the PNG that is committed.
  */
 export const SILHOUETTE_MAX = 0.62
 
