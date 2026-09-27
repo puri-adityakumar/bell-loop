@@ -6927,6 +6927,12 @@ function lampReadout(game) {
       visible: light.visible,
       intensity: light.intensity,
       bounce: game.bounceLights[i] ? game.bounceLights[i].intensity : 0,
+      // The bounce is a SEPARATE light with its own visibility, and `_writeLampDread`
+      // only writes the one whose `visible` is true. A slot can therefore have a lit key
+      // over a dark bounce, and a check that asserts a bounce level has to say which of
+      // the two it is looking at — the pass-11 review hit exactly that and asserted 46 on
+      // a bounce that had never been turned on.
+      bounceVisible: game.bounceLights[i] ? game.bounceLights[i].visible === true : false,
     })),
   }
 }
@@ -7274,6 +7280,176 @@ check('pass-11: the eye flare pulses the lamp once, and only while it is flaring
       `${(beast.EYE_FLARE_SECONDS * 1000).toFixed(0)} ms window, and did not move for a lamp 40 m away`,
   )
 })
+check('pass-11 review: the lamp record is a measurement on every frame, including the two quiet phases', () => {
+  // §9.3's black and §10.4's card are the only two places `_updateCreatureView` calls
+  // `_writeLampDread(null)`, and they are the only two places the sodium family is
+  // supposed to be flat. That part was right. The FOURTH published number was not:
+  // `distance` was `Infinity` for the whole of both phases, on a field whose own
+  // docblock promises it is "finite on EVERY frame", and `nearness` reads a
+  // non-finite distance as ZERO. So the record said "directly under the lamp" for a
+  // lamp with a dormant creature 13 m away, and the lamp-dread wiring check above —
+  // which is the check that exists to catch exactly this — samples only frames where a
+  // creature is present, and so never saw it.
+  //
+  // THE PROPERTY, STATED AS A GATE RATHER THAN A MEASUREMENT. "Finite" on its own is
+  // nearly decorative: a sentinel like -1 or 1e9 is finite and inverts just as quietly.
+  // What actually distinguishes a measurement from a sentinel is that it MOVES when
+  // the thing being measured moves, so the claims below are, in order:
+  //
+  //   1. finite, on every sampled frame rather than only the frame the phase began on;
+  //   2. RESPONSIVE — walk the creature 40 m and the published distance has to change,
+  //      which `Infinity` cannot do, because there is no arithmetic on it to do;
+  //   3. CORRECT — the published number is the distance from the creature's canonical
+  //      position to the nearest lamp the world actually aimed at, computed here from
+  //      the world's own list so the check cannot inherit the bug it is looking for;
+  //   4. and it READS BACK as "nothing near it", which is the half the bug was in.
+  const phases = [
+    { label: '§9.3 reset', enter: (world) => {
+        world.state = { ...world.state, hammerHeld: true }
+        world.creature = beast.createCreature({ state: 'chase', awareness: 1 })
+        placeCreature(world, 0)
+        world.update(DT)
+        assert.equal(world.store.get().phase, PHASE.RESET, 'the capture did not reset')
+      } },
+    { label: '§10.4 win', enter: (world) => {
+        const anchor = world.streetView.worldOf(world.state.exitAnchor.position)
+        world.player.teleport(anchor.x, anchor.z, 0)
+        world.state = { ...world.state, finale: true }
+        world.update(DT)
+        assert.equal(world.store.get().phase, PHASE.WON, 'walking into the exit did not win')
+      } },
+  ]
+  // The distance the world SHOULD publish, from the world's own aimed list. The fold is
+  // `worldOf`, deliberately not taken out of `_writeLampDread`, or the check would agree
+  // with the bug by construction.
+  const truth = (world) => {
+    const here = world.streetView.worldOf(world.creaturePosition)
+    let nearest = Infinity
+    for (let i = 0; i < world.lampLights.length; i += 1) {
+      const light = world.lampLights[i]
+      const lamp = world._lampAimed?.[i]
+      if (!light || !light.visible || !lamp) continue
+      nearest = Math.min(nearest, Math.hypot(here.x - lamp.x, here.z - lamp.z))
+    }
+    return nearest
+  }
+  const seedFor = (world) => beast.lampDreadSeed(world.seed, 0)
+  for (const { label, enter } of phases) {
+    game.restart()
+    game.start()
+    run(game, 1.6)
+    // The same placement the strobe check uses, and for the same reason: the lit lamps
+    // are the nearest to the PLAYER, so "the lamp this creature is under" has to be
+    // asked of the world's own aimed list rather than assumed.
+    const aimed = game.streetView.lampsNear(game.player.pos.x, game.player.pos.z, 96)
+    assert.ok(aimed.length > 0, `${label}: the light pool has no lamps in it, so this check can never fire`)
+    const lamp = aimed[0]
+    game.creaturePosition = { x: hood.canonicalCoord(lamp.x + 1), z: hood.canonicalCoord(lamp.z) }
+    // A creature UNDER a lamp on the way in, so the record has a drodd to lose. If this
+    // check only ever entered the quiet phases from a clean street it would not know
+    // whether the fix reset the field or merely never filled it.
+    game.creature = beast.createCreature({ state: 'chase', awareness: 1 })
+    game.update(DT)
+    const before = lampReadout(game)
+    assert.ok(before.dread.level < 1, `${label}: nothing was drodded on the way in, so there is nothing to lose`)
+    enter(game)
+    // ...and the lights must be back at their base, because that is the property the
+    // fix has to leave completely alone. Measured here so that a "fix" which also made
+    // the quiet phases quiet *because* it stopped reporting, rather than because it
+    // reports correctly, cannot pass.
+    const bases = lampReadout(game)
+    for (const key of bases.keys) {
+      if (key.visible) assert.equal(key.intensity, 400, `${label}: a lamp is at ${key.intensity} and the card is supposed to be quiet`)
+    }
+    // 1. FINITE, every sampled frame, not just the frame the phase was entered on.
+    for (let frame = 0; frame < 240; frame += 1) {
+      game.update(DT)
+      const now = lampReadout(game)
+      assert.ok(
+        Number.isFinite(now.dread.distance),
+        `${label} frame ${frame}: the record published ${now.dread.distance} m, and a non-finite distance reads as "under the lamp"`,
+      )
+    }
+    // 2. RESPONSIVE, and deliberately NOT "moving away makes it larger": this is a
+    //    repeating grid of blocks, and the assertion that the record grows when the
+    //    creature walks `+z` is false on a real street — 40 m north of one lamp is 24 m
+    //    from the next. What separates a measurement from a sentinel is that it CHANGES
+    //    at all, in whichever direction the street dictates, and the pre-fix world
+    //    answers the same `Infinity` on both sides of the move.
+    const standing = lampReadout(game)
+    // ...so the spot is searched for rather than assumed: a place the world's own aimed
+    // list says is far enough from EVERY lamp that "no dread at all" is the true reading.
+    let spot = null
+    for (const dz of [40, -40, 70, -70, 110, -110]) {
+      for (const dx of [0, 25, -25, 55, -55]) {
+        game.creaturePosition = { x: hood.canonicalCoord(lamp.x + 1 + dx), z: hood.canonicalCoord(lamp.z + dz) }
+        if (truth(game) > beast.LAMP_DREAD_RADIUS + 6) { spot = { dx, dz }; break }
+      }
+      if (spot) break
+    }
+    assert.ok(spot, `${label}: no placement within 110 m of the lamp is clear of the dread radius, so this check can never fire`)
+    game.update(DT)
+    const after = lampReadout(game)
+    assert.ok(
+      Math.abs(after.dread.distance - standing.dread.distance) > 10,
+      `${label}: walking the creature ${spot.dx} m / ${spot.dz} m moved the published distance only ` +
+        `${standing.dread.distance} -> ${after.dread.distance}, so the record is a constant rather than a measurement`,
+    )
+    // 3. CORRECT, against the world's own aimed list. Ten centimetres of slack, because
+    //    this is a second fold of the same canonical position and a fold is float work.
+    const expected = truth(game)
+    assert.ok(
+      Math.abs(after.dread.distance - expected) < 0.1,
+      `${label}: the record says ${after.dread.distance.toFixed(3)} m and the nearest aimed lamp is ${expected.toFixed(3)} m away`,
+    )
+    // 4. AND THE HALF WITH THE BUG IN IT. Clear of the radius, nothing is near any lamp,
+    //    so the honest reading of the record is "no dread at all" — and `Infinity` through
+    //    `lampDread` is a full one. That is the pre-fix answer, on purpose.
+    const echoed = beast.lampDread(after.dread.distance, game.animTime, { seed: seedFor(game) })
+    assert.equal(
+      echoed,
+      1,
+      `${label}: the published ${after.dread.distance.toFixed(2)} m reads back as a drodd of ${echoed.toFixed(4)} on a frame with no figure at all`,
+    )
+    // 5. AND THE FLAT PART OF THE RECORD IS STILL FLAT, so nothing here has quietly
+    //    turned the quiet phases into a strobe the lights happen not to show.
+    assert.equal(after.dread.lamp, -1, `${label}: a lamp is recorded as drodded on a frame with no figure`)
+    assert.equal(after.dread.level, 1, `${label}: the published level is ${after.dread.level} on a frame with no figure`)
+    // 6. AND A LAMP CANNOT BE PULSED AT AN ABSENCE. This one is white-box on purpose.
+    //    Every call site passes no `pose` when it passes no figure, so today the `near`
+    //    term is `pulse` of 1 and the `drawn !== null` guard is an equivalent mutant —
+    //    the version without it passes 94/94. It is kept because that guard is the only
+    //    thing between a future caller that passes a pose and a lamp across the street
+    //    swelling on the creature's behalf, and a check that cannot see that class of
+    //    bug is a comment. §12.2's rule is that a light belongs to its source.
+    //
+    //    THE CREATURE GOES BACK UNDER THE LAMP FIRST, which is the whole difficulty: at
+    //    the spot found above, `near` is false on the geometry alone and the guard is
+    //    invisible. Put the creature 1 m from the lamp again and the un-guarded version
+    //    surges the key to 580 of 400.
+    game.creaturePosition = { x: hood.canonicalCoord(lamp.x + 1), z: hood.canonicalCoord(lamp.z) }
+    const flaring = beast.creaturePose(beast.createCreature({ state: 'chase', awareness: 1 }), {
+      time: game.animTime, distance: 2, sinceSpot: 0,
+    })
+    assert.ok(flaring.eyeFlare > 0.9, `the pose this check pulses a lamp with flares at ${flaring.eyeFlare}, so the mutation would be invisible`)
+    game._writeLampDread(null, flaring)
+    const ghosted = lampReadout(game)
+    for (const key of ghosted.keys) {
+      if (!key.visible) continue
+      assert.equal(key.intensity, 400, `${label}: a lamp with no figure under it surged to ${key.intensity}`)
+      if (key.bounceVisible) {
+        assert.equal(key.bounce, 46, `${label}: the bounce under a lamp with no figure moved to ${key.bounce}`)
+      }
+    }
+    console.log(
+      `\n  pass-11 review ${label}: the record followed the creature ${standing.dread.distance.toFixed(1)} m -> ` +
+        `${after.dread.distance.toFixed(1)} m on a frame with no figure, and reads back at ${echoed.toFixed(3)}; ` +
+        `before the fix it published Infinity on all 240 frames, which lampDread reads as a full drodd`,
+    )
+  }
+})
+
+
 
 check('pass-11: a footfall puff is in the frame, and the cap holds in the built world', () => {
   // THE PASS-10 REVIEW'S FINDING, turned against this pass. Pass 10 shipped a trail

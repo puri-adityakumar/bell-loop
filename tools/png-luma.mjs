@@ -324,20 +324,45 @@ export default luma
  * §4 promises three things stay readable at distance: the portals, the sodium
  * lamps and the thing hunting you. Only the first two are *fogged*, and the
  * lamps are far larger than an eye, so the eye is separated from both by size
- * as well as by brightness. 150 is measured, not guessed: the stalk eye in
- * `creature-stalking` sits at 227 mean and the chase eye at 223, while the
- * brightest thing anywhere in `street.png` — a lamp head — peaks at 167.
+ * as well as by brightness. 150 is measured, not guessed: the three real eyes in
+ * the gallery sit at 234 (stalk), 228 (chase) and 171 (banish) mean, so the
+ * floor has 21 luma of margin on the worst of them and 84 on the best.
+ *
+ * THE NUMBER IS NOT WHAT REJECTS SCENERY, AND AN EARLIER VERSION OF THIS COMMENT
+ * SAID IT WAS. It claimed "the brightest thing anywhere in `street.png` — a lamp
+ * head — peaks at 167", which was true when written and stopped being true the
+ * moment pass 11 gave the sodium family a strobe: `street.png` peaks at 249.
+ * The threshold is unchanged and the finder is unchanged, because brightness was
+ * never the discriminator — the shape tests and the area floor are, and they are
+ * the three constants below this one. `street.png` at a 249 peak still reports
+ * zero eyes, and `verify.mjs` asserts that frame and these three numbers
+ * together, so the claim in this comment is a gate rather than an anecdote.
  */
-const EYE_MIN = 150
+export const EYE_MIN = 150
 /**
  * The eye quad's own size bounds, in pixels. `CREATURE_COLORS.eye` is a small
- * additive billboard, so a *hit* is a compact blob: 9x8 in the stalk frame,
- * 7x7 in the chase frame. The upper bound is what rejects the lamp heads, which
- * are bright but grow past 14 px as the camera nears them; the lower bound
- * rejects single-pixel specular hits on kerbs and window frames.
+ * additive billboard, so a *hit* is a compact blob: 8x6 in the stalk frame, 7x6
+ * in the chase frame, and 7x12 in the banish frame.
+ *
+ * THE SPANS ARE WRITTEN THE WAY THE CODE COMPARES THEM — `maxX - minX`, not the
+ * inclusive pixel count — because that is the form `EYE_MAX_SPAN` is tested
+ * against, and an earlier version of this comment used the inclusive form
+ * ("9x8", "7x7"), which is off by one against the number it is justifying.
+ *
+ * The upper bound is what rejects the lamp heads, which are bright but grow past
+ * 14 px as the camera nears them; the lower bound rejects single-pixel specular
+ * hits on kerbs and window frames.
+ *
+ * THE BANISH FRAME IS THE ONE TO WATCH, and it is the reason the numbers here
+ * were re-measured rather than left alone. At 1.9 m the eye quad is at its
+ * largest and the blob is 12 px tall against this 14 px ceiling — two pixels.
+ * A comment that quoted only the two distant frames described a gallery in
+ * which nothing was close, and a reader planning any change to the eye's size
+ * would have had no idea how little room `banish` has. It is the creature's own
+ * proximity doing that, not the finder being loose.
  */
-const EYE_MAX_SPAN = 14
-const EYE_MIN_PIXELS = 4
+export const EYE_MAX_SPAN = 14
+export const EYE_MIN_PIXELS = 4
 /**
  * Shape tests, and the reason the eye can be found at all.
  *
@@ -349,14 +374,14 @@ const EYE_MIN_PIXELS = 4
  * 0.44 aspect, so the shape test rejects it and the fill test has room to
  * spare.
  */
-const EYE_MIN_FILL = 0.7
-const EYE_MAX_ASPECT = 2
+export const EYE_MIN_FILL = 0.7
+export const EYE_MAX_ASPECT = 2
 /**
  * The area floor, in lit pixels. See the AREA note in `findEyes`: it separates
  * the two real eyes (49 and 70 px) from the largest square, solid impostor in
  * the gallery (9 px, a lit window in `hammer-located`).
  */
-const EYE_MIN_AREA = 24
+export const EYE_MIN_AREA = 24
 /** Rows measured below the eye quad, and the columns either side of it. */
 const BODY_ROWS = 22
 const SIDE_GAP = 10

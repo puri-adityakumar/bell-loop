@@ -958,6 +958,28 @@ export class LongQuietGame {
   _writeLampDread(drawn, pose = null) {
     const pulse = pose ? beast.lampPulse(pose.eyeFlare) : 1
     const lamps = this._lampAimed ?? []
+    // PASS 11 REVIEW. The position the RECORD is measured from is not the position the
+    // LIGHT is driven from, and on §9.3 and §10.4 they are not the same object.
+    //
+    // The two phases that call this with `drawn === null` had no figure to have an
+    // effect, and the level and the pulse are both correctly flat there — §9.3's black
+    // and §10.4's card are the two moments the world is supposed to be quiet. What was
+    // NOT correct was the fourth number. This method computed `Infinity` for every
+    // lamp when `drawn` was null, `closest` stayed `Infinity` with it, and the field
+    // published `distance: Infinity` for the whole of both phases — which is the exact
+    // trap the note below warns about, reached by the other door. Measured: feeding
+    // that published value back into `lampDread` returned 0.6512, because `nearness`
+    // reads a non-finite distance as ZERO, i.e. "standing directly under the lamp". So a
+    // lamp with nothing near it, on a frame with no figure at all, reported the loudest
+    // reading the record can produce.
+    //
+    // The fix measures from the creature's own CANONICAL position, folded into the drawn
+    // frame by the same `worldOf` every other drawn position in this file comes from, so
+    // the record is a measurement on every frame the world has run. It is exactly
+    // equivalent to the creature being far away: `nearness` is 0 past the radius, so the
+    // published level for a dormant creature reads as "nothing near it", which is true.
+    // Nothing about the LIGHT changes — `level` and `near` are still gated on `drawn`.
+    const measured = drawn ?? this.streetView.worldOf(this.creaturePosition)
     let drodded = -1
     let lowest = 1
     let nearest = Infinity
@@ -966,7 +988,7 @@ export class LongQuietGame {
       const light = this.lampLights[i]
       const lamp = lamps[i]
       if (!light || !light.visible || !lamp) continue
-      const distance = drawn ? Math.hypot(drawn.x - lamp.x, drawn.z - lamp.z) : Infinity
+      const distance = Math.hypot(measured.x - lamp.x, measured.z - lamp.z)
       // THE NEAREST CONSIDERED LAMP is tracked separately from the nearest DRODDED one,
       // and it is tracked at all. The first version of this published `Infinity` for any
       // frame on which nothing was drodded, which reads correctly against the field's
@@ -975,13 +997,19 @@ export class LongQuietGame {
       // check that fed the published distance into `lampDread` to verify the wiring got a
       // full-strength strobe for a lamp with nothing near it, and correctly reported a
       // fault that was in the record rather than in the light. A published measurement has
-      // to be a measurement.
+      // to be a measurement. (And it is finite from the first `update` onward; the
+      // constructor's `Infinity` is the one value here that is honest, because before
+      // the first frame no lamp has been considered at all.)
       if (distance < closest) closest = distance
       // The level and the pulse are two terms on one channel and they compose, so the
       // order they are multiplied in is not a decision — but the NEAR test is, and it
       // is the same radius `lampDread` uses so "the lamp this pulse reached" and "the
-      // lamp this drodd reached" are the same set of lamps.
-      const near = distance < beast.LAMP_DREAD_RADIUS
+      // lamp this drodd reached" are the same set of lamps. It reads `drawn` and not
+      // `distance`, because `distance` is now always finite and a `near` of true on a
+      // frame with no figure would be a lamp pulsing at an absence. It was already
+      // false in the null case, so this is the same decision written down rather than a
+      // new one.
+      const near = drawn !== null && distance < beast.LAMP_DREAD_RADIUS
       const level = drawn
         ? beast.lampDread(distance, this.animTime, { seed: beast.lampDreadSeed(this.seed, i) })
         : 1

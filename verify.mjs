@@ -86,7 +86,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 // decoding and the lower-scene crop. It is imported here rather than
 // reimplemented because a second decoder would be a second set of numbers for
 // the same file, and the two would eventually disagree in a comment.
-import { creatureContrast, describeCreatureContrast, repaintBody, LIT_LUMA } from './tools/png-luma.mjs'
+import { creatureContrast, describeCreatureContrast, repaintBody, luma, EYE_MIN, EYE_MAX_SPAN, EYE_MIN_AREA, LIT_LUMA } from './tools/png-luma.mjs'
 // The swirl-structure gate added in "Portal swirl (iteration 2, pass 3)" measures
 // a *rendered* frame for the same reason the creature gate above does, and it is
 // imported from the same module so the two can never disagree about what a pixel
@@ -6687,6 +6687,100 @@ test('the creature gate cannot be satisfied by a frame with no creature in it', 
   )
 })
 
+test('the eye-finder\'s own numbers hold on the shipped gallery, and brightness is not what does the work', () => {
+  // WHY THIS EXISTS
+  // ---------------
+  // `tools/png-luma.mjs` justifies `EYE_MIN` 150 and `EYE_MAX_SPAN` 14 in prose, and
+  // until pass 11's review that prose was the only place the numbers lived. It had
+  // also gone stale: the comment claimed "the brightest thing anywhere in
+  // `street.png` — a lamp head — peaks at 167", and pass 11's lamp strobe took the
+  // peak of that frame to 249. The THRESHOLD did not move and the FINDER did not
+  // move, because brightness was never the discriminator — the span, fill and area
+  // tests are — but a reader had no way to know that from the file, and no gate
+  // would have noticed if it had stopped being true.
+  //
+  // So the comment's three claims are read off the committed PNGs here and asserted:
+  //
+  //   1. every creature frame resolves an eye, and that eye clears `EYE_MIN` with
+  //      room rather than by a hair (the pass-11 measurement is `banish` at 171,
+  //      which is 21 luma over the floor — a margin worth stating, because the
+  //      comment previously quoted only the two comfortable frames);
+  //   2. every one of those blobs is inside `EYE_MAX_SPAN`, and the TIGHTEST of
+  //      them is reported, because `banish` is 12 px tall against a 14 px ceiling
+  //      and a re-shot that pushed it to 15 would silently stop resolving a
+  //      creature that is plainly in the picture;
+  //   3. and `street.png` is BRIGHTER THAN THE FLOOR and still reports no eye —
+  //      which is the claim the stale comment made and could not have been
+  //      supporting. If that frame's peak ever falls under `EYE_MIN`, the
+  //      "brightness is not the discriminator" argument goes untested and this
+  //      test fails rather than quietly becoming true again.
+  //
+  // The constants are IMPORTED, not restated, for the reason pass 7's gate gives: a
+  // check that writes 150 next to a module that owns 150 is a check that will still be
+  // green the day one of them is retuned. The relations below are all stated against the
+  // imported values, so the relations cannot drift from the implementation.
+  //
+  // AND THEY ARE PINNED AS WELL, which looks like the opposite mistake and is not. The
+  // first version of this test imported all three and every relation scaled with them,
+  // so raising `EYE_MAX_SPAN` 14 -> 60 — the exact mutation that lets scenery pass as a
+  // creature — left 252/252 green, and dropping `EYE_MIN_AREA` 24 -> 1 did the same.
+  // A relation against a constant proves the two agree, not that either is right. These
+  // three ARE the contract rather than a derived value, so their values are the claim,
+  // and a retune has to say so here. A future pass that genuinely wants a different
+  // number changes this line and the comment above it in the same commit.
+  assert.equal(EYE_MIN, 150, `EYE_MIN is ${EYE_MIN}; the threshold this whole file is calibrated to is 150`)
+  assert.equal(EYE_MAX_SPAN, 14, `EYE_MAX_SPAN is ${EYE_MAX_SPAN}; the banish frame's 12 px eye has 2 px of room and no more`)
+  assert.equal(EYE_MIN_AREA, 24, `EYE_MIN_AREA is ${EYE_MIN_AREA}; the largest square impostor in the gallery is 9 px`)
+  const frames = ['creature-stalking', 'creature-chasing', 'banish']
+  const readings = []
+  for (const id of frames) {
+    const file = new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)
+    assert.equal(existsSync(file), true, `${id}.png is missing — run npm run capture`)
+    const measured = creatureContrast(readFileSync(file))
+    assert.ok(measured.found, `${id}.png holds no creature: ${measured.reason}`)
+    const eye = measured.eye
+    const spanX = eye.maxX - eye.minX
+    const spanY = eye.maxY - eye.minY
+    assert.ok(eye.mean >= EYE_MIN, `${id}.png resolves an eye at ${eye.mean.toFixed(1)} mean, under EYE_MIN ${EYE_MIN}`)
+    assert.ok(eye.n >= EYE_MIN_AREA, `${id}.png resolves a ${eye.n} px eye, under EYE_MIN_AREA ${EYE_MIN_AREA}`)
+    assert.ok(
+      spanX <= EYE_MAX_SPAN && spanY <= EYE_MAX_SPAN,
+      `${id}.png resolves a ${spanX}x${spanY} px eye, and EYE_MAX_SPAN is ${EYE_MAX_SPAN} — a creature is in the picture and the finder cannot see it`,
+    )
+    readings.push({ id, mean: eye.mean, spanX, spanY, n: eye.n, luma: eye.mean - EYE_MIN })
+  }
+  // 1b. THE MARGIN IS A MARGIN. Ten luma under the floor is a frame that passes by
+  // rounding, and a pass-11 note that quotes only the comfortable frames is how a
+  // 21-luma margin became an unstated 4-luma one.
+  const tightest = readings.reduce((a, b) => (a.luma <= b.luma ? a : b))
+  assert.ok(
+    tightest.luma >= 10,
+    `${tightest.id}.png's eye is only ${tightest.luma.toFixed(1)} luma over EYE_MIN ${EYE_MIN}, which is a margin a retune can cross silently`,
+  )
+  // 3. THE CONTROL, and the one that makes the argument real.
+  const streetFile = new URL(`./${capture.CAPTURE_DIR}/street.png`, import.meta.url)
+  assert.equal(existsSync(streetFile), true, 'street.png is missing — run npm run capture')
+  const streetBytes = readFileSync(streetFile)
+  const street = creatureContrast(streetBytes)
+  const peak = luma(streetBytes).max
+  assert.ok(
+    peak > EYE_MIN,
+    `street.png peaks at ${peak}, which is under EYE_MIN ${EYE_MIN}, so the frame no longer proves that the ` +
+      'finder rejects scenery on shape rather than on brightness — re-shoot it and re-derive the claim',
+  )
+  assert.equal(
+    street.found,
+    false,
+    `street.png peaks at ${peak} — well over EYE_MIN ${EYE_MIN} — and still resolves an eye, so the shape tests are not doing the work`,
+  )
+  console.log(
+    `\n  eye finder on the shipped gallery: ${readings.map((r) => `${r.id} ${r.mean.toFixed(0)} luma / ${r.spanX}x${r.spanY} px`).join(', ')} ` +
+      `against EYE_MIN ${EYE_MIN} and EYE_MAX_SPAN ${EYE_MAX_SPAN} (tightest ${tightest.id} at +${tightest.luma.toFixed(0)} luma, ` +
+      `${EYE_MAX_SPAN - Math.max(...readings.map((r) => Math.max(r.spanX, r.spanY)))} px of span); ` +
+      `street.png peaks at ${peak} and resolves nothing`,
+  )
+})
+
 test('a creature washed toward its background loses contrast, monotonically', () => {
   // WHY A MUTATION TEST, AND WHY IT BUILDS ITS OWN IMAGES
   // ------------------------------------------------------
@@ -11839,9 +11933,16 @@ function creaturePresenceClaims(view, world, creature) {
   // 7. AND THE PULSE REACHES ONLY A LAMP THE CREATURE IS NEAR, because the brief said
   //    "nearby" and a lamp across the street swelling on the creature's behalf is a lie
   //    about where the light came from.
+  //
+  //    IT IS GATED ON TWO THINGS, and the pass-11 review added the second. The radius is
+  //    the original half. The `drawn !== null` half is there because every current call
+  //    site passes no pose when it passes no figure, so the term is `pulse` of 1 today
+  //    and the guard reads as redundant — and a reviewer removed it and 94/94 world
+  //    checks still passed. It is the only thing between a caller that passes a pose
+  //    and a lamp surging at an absence, so the claim is written to fail if it goes.
   claim(
-    'the pulse is gated on the same radius the drodd is',
-    /const near = distance < beast\.LAMP_DREAD_RADIUS/.test(dread)
+    'the pulse is gated on the same radius the drodd is, and on there being a figure',
+    /const near = drawn !== null && distance < beast\.LAMP_DREAD_RADIUS/.test(dread)
       && (dread.match(/\(near \? pulse : 1\)/g) ?? []).length === 2,
     'an ungated pulse is every lamp on the street answering one sighting, and a radius the two terms do not share is a rule with two numbers',
   )
@@ -11978,8 +12079,11 @@ test('every presence claim can actually fail, and a mutation names the one it br
       'the world asks the pure module for the lamp level, the pulse and the seeds',
       'bounce.intensity = LAMP_BOUNCE_INTENSITY * level * (near ? pulse : 1)', 'bounce.intensity = LAMP_BOUNCE_INTENSITY'],
     ['the pulse ungated', 'every lamp on the street answers one sighting',
-      'the pulse is gated on the same radius the drodd is',
-      'const near = distance < beast.LAMP_DREAD_RADIUS', 'const near = true'],
+      'the pulse is gated on the same radius the drodd is, and on there being a figure',
+      'const near = drawn !== null && distance < beast.LAMP_DREAD_RADIUS', 'const near = drawn !== null'],
+    ['the pulse ungated on the figure', 'a lamp with nothing standing in it surges on a frame with no creature in the picture at all',
+      'the pulse is gated on the same radius the drodd is, and on there being a figure',
+      'const near = drawn !== null && distance < beast.LAMP_DREAD_RADIUS', 'const near = distance < beast.LAMP_DREAD_RADIUS'],
     ['the walk measured twice', 'the trail is laid from this frame and the dust from zero, and they drift a frame apart for the whole run',
       "the trail and the dust share one measurement of the frame's move",
       'const { dx, dz, walked, jumped } = this._measureWalk(drawn, dt)\n    this.creaturePuffs',
