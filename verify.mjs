@@ -5580,6 +5580,133 @@ test('a manager that was never unlocked still builds nothing, and knows its seed
   assert.equal(manager.hums.size, 0, 'a headless manager built a hum')
 })
 
+test('a real AudioContext: every routed voice runs a frame without throwing, and the duck reaches the bus', () => {
+  // REVIEW PASS 13. The gate above proves a manager that never built a context
+  // survives every voice — a real claim, and also the reason the `applyDrone`
+  // crash lived in this repository for a whole pass: `update` returns at
+  // `if (!this.ctx)`, so every voice is short-circuited before it touches a node,
+  // and the capture page builds the world with no audio object at all. Nothing in
+  // the repository ever constructed the graph.
+  //
+  // This is the seam that closes it, and it is deliberately a *fake context*
+  // rather than a headless browser: a recording stub is a few dozen lines, runs
+  // in the same node process as the rest of the gate, and asserts the thing that
+  // actually broke — that a voice writes the parameter it means to write through
+  // a handle of the right SHAPE. The pass-13 crash was `bus.gain.gain`, one
+  // `.gain` too many on an AudioParam; no amount of pure arithmetic notices that,
+  // and a real browser was the only place it used to surface.
+  //
+  // The stub models WebAudio's one structural rule — a GainNode has a `.gain`
+  // AudioParam, and an AudioParam has no `.gain` of its own — so a double-wrap is
+  // a `TypeError` here exactly as it was in Chrome.
+  const written = []
+  const param = () => ({
+    value: 0,
+    setValueAtTime() {},
+    linearRampToValueAtTime() {},
+    setTargetAtTime(value) {
+      this.value = value
+      written.push(value)
+    },
+    exponentialRampToValueAtTime(value) {
+      this.value = value
+    },
+  })
+  const node = (kind) => ({ kind, connect: (target) => target, start() {}, stop() {}, disconnect() {} })
+  class FakeAudioContext {
+    constructor() {
+      this.sampleRate = 48000
+      this.currentTime = 0
+      this.state = 'running'
+      this.destination = node('destination')
+    }
+    _make(kind) {
+      const made = node(kind)
+      if (kind === 'gain') made.gain = param()
+      if (kind === 'oscillator') {
+        made.frequency = param()
+        made.detune = param()
+      }
+      if (kind === 'biquad') {
+        made.frequency = param()
+        made.Q = param()
+      }
+      if (kind === 'panner') made.pan = param()
+      return made
+    }
+    createGain() { return this._make('gain') }
+    createOscillator() { return this._make('oscillator') }
+    createBiquadFilter() { return this._make('biquad') }
+    createStereoPanner() { return this._make('panner') }
+    createDynamicsCompressor() {
+      const made = node('compressor')
+      for (const name of ['threshold', 'knee', 'ratio', 'attack', 'release']) made[name] = param()
+      return made
+    }
+    createBufferSource() { return this._make('bufferSource') }
+    createBuffer(channels, length, rate) {
+      return { getChannelData: () => new Float32Array(length), length, sampleRate: rate }
+    }
+    resume() {
+      this.state = 'running'
+      return Promise.resolve()
+    }
+  }
+
+  const real = globalThis.AudioContext
+  globalThis.AudioContext = FakeAudioContext
+  try {
+    // the whole of `App.jsx`'s BEGIN, in the order it does it
+    const manager = new audio.AudioManager()
+    manager.unlock()
+    manager.startAmbient()
+    assert.ok(manager.bed, 'the bed was not built behind a real context')
+
+    const frame = {
+      ...PLAYING_FRAME,
+      position: { x: 3, z: 4 },
+      yaw: 0.5,
+      haze: 0.7,
+      portals: [{ id: 'A', progress: 0.2, distance: 6 }],
+    }
+    // one full frame through `update`, the world's only audio call. This is the
+    // line that used to throw, and it is a `test()` and not a `try` so a throw is
+    // a FAIL rather than a swallowed error.
+    manager.update(1 / 60, frame)
+    const busGain = () => manager.ambientGain.value
+    const expect = (f) => audio.DRONE_TUNING.gain * audio.droneLevelFor(f)
+    assert.ok(Math.abs(busGain() - expect(frame)) < 1e-9, 'the drone bus is not at the routed level')
+
+    // and the duck ladder, which is what the crash cost. A drone that only ever
+    // sits at its constructed gain is a drone whose black and whose win chord are
+    // the same volume.
+    const black = { ...frame, playing: false }
+    manager.update(1 / 60, black)
+    assert.ok(
+      Math.abs(busGain() - expect(black)) < 1e-9,
+      `the capture's black did not duck the bus: ${busGain()} vs ${expect(black)}`,
+    )
+    const won = { ...frame, won: true }
+    manager.update(1 / 60, won)
+    assert.ok(
+      Math.abs(busGain() - expect(won)) < 1e-9,
+      `the win did not quiet the bus: ${busGain()} vs ${expect(won)}`,
+    )
+    assert.ok(busGain() < expect(black), 'the win is louder than the black')
+
+    // the two layers pass 13 added ride the SAME ladder, on their own gains
+    manager.update(1 / 60, frame)
+    assert.ok(
+      Math.abs(manager.roomLevel - audio.ROOM_TONE.level * audio.DRONE_LEVEL) < 1e-12,
+      'the room tone is off the ladder',
+    )
+    assert.ok(manager.windLevel > 0, 'the wind is silent while playing')
+    assert.ok(written.length > 0, 'no voice wrote a single parameter behind a real context')
+  } finally {
+    globalThis.AudioContext = real
+  }
+})
+
 test('the world and the audio read one seed, not two', () => {
   // `DEFAULT_SEED` is the seam that stops "the world defaults to 1337" and "the
   // audio defaults to 1337" from being two facts that agree today. Neither module

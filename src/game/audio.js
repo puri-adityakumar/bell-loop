@@ -2394,6 +2394,29 @@ export class AudioManager {
    * BEGIN for the autoplay gesture, and this makes the two agree. The level is
    * only re-applied when it changes — sixty identical `setTargetAtTime` calls a
    * second would pile automation events onto the bus for no reason.
+   *
+   * REVIEW PASS 13 — this line THREW. It read
+   * `this.ambientGain.gain.setTargetAtTime(...)`, but `startAmbient` assigns
+   * `this.ambientGain = bus.gain`, which is already the AudioParam. The extra
+   * `.gain` read `undefined` and every call raised
+   * `TypeError: Cannot read properties of undefined (reading 'setTargetAtTime')`.
+   * It was invisible to the whole repository for a reason worth recording: the
+   * pure gate never installs an `AudioContext`, so `this.ctx` is null and
+   * `update` returns at its first line; the capture page builds the world with no
+   * audio object at all. The only path that reaches this line is a real browser,
+   * which is the one place nobody can run a gate from.
+   *
+   * The blast radius was the whole frame, not the drone. `update` has no
+   * try/catch, `world._updateAudio` has none, and `_animate` has none, so the
+   * throw escaped `_animate` — and because `requestAnimationFrame(this._animate)`
+   * is the FIRST statement in `_animate`, the loop survived but every frame after
+   * it abandoned `this.update(dt)` and `this.renderer.render(...)` part-way. The
+   * drone's bus therefore sat at its constructed 0.052 forever: the capture's
+   * black never ducked it and the win chord never quieted it, which are the two
+   * things the duck ladder exists for.
+   *
+   * FIX: one `.gain` removed, so this matches `duckAmbient` — the other writer
+   * of the same AudioParam, three hundred lines up, which was always right.
    */
   applyDrone(cue) {
     if (!this.ctx) return
@@ -2405,7 +2428,7 @@ export class AudioManager {
     }
     if (Math.abs(this.droneLevel - level) < 1e-6) return
     this.droneLevel = level
-    this.ambientGain.gain.setTargetAtTime(DRONE_TUNING.gain * level, this.ctx.currentTime, 0.25)
+    this.ambientGain.setTargetAtTime(DRONE_TUNING.gain * level, this.ctx.currentTime, 0.25)
   }
 
   // -------------------------------------------------------------------------
