@@ -9541,6 +9541,78 @@ test('no sky element is bright enough to be a creature eye, and the whole pass i
   console.log(`\n  sky budget: moon ${moon.toFixed(1)} + bands ${bands.toFixed(1)} + ash ${ash.toFixed(1)} = ${total.toFixed(1)} luma worst case, ${(total / skyLow * 100).toFixed(0)}% of skyStops[0] and ${(total / 150 * 100).toFixed(0)}% of EYE_MIN`)
 })
 
+test('the moon is a disc at a fixed bearing, not a sun, a smudge, or a thing below the street', () => {
+  // THE GEOMETRY BUDGET, and it exists because the luma budget above cannot see
+  // any of it.
+  //
+  // `MOON_RADIUS`, `MOON_DISTANCE` and `ASH_SIZE` were read into `SKY_NUMBERS` by
+  // this harness and then only echoed into a log line — a number that is printed
+  // is not a gate. A 45-mutation run against `skyView.js` found the consequence:
+  // `MOON_RADIUS = 34` (6.5x), `MOON_DISTANCE = 30` and `ASH_SIZE = 0.9` all left
+  // BOTH harnesses green, and each of those is a visible defect:
+  //
+  //   - radius 34 at 236 m is 16.4 degrees of arc, 6.5x the 2.5 degrees the
+  //     module's own comment calls "about five times the real moon". The comment
+  //     says outright that "past about 6 degrees it stops reading as a moon and
+  //     starts reading as a light", and at 16.4 it covers a fifth of the frame.
+  //   - distance 30 puts the disc INSIDE the built street and inside the fog, so
+  //     a tower no longer occludes it and the one arrangement that reads as far
+  //     away is gone. `MOON_DISTANCE > HORIZON_RADIUS` is the module's stated
+  //     reason for the number ("236 m puts it BEYOND `HORIZON_RADIUS`").
+  //   - elevation -0.4 puts it under the road. Nothing asserts it is above the
+  //     horizon at all.
+  //
+  // So the three are asserted here, as ARC and as GEOMETRY rather than as the raw
+  // constants: a check that restated "5.2" would fail the next legitimate retune
+  // and teach the next pass to delete it, and the property being defended is the
+  // apparent size, which is what a player sees.
+  const FOV_DEG = 72
+  const FRAME_PX = 720  // `CAPTURE_VIEWPORT`'s height; the arc is reported in both
+  // The apparent arc, which is the property. `2 * atan(r / d)` is the angle the
+  // disc subtends, and the module's own 6-degree limit is a limit on THAT.
+  const arcDeg = (r, d) => (2 * Math.atan(r / d) * 180) / Math.PI
+  const moonArc = arcDeg(SKY_NUMBERS.moonRadius, SKY_NUMBERS.moonDistance)
+  // Past 6 degrees it is a light, by the module's own sentence. 2.52 is
+  // committed, so this is a real bound with room to move, not a restatement.
+  assert.ok(
+    moonArc < 6,
+    `the moon subtends ${moonArc.toFixed(2)} degrees of arc (r ${SKY_NUMBERS.moonRadius} m at ${SKY_NUMBERS.moonDistance} m), and past about 6 it reads as a light rather than a disc — §12.1's silhouette rule forbids exactly that`,
+  )
+  // And the floor, because the same reasoning runs the other way: a true-scale
+  // moon is 0.25 degrees and 3 px, which `skyView.js` calls "a rounding
+  // artefact". The brief asked for a "pale disc" and a disc has to resolve.
+  const moonPx = (moonArc / FOV_DEG) * FRAME_PX
+  assert.ok(
+    moonPx >= 8,
+    `the moon subtends ${moonPx.toFixed(1)} px of a ${FRAME_PX}-px frame, so it is not a disc but a rounding artefact — the brief asked for a "pale disc"`,
+  )
+  // The distance is a CLAIM about the ring, and `HORIZON_RADIUS` is right here in
+  // the same object, so this is a comparison between two numbers the harness has
+  // already read rather than a restated constant.
+  assert.ok(
+    SKY_NUMBERS.moonDistance > SKY_NUMBERS.radius,
+    `the moon hangs at ${SKY_NUMBERS.moonDistance} m, inside the ${SKY_NUMBERS.radius} m horizon ring, so the silhouettes no longer stand in front of it and it stops reading as distant`,
+  )
+  // Fog, as a real bound rather than a vibe. The moon's material is `fog: false`
+  // (asserted elsewhere), so it would be drawn at full strength from any range;
+  // keeping it far out is what stops it competing with a street lamp.
+  const moonY = Math.sin(skyNumber('MOON_ELEVATION')) * SKY_NUMBERS.moonDistance
+  assert.ok(
+    moonY > 0,
+    `the moon sits at ${moonY.toFixed(1)} m, at or below the horizon, so it is behind the street and never seen`,
+  )
+  // The ash's size is stated in the frame the same way, because 0.055 m is a
+  // claim about a mote at 4 m ("about 3 px ... at 20 px a mote is a floating
+  // blob"). `ASH_BOX` is the near field the motes live in, so a mote at that
+  // distance is the honest worst case for apparent size.
+  const motePx = (2 * Math.atan(SKY_NUMBERS.ashSize / SKY_NUMBERS.ashBox) * 180 / Math.PI / FOV_DEG) * FRAME_PX
+  assert.ok(
+    motePx < 20,
+    `a mote at the ${SKY_NUMBERS.ashBox} m box edge is ${motePx.toFixed(1)} px across, and at 20 px a mote is a floating blob rather than drifting dust`,
+  )
+  console.log(`\n  moon geometry: ${moonArc.toFixed(2)} deg arc, ${moonPx.toFixed(1)} px, ${SKY_NUMBERS.moonDistance} m (ring ${SKY_NUMBERS.radius} m), ${moonY.toFixed(0)} m up; motes ${motePx.toFixed(1)} px at ${SKY_NUMBERS.ashBox} m`)
+})
+
 test('the horizon ring is a constant radius, past the built world and inside the far plane', () => {
   // THE "outside the street grid" claim, as arithmetic rather than as a picture.
   // `neighborhood.js` owns the numbers that decide how far the street can reach,
@@ -9879,6 +9951,77 @@ function skyClaims(source) {
       && !/BAND_RENDER_ORDER_BASE - index/.test(code),
     'a moon drawn after the bands is a sticker on the sky, and a band run built by SUBTRACTING reaches -100 and ties with it — a tie is ordered by material id, not by this file',
   )
+  // 3b. THE DISC IS A DISC. The luma budget can see how BRIGHT the moon is and
+  // is blind to how BIG it is, so "dim" and "disc" are independent properties and
+  // a pass that only budgets one has not defended the other. The 45-mutation run
+  // that motivated this claim put `MOON_RADIUS` at 6.5x, `MOON_DISTANCE` inside
+  // the horizon ring and `ASH_SIZE` at 16x, and every one of them stayed green in
+  // both harnesses. The arc bound is the module's own sentence — "past about 6
+  // degrees it stops reading as a moon and starts reading as a light" — and the
+  // floor is its other one: a 0.25-degree moon is 3 px, "a rounding artefact".
+  //
+  // The comparison is a RELATION (`MOON_DISTANCE > HORIZON_RADIUS`, an arc in
+  // degrees) rather than a restated 5.2, so a legitimate retune does not fail it
+  // and the claim cannot be satisfied by editing the number it is checking.
+  const moonRadius = Number(/const MOON_RADIUS = ([\d.]+)/.exec(code)?.[1])
+  const moonDistance = Number(/const MOON_DISTANCE = ([\d.]+)/.exec(code)?.[1])
+  const ringRadius = Number(/const HORIZON_RADIUS = ([\d.]+)/.exec(code)?.[1])
+  const moonElevation = Number(/const MOON_ELEVATION = (-?[\d.]+)/.exec(code)?.[1])
+  const ashSize = Number(/const ASH_SIZE = ([\d.]+)/.exec(code)?.[1])
+  const ashBox = Number(/const ASH_BOX = ([\d.]+)/.exec(code)?.[1])
+  const arcOf = (r, d) => (2 * Math.atan(r / d) * 180) / Math.PI
+  claim(
+    'the moon stays a resolvable disc beyond the ring, and the motes stay dust',
+    [moonRadius, moonDistance, ringRadius, moonElevation, ashSize, ashBox].every(Number.isFinite)
+      && arcOf(moonRadius, moonDistance) < 6
+      && arcOf(moonRadius, moonDistance) >= 1.28
+      && moonDistance > ringRadius
+      && Math.sin(moonElevation) * moonDistance > 0
+      && (2 * Math.atan(ashSize / ashBox) * 180) / Math.PI / 72 * 720 < 20,
+    'a moon past ~6 degrees of arc reads as a light rather than a disc, under ~1.3 it is a 3-px rounding artefact, inside the horizon ring nothing stands in front of it, and a mote over 20 px is a floating blob',
+  )
+  // 3c. THE STRATA ARE STRATA. Three bands at three radii is the whole idea — the
+  // same texture at one radius three times is one band drawn three times, and the
+  // brief's "occluded by haze" would be a single smear. The radii are also what
+  // make `fog: true` readable at all, since the file's own table says the fog is
+  // 18% opaque at 52 m and 78% at 86 m: collapse the radii and the bands are
+  // eaten together, and the dusk loses its depth cue.
+  //
+  // The frozen-drift mutant is the same defect from the other side. A band that no
+  // longer turns is a pasted texture — the exact thing the `fog: true` note above
+  // rejects — and a sky that is static between two frames of the same walk is
+  // indistinguishable from a still image.
+  //
+  // ASCENDING radii and heights are asserted, not restated, and the drift is
+  // required to be non-zero for every band rather than merely present: `+0` and
+  // `-0` both satisfy "has a drift field" and both freeze the sky.
+  //
+  // AND THE USE SITE, which is the half this claim was missing when the external
+  // run caught it. Checking the table alone is a claim about a literal: an
+  // `update()` that wrote `Math.cos(angle) * 86` instead of `* band.radius`, or
+  // placed every band at the hard-coded eye height `1.6`, leaves a perfectly
+  // ordered table and ignores it. Both survived the first version of this claim
+  // for exactly that reason — the table was never wrong, the code reading it was.
+  // So the derivation is asserted the same way the render-order claim asserts
+  // `BAND_RENDER_ORDER_BASE + index` rather than `-98`: the position call has to
+  // read BOTH axes of `band`, and every height has to clear the 1.6 m eye.
+  const bandTable = [...code.matchAll(/\{ radius: ([\d.]+), height: ([\d.]+), width: ([\d.]+), aspect: ([\d.]+), drift: (-?[\d.]+), peak: ([\d.]+) \}/g)]
+    .map((m) => ({ radius: Number(m[1]), height: Number(m[2]), width: Number(m[3]), aspect: Number(m[4]), drift: Number(m[5]), peak: Number(m[6]) }))
+  const radii = bandTable.map((band) => band.radius)
+  const heights = bandTable.map((band) => band.height)
+  const EYE_Y = 1.6
+  claim(
+    'the three haze strata are at three distinct, ascending radii and never stop drifting',
+    bandTable.length === 3
+      && new Set(radii).size === 3
+      && radii.every((r, i) => i === 0 || r > radii[i - 1])
+      && heights.every((h, i) => i === 0 || h > heights[i - 1])
+      && heights.every((h) => h > EYE_Y)
+      && bandTable.every((band) => band.drift !== 0)
+      && /const angle = t \* band\.drift/.test(code)
+      && /mesh\.position\.set\(\s*Math\.cos\(angle\) \* band\.radius,\s*band\.height,\s*Math\.sin\(angle\) \* band\.radius/.test(code),
+    'bands sharing a radius are one smear drawn three times, a descending radius puts the far band in front of the near one, a zero drift freezes the sky into a pasted texture, a band at or below the 1.6 m eye sits on the horizon line, and an ordered table nothing reads is not a strata',
+  )
   // 4. THE ASH EXCLUSION IS A HEIGHT. The pupil gate is a measurement OF THE HOLE
   // and a mote in the stand-off invalidates it; the fix has to be geometric
   // because a brightness budget is retuned by the next pass that wants a brighter
@@ -9939,6 +10082,52 @@ test('the sky claims are the source contracts, and each one fails when its code 
     ['the moon drawn last', 'the moon no longer has its own slot before the strata',
       'the moon is drawn before the haze bands that veil it',
       'const MOON_RENDER_ORDER = -100', 'const MOON_RENDER_ORDER = -94'],
+    // The four below are the survivors of the 45-mutation run this review ran
+    // against `skyView.js`. Each is a visible defect, and each was green in BOTH
+    // harnesses before this pass because the number was read and logged and never
+    // compared to anything. They are here now so the claim cannot quietly rot
+    // back into a comment.
+    ['the moon is a sun, not a disc', '16.4 degrees of arc, past the 6 the module itself calls a light',
+      'the moon stays a resolvable disc beyond the ring, and the motes stay dust',
+      'const MOON_RADIUS = 5.2', 'const MOON_RADIUS = 34'],
+    ['the moon inside the horizon ring', 'nothing stands in front of the disc any more, so it stops reading as distant',
+      'the moon stays a resolvable disc beyond the ring, and the motes stay dust',
+      'const MOON_DISTANCE = 236', 'const MOON_DISTANCE = 30'],
+    ['the moon under the road', 'a negative elevation puts the disc below the horizon, where it is never seen',
+      'the moon stays a resolvable disc beyond the ring, and the motes stay dust',
+      'const MOON_ELEVATION = 0.62', 'const MOON_ELEVATION = -0.4'],
+    ['motes the size of saucers', 'a 0.9 m mote is a floating blob in the near field, not drifting dust',
+      'the moon stays a resolvable disc beyond the ring, and the motes stay dust',
+      'const ASH_SIZE = 0.055', 'const ASH_SIZE = 0.9'],
+    ['the moon a rounding artefact', 'a true-scale disc is 3 px, which the module calls an artefact and the brief did not ask for',
+      'the moon stays a resolvable disc beyond the ring, and the motes stay dust',
+      'const MOON_RADIUS = 5.2', 'const MOON_RADIUS = 0.9'],
+    ['the bands all at one radius', 'three strata collapse into one smear, and the fog eats them together',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      'radius: 52, height: 26, width: 150', 'radius: 86, height: 26, width: 150'],
+    ['the strata descending', 'the far band is drawn in front of the near one, which inverts the depth the fog encodes',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      'radius: 68, height: 41, width: 210', 'radius: 48, height: 41, width: 210'],
+    ['a frozen stratum', 'a band that no longer turns is a pasted texture, which is what the `fog: true` note rejects',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      'const angle = t * band.drift', 'const angle = 0 * band.drift'],
+    ['a stratum with no drift at all', '`+0` passes a check that only asks the field exists, and freezes the sky',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      'drift: 0.0031, peak: 0.01', 'drift: 0, peak: 0.01'],
+    ['a stratum at eye level', 'the haze sits on the horizon line instead of stacking above it',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      'radius: 86, height: 58, width: 280', 'radius: 86, height: 26, width: 280'],
+    // The two below are the survivors that caught the first version of this claim
+    // being wrong rather than the world being wrong: both leave the table perfectly
+    // ordered and change only the code that READS it. A claim about a literal is
+    // not a claim about behaviour, which is the same lesson as the render-order
+    // sign above.
+    ['an ordered table nothing reads (radius)', 'the table still says 52/68/86 and the sky puts all three bands at 86',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      'Math.cos(angle) * band.radius', 'Math.cos(angle) * 86'],
+    ['an ordered table nothing reads (height)', 'the table still says 26/41/58 and the sky puts every band on the horizon',
+      'the three haze strata are at three distinct, ascending radii and never stop drifting',
+      '        band.height,\n        Math.sin(angle) * band.radius,', '        1.6,\n        Math.sin(angle) * band.radius,'],
     ['the bands run the wrong way', 'the third band lands on the moon\'s render order and the two are ordered by material id',
       'the moon is drawn before the haze bands that veil it',
       '      mesh.renderOrder = BAND_RENDER_ORDER_BASE + index',
