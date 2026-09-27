@@ -47,7 +47,16 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createServer } from 'vite'
 import puppeteer from 'puppeteer-core'
-import { CAPTURE_DIR, CAPTURE_IDS, CAPTURE_MIN_LIT, captureView } from '../src/game/capture.js'
+import {
+  CAPTURE_DIR,
+  CAPTURE_IDS,
+  CAPTURE_MIN_LIT,
+  captureView,
+  describeSightline,
+  FURNITURE_MIN_FAMILIES,
+  FURNITURE_MIN_LEGIBLE_PX,
+  FURNITURE_MIN_ON_SCREEN,
+} from '../src/game/capture.js'
 import { describeLuma, luma } from './png-luma.mjs'
 
 /** The browser this machine already has. Puppeteer's own download is not needed. */
@@ -217,6 +226,20 @@ async function main() {
             `the frame is too dark to be evidence: ${describeLuma(entry.luma, Number((floor * 100).toFixed(2)))}`,
           )
         }
+        // Pass 7's floor, and the same shape as the luma one for the same reason:
+        // a frame is only written once it has passed, so a gallery can never hold
+        // a picture of a street with nothing on the kerb. The measurement comes
+        // out of the page, off the camera the PNG was just taken through, rather
+        // than out of this file — this file cannot see, and the whole finding was
+        // that a gate that cannot see will pass.
+        entry.furniture = snapshot.furniture
+        if (entry.furniture.legible < FURNITURE_MIN_ON_SCREEN || entry.furniture.kinds < FURNITURE_MIN_FAMILIES) {
+          throw new Error(
+            `the frame is not evidence that the street has furniture on it: ` +
+            `${describeSightline(entry.furniture)}, floors ${FURNITURE_MIN_ON_SCREEN} piece(s) and ` +
+            `${FURNITURE_MIN_FAMILIES} kind(s) at ${FURNITURE_MIN_LEGIBLE_PX}px`,
+          )
+        }
         writeFileSync(target, shot)
         entry.status = 'captured'
         entry.state = snapshot
@@ -224,7 +247,8 @@ async function main() {
         report.captured += 1
         console.log(
           `  ok    ${id.padEnd(19)} ${snapshot.phase}/${snapshot.creature} ${snapshot.ms} ms  ` +
-            `lit ${entry.luma.litPct}% (floor ${(floor * 100).toFixed(2)}%)`,
+            `lit ${entry.luma.litPct}% (floor ${(floor * 100).toFixed(2)}%)  ` +
+            `furniture ${entry.furniture.legible} piece(s), ${entry.furniture.kinds} kind(s)`,
         )
       } catch (error) {
         entry.status = 'failed'

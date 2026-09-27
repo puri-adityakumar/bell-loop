@@ -8828,6 +8828,150 @@ test('the gallery in the repository is the gallery the design asks for', () => {
   assert.equal(parsed.failed, 0, `${parsed.failed} captures failed`)
 })
 
+test('every view in the gallery photographs street furniture, and the report proves it', () => {
+  // The pass-7 finding, in the place it has to be enforced.
+  //
+  // Pass 7 shipped fifteen pools of street furniture and six world checks, and
+  // every one of those checks reads a COUNT or a placement RULE. Both are blind to
+  // the camera: "a machine has exactly one liner" is true of a machine standing
+  // in the next district with its back to the lens, and "nothing stands in a
+  // carriageway" is a statement about the kerb rather than about the photograph.
+  // So the pass satisfied all six of its own gates while the fourteen committed
+  // frames showed a street with no dumpster, no bike, no machine, no shelter and
+  // no poster anywhere in frame — and the only evidence in the repository said
+  // "15 pools, 0 overflow, all families placed".
+  //
+  // This gate reads the counts the photographer measured through the real camera
+  // (`sightline` in `capture/main.jsx`) back out of the committed report, so the
+  // gallery's furniture claim is checkable by a machine and not by a reader who
+  // happens to open fourteen PNGs. Three things are asserted, and they are
+  // asserted SEPARATELY on purpose:
+  //
+  //   1. the measurement is PRESENT — a report from before this gate existed has
+  //      no `furniture` key, and "the check silently passed because the field was
+  //      missing" is the exact failure this whole review is about. `undefined`
+  //      compared against a number fails loudly, which is the point.
+  //   2. the counts clear the floors in `capture.js`, which the harness ALSO
+  //      enforced at capture time. Redundant by design: the harness stops a bad
+  //      frame being written, and this stops a bad report being committed.
+  //   3. the gallery as a whole shows EVERY family, so "two pieces of two kinds"
+  //      cannot be satisfied fourteen times by the same lit vending machine. This
+  //      is the claim that is really being made by the word "street furniture",
+  //      and it is the one a per-view floor structurally cannot express.
+  const report = new URL('./benchmark/captures.json', import.meta.url)
+  assert.equal(existsSync(report), true, 'benchmark/captures.json is missing — run npm run capture')
+  const parsed = JSON.parse(readFileSync(report, 'utf8'))
+  // TWO sets, because "in frame" and "legible" are different claims and one
+  // variable cannot honestly hold both — see the set-theoretic section below.
+  const seenInFrame = new Set()
+  const seenLegible = new Set()
+  for (const entry of parsed.captures) {
+    const measured = entry.furniture
+    assert.ok(measured, `${entry.id} has no furniture measurement — the report predates the pass-7 gate; run npm run capture`)
+    assert.equal(
+      measured.pools,
+      capture.FURNITURE_POOLS.length,
+      `${entry.id} measured ${measured.pools} pools, and the list is ${capture.FURNITURE_POOLS.length}`,
+    )
+    assert.ok(
+      measured.legible >= capture.FURNITURE_MIN_ON_SCREEN,
+      `${entry.id} shows ${measured.legible} legible piece(s) of pass-7 furniture, floor ${capture.FURNITURE_MIN_ON_SCREEN}: ` +
+        capture.describeSightline(measured),
+    )
+    assert.ok(
+      measured.kinds >= capture.FURNITURE_MIN_FAMILIES,
+      `${entry.id} shows furniture of ${measured.kinds} kind(s), floor ${capture.FURNITURE_MIN_FAMILIES}: ` +
+        capture.describeSightline(measured),
+    )
+    for (const [kind, counts] of Object.entries(measured.byKind)) {
+      // `ok` and not `equal`, because this file's `assert.equal` is
+      // (actual, expected, message) — a boolean inequality written through it
+      // becomes a comparison of `true` against the MESSAGE STRING, which fails
+      // with a diff between `true` and the sentence explaining the failure. The
+      // first version of this line did exactly that.
+      assert.ok(
+        counts.legible <= counts.pieces,
+        `${entry.id}: ${kind} reports ${counts.legible} legible out of ${counts.pieces} pieces, so legible is not a subset`,
+      )
+      if (counts.pieces > 0) seenInFrame.add(kind)
+      if (counts.legible > 0) seenLegible.add(kind)
+    }
+    // A piece at zero distance would be a division by zero in the probe, and one
+    // at exactly the near plane would be a piece the lens cannot see. The probe
+    // rejects both, so a `nearest` of null is the honest "nothing in the frustum"
+    // and must not be silently read as a number.
+    if (measured.legible > 0) {
+      assert.ok(measured.nearest > 0, `${entry.id} reports furniture at ${measured.nearest} m, which is not a distance`)
+    }
+  }
+  // And the set-theoretic claim, in TWO parts, because the measurement says two
+  // different things and conflating them is how a gate starts lying.
+  //
+  // Every family must be IN FRAME somewhere. That is the claim the pass actually
+  // makes about the map, and a gallery that never puts a bicycle in a single
+  // frame is not evidence that this pass put a bicycle on a street.
+  //
+  // But "in frame" is NOT "legible", and the difference is the whole point of the
+  // 3 px floor. Measured on this seed: a trash bag peaks at 1.66 px of radius and
+  // a bicycle frame at 1.93 px, in ANY of the fourteen views, because the nearest
+  // bag is 46 m out and the nearest bike is 121 m — while a bin reaches 18.74 px
+  // and a bollard 19.48 px from the same corners. So the legible set is FIVE
+  // families and the in-frame set is SEVEN, and a gate demanding legibility from
+  // all seven would be demanding a re-composition of the entire gallery to pass a
+  // correctness check. Demanding the impossible is not a stricter gate; it is a
+  // gate that gets deleted the first time it is inconvenient.
+  //
+  // So: all seven in frame (the pass's claim), and the legible ones enumerated
+  // (the floor's claim). If a future pass brings a bike close enough to read, the
+  // list below is the place to notice and the assertion below is the one to
+  // tighten — and tightening it will fail on the measured `maxPx`, not on a
+  // comment, because the number is in the report.
+  for (const family of capture.FURNITURE_FAMILIES) {
+    assert.ok(
+      seenInFrame.has(family.kind),
+      `no view in the gallery puts a ${family.kind} in frame at all: the fourteen frames between them never show one of the ` +
+        `${family.pools.join('/')}, so the pass placed it somewhere nobody photographed`,
+    )
+  }
+  for (const kind of ['dumpster', 'vending', 'shelter', 'bollard', 'poster']) {
+    assert.ok(
+      seenLegible.has(kind),
+      `the gallery no longer shows a legible ${kind}: it was in at least one view when this gate was written, ` +
+        'and a piece that has dropped below the legibility floor is furniture the reader cannot see',
+    )
+  }
+  // ...and the two that are legitimately in frame but not legible are named, with
+  // their measured best, so "no view shows a bicycle legibly" is a recorded fact
+  // about this build rather than a gap a reader has to notice on their own.
+  for (const kind of ['trashBag', 'bike']) {
+    assert.ok(
+      seenInFrame.has(kind),
+      `a ${kind} is in no view at all, so this is a placement change and not a legibility one`,
+    )
+  }
+  // The floors themselves are floors, not zeroes. A gate whose threshold is 0
+  // asserts nothing and reads as coverage; these are the numbers a reviewer would
+  // otherwise have to take on trust, and `verify.mjs` has no business trusting a
+  // constant it is also the only consumer of.
+  assert.ok(capture.FURNITURE_MIN_ON_SCREEN >= 2, 'the furniture floor is under two pieces, so one object passes a view')
+  assert.ok(capture.FURNITURE_MIN_FAMILIES >= 1, 'the furniture floor is zero kinds, so a view needs no furniture at all')
+  assert.ok(
+    capture.FURNITURE_MIN_LEGIBLE_PX >= 2,
+    'the legibility floor is under two pixels of radius, so a sub-pixel smudge counts as furniture',
+  )
+  // The families and the pools are derived from each other, and the gate above
+  // reads both, so a family that lists a pool twice would double-count one pool's
+  // pieces into two kinds and manufacture coverage.
+  assert.equal(
+    new Set(capture.FURNITURE_POOLS).size,
+    capture.FURNITURE_POOLS.length,
+    'two furniture families claim the same pool, so one object can satisfy two kinds',
+  )
+  for (const family of capture.FURNITURE_FAMILIES) {
+    assert.ok(family.pools.length > 0, `the ${family.kind} family lists no pool, so it can never be measured`)
+  }
+})
+
 
 // ---------------------------------------------------------------------------
 // report

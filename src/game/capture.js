@@ -186,6 +186,123 @@ export const CAPTURE_MIN_LIT = 0.06
  */
 export const TITLE_MIN_LIT = 0.035
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 7 — the furniture floor
+// ---------------------------------------------------------------------------
+
+/**
+ * The seven kinds of thing pass 7 added to the kerb, and the POOLS that carry
+ * them.
+ *
+ * WHY A LIST OF POOLS AND NOT A LIST OF INSTANCES
+ * -----------------------------------------------
+ * Pass 7 was gated on *arithmetics*: a machine has one liner and two rails, a
+ * shelter is four steel pieces, a bike is five bars and two wheels. All of that
+ * is true of a machine standing in the next district with its back to the
+ * camera, and every one of those checks reads `pool.used` — a COUNT, which is
+ * blind to where the thing is. So the pass could have placed all fifteen pools
+ * on the far side of a 448 m wrapped world, every count would hold, and the
+ * fourteen PNGs in `benchmark/screenshots/` would be a street with no dumpster,
+ * no bike, no machine, no shelter and no poster on it. That is not a
+ * hypothetical: it is what the first fourteen frames of this pass look like.
+ *
+ * So the second gate is not another count. It is a *sightline*, measured
+ * through the camera the photographer is holding (see `capture/main.jsx`), and
+ * the list below is what a sightline is measured over. One representative pool
+ * per kind, deliberately: `vendingFaces`/`vendingLitFaces`/`vendingFlickerFaces`
+ * are three liners of the same cabinet, and counting all three would let a
+ * single machine inflate the vending count to three.
+ *
+ * The poster is the one kind listed twice, and it is a real distinction rather
+ * than a fudge: a torn sheet is a separate alpha-tested pool with its own
+ * texture (`verify-world.mjs` gates that the two are different maps), and "a
+ * poster is visible" is a weaker claim than "a whole sheet and a torn one are".
+ */
+export const FURNITURE_FAMILIES = Object.freeze([
+  Object.freeze({ kind: 'dumpster', pools: Object.freeze(['dumpsters']) }),
+  Object.freeze({ kind: 'trashBag', pools: Object.freeze(['trashBags']) }),
+  Object.freeze({ kind: 'vending', pools: Object.freeze(['vendingBodies']) }),
+  Object.freeze({ kind: 'shelter', pools: Object.freeze(['shelterSteel']) }),
+  Object.freeze({ kind: 'bike', pools: Object.freeze(['bikeFrames']) }),
+  Object.freeze({ kind: 'bollard', pools: Object.freeze(['bollards']) }),
+  Object.freeze({ kind: 'poster', pools: Object.freeze(['posters', 'postersTorn']) }),
+])
+
+/**
+ * Every pool a sightline is measured over, as one flat list.
+ *
+ * `FURNITURE_FAMILIES` flattened, so the probe and the gate cannot disagree about
+ * which pools count: there is one list, and one of them derives from the other.
+ */
+export const FURNITURE_POOLS = Object.freeze(FURNITURE_FAMILIES.flatMap((family) => [...family.pools]))
+
+/**
+ * How many pieces of pass-7 furniture must be inside the frame.
+ *
+ * Two, and not one, because the honest reading of "a dumpster is in this
+ * photograph" is a dumpster *and something else*: a single lit machine on a
+ * dark kerb is one bright rectangle in a black frame, which is a picture with an
+ * object in it, not a street with furniture on it. Two also gives the gate a
+ * little room: a piece that clips the very edge of the frustum on one view and
+ * falls out on another should not be the difference between green and red.
+ *
+ * Calibrated against the run, not guessed — the measured per-view counts are in
+ * `benchmark/captures.json` under `furniture`, and the floor sits far under the
+ * tightest of them.
+ */
+export const FURNITURE_MIN_ON_SCREEN = 2
+
+/**
+ * How many DISTINCT kinds must be in frame.
+ *
+ * The count above can be satisfied twice over by one shelter, because a shelter
+ * is four instances in one pool and the probe reports pieces. This is the
+ * counterweight: two pieces of two DIFFERENT kinds, so a view cannot pass by
+ * pointing at a single object. One, not two, because a phone-in-portrait frame
+ * at 480x854 has a narrow horizontal field and a genuinely close subject.
+ */
+export const FURNITURE_MIN_FAMILIES = 1
+
+/**
+ * The smallest on-screen RADIUS, in pixels, that counts as legible.
+ *
+ * Below this a piece is a smudge: at 1 px it is a rounding artefact of a
+ * silhouette and at 2 px it is a single lit texel that no reader of the gallery
+ * could identify as a *kind* of thing. The unit is a radius rather than a
+ * diameter because the probe measures a bounding sphere, and a sphere of radius
+ * r is r pixels across in every direction — so a radius floor IS a "smaller than
+ * a circle this wide" floor, with no factor of two to get wrong.
+ *
+ * Three pixels of radius is six pixels across. That is small, and deliberately:
+ * the floor's job is to exclude furniture that is in the frustum but sub-pixel
+ * (`frustumCulled = false` on every pool means an instance behind the camera is
+ * still "in the world" and would otherwise satisfy a naive on-screen count), not
+ * to demand a hero shot. A gate that required 40 px would fail a correctly framed
+ * view of a poster 30 m down an avenue.
+ */
+export const FURNITURE_MIN_LEGIBLE_PX = 3
+
+/**
+ * describeSightline — one frame's furniture, as a sentence.
+ *
+ * HERE rather than in `capture/main.jsx` or `tools/capture.mjs`, because there are
+ * two callers with a stake in the phrasing agreeing: the page prints it when a
+ * view fails, and the harness prints it when a view passes. `describeLuma` is in
+ * `png-luma.mjs` for the same reason, and a harness that assembles its own
+ * phrasing is a harness whose log lines drift apart from each other over a pass
+ * or two.
+ */
+export function describeSightline(measured) {
+  const kinds = Object.entries(measured.byKind)
+    .filter(([, entry]) => entry.legible > 0)
+    .map(([kind, entry]) => `${kind} ${entry.legible}@${entry.maxPx}px`)
+  return (
+    `${measured.legible} legible piece(s) of ${measured.onScreen} in frame across ` +
+    `${measured.kinds} kind(s) [${kinds.join(', ') || 'none'}]` +
+    (measured.nearest === null ? ', nothing in the frustum at all' : `, nearest ${measured.nearest} m`)
+  )
+}
+
 /** 16:9 at the size the comparison rows are rendered at, so nothing is rescaled. */
 export const CAPTURE_VIEWPORT = Object.freeze({ width: 1280, height: 720 })
 

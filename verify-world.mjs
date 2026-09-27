@@ -4689,6 +4689,241 @@ check('a bin stands on its castors, a bike stands on its wheels, a poster is a d
   assert.equal(heights.size, 1, `the posters are at ${[...heights].join(', ')} m`)
 })
 
+// ---------------------------------------------------------------------------
+// PASS 7, REVIEW — the sightline. The rendered-visibility gate, and its own gate.
+// ---------------------------------------------------------------------------
+
+/**
+ * `sightlineAt` — the same measurement `capture/main.jsx` makes, reimplemented
+ * here in the one place that can be checked against a camera it chose itself.
+ *
+ * WHY IT IS REIMPLEMENTED RATHER THAN IMPORTED
+ * -------------------------------------------
+ * Because the probe cannot be imported: it is a closure over the capture page's
+ * module-level `game`, it runs in a browser, and its input is a camera that only
+ * exists after a real capture run. That makes it exactly the kind of component
+ * this review exists to distrust — a function nothing in `node` can execute, on a
+ * path that decides whether fourteen PNGs are acceptable, with no test that can
+ * fail if it is wrong. So the arithmetic is restated here against a camera this
+ * harness builds and aims, and the check below holds it to being able to report
+ * a non-zero answer.
+ *
+ * The duplication is deliberate and it is the only defensible kind: both copies
+ * take the near/far planes and the FOV off the camera itself rather than restating
+ * them, and the check below fails a probe that reports "nothing" for a piece
+ * planted directly in front of the lens.
+ */
+function sightlineAt(camera, pieces3d, unitRadius, minPx) {
+  const focal = camera.height / 2 / Math.tan((camera.fov * Math.PI) / 360)
+  const viewPoint = new THREE.Vector4()
+  const clip = new THREE.Vector4()
+  let onScreen = 0
+  let legible = 0
+  let nearest = Infinity
+  for (const at of pieces3d) {
+    // `Vector4`, or the w is gone and every piece in front of the lens gets
+    // rejected as being behind it. Stated in the code because it is the single
+    // line that turns this function into a no-op reporting an empty street.
+    viewPoint.set(at.x, at.y, at.z, 1).applyMatrix4(camera.matrixWorldInverse)
+    const depth = -viewPoint.z
+    if (!(depth > camera.near) || depth > camera.far) continue
+    clip.copy(viewPoint).applyMatrix4(camera.projectionMatrix)
+    if (!(clip.w > 0)) continue
+    const ndcX = clip.x / clip.w
+    const ndcY = clip.y / clip.w
+    if (Math.abs(ndcX) > 1 || Math.abs(ndcY) > 1) continue
+    onScreen += 1
+    if (depth < nearest) nearest = depth
+    if ((unitRadius * focal) / depth >= minPx) legible += 1
+  }
+  return { onScreen, legible, nearest: Number.isFinite(nearest) ? nearest : null }
+}
+
+check('the furniture probe sees a piece planted in front of the lens, and nothing else', () => {
+  // The mutation test for the gate that gates the gallery. A visibility probe is
+  // only worth having if it can report a non-zero result, and the first version of
+  // this one could not: it used `Vector3.applyMatrix4`, which divides by w and
+  // throws it away, so `clip.w` was `undefined` after every projection, `w > 0`
+  // was false everywhere, and all fourteen views reported "0 pieces in frame".
+  //
+  // That failure is unusually dangerous because it looks EXACTLY like the defect
+  // it was written to find. It reported a street with no dumpster on it, which is
+  // the pass's own claim, and for a real reason: pass 7 had put nothing legible
+  // inside the frustum of the `street` stand-off. So nothing about the output was
+  // anomalous. Only a test that aims a camera at a piece it placed itself can
+  // tell a working probe from a broken one.
+  const camera = new THREE.PerspectiveCamera(72, 1280 / 720, 0.05, 260)
+  camera.height = 720
+  camera.position.set(0, 1.75, 0)
+  camera.rotation.set(0, 0, 0) // down -Z, which is three.js's forward
+  camera.updateMatrixWorld(true)
+  const unit = 0.5
+  const minPx = 3
+  const at = (x, y, z) => [{ x, y, z }]
+
+  // Dead ahead, 5 m: the positive control. Without this the rest of the check
+  // passes for a probe that reports nothing at all, which is the whole bug.
+  const ahead = sightlineAt(camera, at(0, 1.75, -5), unit, minPx)
+  assert.equal(ahead.onScreen, 1, 'a piece 5 m in front of the lens is not in frame, so the probe is blind')
+  assert.equal(ahead.legible, 1, 'a 0.5 m piece at 5 m is 49.5 px of radius and is not legible')
+  assert.ok(Math.abs(ahead.nearest - 5) < 1e-6, `the probe measures the nearest piece at ${ahead.nearest} m, which is not 5`)
+
+  // Behind the lens, ninety degrees off, and past the far plane: the negative
+  // controls. A probe that counted any of these would inflate every view in the
+  // gallery, because the world holds three wrapped copies of every piece and two
+  // of them are always behind the camera.
+  assert.equal(sightlineAt(camera, at(0, 1.75, 5), unit, minPx).onScreen, 0, 'a piece behind the lens is in frame')
+  assert.equal(sightlineAt(camera, at(-5, 1.75, 0), unit, minPx).onScreen, 0, 'a piece 90 degrees off the axis is in frame')
+  assert.equal(
+    sightlineAt(camera, at(0, 1.75, -300), unit, minPx).onScreen,
+    0,
+    'a piece 300 m away is in frame, past a 260 m far plane',
+  )
+
+  // FAR enough to be invisible, NEAR enough to be in the frustum: the case the
+  // legibility floor exists for. 100 m is inside the frustum and reports
+  // `onScreen: 1`, but a 0.5 m sphere there is 2.5 px of radius, under the 3 px
+  // floor. This is the distinction the whole floor turns on, and a probe that
+  // only counted frustum membership would call this piece visible.
+  const far = sightlineAt(camera, at(0, 1.75, -100), unit, minPx)
+  assert.equal(far.onScreen, 1, 'a piece 100 m ahead should still be in the frustum')
+  assert.equal(far.legible, 0, 'a 0.5 m piece 100 m away is 2.5 px of radius and is being called legible')
+
+  // ...and the floor is load-bearing in the other direction too: 20 m is 12.4 px,
+  // comfortably over it. If this ever fails, the threshold has moved somewhere it
+  // should not have.
+  const mid = sightlineAt(camera, at(0, 1.75, -20), unit, minPx)
+  assert.equal(mid.legible, 1, 'a 0.5 m piece 20 m away is 12.4 px of radius and is being called sub-pixel')
+  assert.ok(
+    Math.abs(mid.nearest - 20) < 1e-6 && Math.abs(far.nearest - 100) < 1e-6,
+    'the probe reports one distance for two pieces at 20 m and 100 m',
+  )
+
+  // THE CAMERA TRANSFORM IS ACTUALLY BEING APPLIED.
+  //
+  // The six controls above are all satisfied by a probe that IGNORES the view
+  // matrix, and that is not hypothetical: swapping `camera.matrixWorldInverse` for
+  // an identity matrix leaves every one of them green. A point at (0, 1.75, -5) is
+  // already 5 m "in front" in world space, so `depth = -z` is still 5, and the
+  // projection puts it at NDC (0, 0.48) — inside the frame, control after control.
+  // The only thing that gives the game away is a piece that is 5 m in front of the
+  // CAMERA and therefore somewhere else entirely in WORLD space, which needs the
+  // transform to be found at all.
+  //
+  // This is the assertion that separates a probe reading the camera from a probe
+  // reading a constant, and it is why the positive control at the top is not the
+  // whole test: "sees something straight ahead" is satisfiable by a probe that has
+  // never been told where straight ahead is.
+  const turned = new THREE.PerspectiveCamera(72, 1280 / 720, 0.05, 260)
+  turned.height = 720
+  turned.position.set(0, 1.75, 0)
+  // A quarter turn about Y: the world point 5 m along -Z is now 5 m to the SIDE,
+  // and the world point 5 m along -X is what is dead ahead.
+  turned.rotation.set(0, Math.PI / 2, 0)
+  turned.updateMatrixWorld(true)
+  assert.equal(
+    sightlineAt(turned, at(0, 1.75, -5), unit, minPx).onScreen,
+    0,
+    'the probe still sees a piece that a 90-degree camera rotation moved out of frame',
+  )
+  assert.equal(
+    sightlineAt(turned, at(-5, 1.75, 0), unit, minPx).onScreen,
+    1,
+    'a piece the 90-degree turn brought into frame is not seen, so the view matrix is not applied',
+  )
+  assert.ok(
+    Math.abs(sightlineAt(turned, at(-5, 1.75, 0), unit, minPx).nearest - 5) < 1e-6,
+    'the rotated camera measures the wrong distance to the piece in front of it',
+  )
+})
+
+check('pass-7 furniture stands where the §16.5 stand-offs are pointing', () => {
+  // The reason the gallery could be empty, measured rather than guessed.
+  //
+  // Every pass-7 check above asks whether a piece is LEGAL: on the pavement, off
+  // the carriageway, clear of a portal's 12 m. None asks whether any of it is
+  // anywhere near the fourteen camera positions — and the fourteen are all on one
+  // intersection, because `STREET_NODE` is `{ax: 1, az: 1}` and six views stand on
+  // the lamp standing on it. So the whole gallery photographs a single corner of a
+  // 448 m wrapped world, and pass 7's placement rules gave it no reason to put
+  // anything on THAT corner.
+  //
+  // The point of the check is not a number high enough to look good in a README.
+  // It is the DIRECTION: a pass that moves the dressing off the anchor lots, or
+  // stops placing machines on the two blocks around the node, has to fail here
+  // rather than in a gallery nobody re-opened.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const node = hood.streetNodeToWorld(hood.streetNodeId(1, 1))
+  const at = canonicalXZ(node.x, node.z)
+  // The count is taken CANONICALLY, folded with `hood.canonicalCoord`, because the
+  // instances are in drawn coordinates and the node may be in any of the three
+  // copies. Measuring a drawn instance against a canonical node without folding
+  // invents a 448 m error and reports every family as absent — which is the exact
+  // shape of the false negative this check must avoid, since its subject IS
+  // absence.
+  const near = (name, metres) => instances(view.pools[name]).filter((piece) => {
+    const folded = canonicalXZ(piece.x, piece.z)
+    return Math.hypot(folded.x - at.x, folded.z - at.z) < metres
+  })
+  // The three families a reader can name at 30-45 m, each with the distance its
+  // own geometry earns. These are not arbitrary: a pixel radius is
+  // `radius * focal / distance` with a focal of 495 px at 720p, so a family is
+  // legible at a stated distance only if its bounding radius is big enough, and
+  // the three radii here are 0.06 m (a bin's smallest part — a CASTOR, which is
+  // why the bin's family measurement is 46 m out and still 5 px), 0.79 m (a
+  // machine's body) and 0.16 m (a poster sheet, 0.42 x 0.60 x 0.01 seen flat).
+  //
+  // Each bound is the family's OWN measured reach, not one number for all of
+  // them, and that is the point: a single "is there furniture near the node"
+  // check would pass on the bollards — 948 of them, 24 m away, legible at 12 m —
+  // and say nothing at all about a bin 46 m off or a shelter 132 m off. A check
+  // that cannot tell a shelter from a bollard is not measuring the street.
+  //
+  // Bollards are EXCLUDED from the bounds on purpose, for the reason above, and
+  // asserted separately below at a distance that is actually legible for them.
+  for (const [name, metres] of [['dumpsters', 50], ['vendingBodies', 80], ['posters', 35]]) {
+    const found = near(name, metres).length
+    assert.ok(
+      found > 0,
+      `no ${name} within ${metres} m of the node all fourteen views stand on: the gallery photographs an empty kerb`,
+    )
+  }
+  // Bollards: 18 within 30 m on this seed, and legible at 12 m. The bound is on
+  // the COUNT rather than on presence, because they are the one family the pass
+  // can drown the frame with — 148 of them are inside `street`'s frustum — and a
+  // check that only asked "is one there" would be satisfied by a world with one.
+  //
+  // Eighteen, not one, and not a hundred. The number is the measured count at the
+  // stated radius, so it is a claim about this seed that a placement change has to
+  // answer for; and it is well under the 148 the frustum holds, so it is not
+  // measuring the same thing twice. A pass that thinned the kerb to a single post
+  // per intersection would fail here while every rate-based check still passed.
+  assert.ok(
+    near('bollards', 30).length >= 15,
+    `only ${near('bollards', 30).length} bollards within 30 m of the node, so the kerb it photographs is bare`,
+  )
+  // A bike and a shelter are the two families furthest from the corner, and they
+  // are the two a reader looks for LAST. They are asserted at the distance where
+  // they are actually visible rather than at 45 m, because 45 m is 3 px of a bike
+  // bar and nobody has ever identified a bicycle frame as a 3-pixel smudge. These
+  // are the honest numbers, and stating them is the point: the gallery shows a
+  // shelter at 132 m and a bike at 121 m, which is *in frame* and is NOT the same
+  // as legible. A gate that conflated the two would pass a frame where the only
+  // thing on it is a 3-pixel bar.
+  assert.ok(
+    near('shelterSteel', 140).length >= 4,
+    'there is no shelter anywhere near the node every view in the gallery stands on',
+  )
+  assert.ok(near('bikeFrames', 130).length >= 5, 'there is no bicycle anywhere near the photographed corner')
+  // Printed as well as asserted, because this is the number a reviewer should
+  // have when they ask "how much furniture is around the photographed corner".
+  const rows = ['dumpsters', 'trashBags', 'vendingBodies', 'shelterSteel', 'bikeFrames', 'bollards', 'posters']
+    .map((name) => `${name} ${near(name, 45).length}/${view.pools[name].used}`)
+  console.log(`\n  pass-7 furniture within 45 m of the §16.5 node: ${rows.join(', ')}`)
+})
+
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down
   // with it and leaves a WebGL context alive behind the next mount, so the frame

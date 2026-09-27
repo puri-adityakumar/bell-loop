@@ -12,8 +12,8 @@
   "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.57 Safari/537.36",
   "browser": "HeadlessChrome/154.0.8037.57",
   "node": "v26.7.0",
-  "started": "2026-09-27T00:18:51.066Z",
-  "ms": 582331,
+  "started": "2026-09-27T00:55:05.911Z",
+  "ms": 767622,
   "captured": 14,
   "failed": 0,
   "captures": [
@@ -24,13 +24,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/title.png",
+      "file": "/tmp/probe7/title.png",
       "minLit": 0.035,
       "luma": {
-        "lit": 0.4840625,
-        "litPct": 48.41,
-        "mean": 38.844,
+        "lit": 0.48156901041666667,
+        "litPct": 48.16,
+        "mean": 37.685,
         "max": 205
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 131,
+        "legible": 3,
+        "kinds": 2,
+        "nearest": 64.49,
+        "byKind": {
+          "dumpster": {
+            "pieces": 12,
+            "legible": 0,
+            "maxPx": 2.95
+          },
+          "trashBag": {
+            "pieces": 6,
+            "legible": 0,
+            "maxPx": 0.88
+          },
+          "vending": {
+            "pieces": 12,
+            "legible": 1,
+            "maxPx": 3.21
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 2,
+            "maxPx": 3.88
+          },
+          "bike": {
+            "pieces": 5,
+            "legible": 0,
+            "maxPx": 1.05
+          },
+          "bollard": {
+            "pieces": 66,
+            "legible": 0,
+            "maxPx": 1.74
+          },
+          "poster": {
+            "pieces": 26,
+            "legible": 0,
+            "maxPx": 1.2
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -41,7 +85,7 @@
           "height": 720
         },
         "steps": 2,
-        "ms": 6284,
+        "ms": 4477,
         "phase": "start",
         "paused": false,
         "simFrozen": false,
@@ -58,9 +102,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 131,
+          "legible": 3,
+          "kinds": 2,
+          "nearest": 64.49,
+          "byKind": {
+            "dumpster": {
+              "pieces": 12,
+              "legible": 0,
+              "maxPx": 2.95
+            },
+            "trashBag": {
+              "pieces": 6,
+              "legible": 0,
+              "maxPx": 0.88
+            },
+            "vending": {
+              "pieces": 12,
+              "legible": 1,
+              "maxPx": 3.21
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 2,
+              "maxPx": 3.88
+            },
+            "bike": {
+              "pieces": 5,
+              "legible": 0,
+              "maxPx": 1.05
+            },
+            "bollard": {
+              "pieces": 66,
+              "legible": 0,
+              "maxPx": 1.74
+            },
+            "poster": {
+              "pieces": 26,
+              "legible": 0,
+              "maxPx": 1.2
+            }
+          }
+        }
       },
-      "ms": 6284
+      "ms": 4477
     },
     {
       "id": "street",
@@ -69,13 +157,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/street.png",
+      "file": "/tmp/probe7/street.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8321896701388889,
-        "litPct": 83.22,
-        "mean": 74.406,
+        "lit": 0.8367925347222223,
+        "litPct": 83.68,
+        "mean": 75.037,
         "max": 249
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 293,
+        "legible": 9,
+        "kinds": 2,
+        "nearest": 68.61,
+        "byKind": {
+          "dumpster": {
+            "pieces": 55,
+            "legible": 0,
+            "maxPx": 3
+          },
+          "trashBag": {
+            "pieces": 24,
+            "legible": 0,
+            "maxPx": 1.26
+          },
+          "vending": {
+            "pieces": 15,
+            "legible": 5,
+            "maxPx": 5.26
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 6.04
+          },
+          "bike": {
+            "pieces": 20,
+            "legible": 0,
+            "maxPx": 1.63
+          },
+          "bollard": {
+            "pieces": 148,
+            "legible": 0,
+            "maxPx": 1.57
+          },
+          "poster": {
+            "pieces": 27,
+            "legible": 0,
+            "maxPx": 1.13
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -86,7 +218,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 15313,
+        "ms": 29802,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -103,9 +235,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 293,
+          "legible": 9,
+          "kinds": 2,
+          "nearest": 68.61,
+          "byKind": {
+            "dumpster": {
+              "pieces": 55,
+              "legible": 0,
+              "maxPx": 3
+            },
+            "trashBag": {
+              "pieces": 24,
+              "legible": 0,
+              "maxPx": 1.26
+            },
+            "vending": {
+              "pieces": 15,
+              "legible": 5,
+              "maxPx": 5.26
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 6.04
+            },
+            "bike": {
+              "pieces": 20,
+              "legible": 0,
+              "maxPx": 1.63
+            },
+            "bollard": {
+              "pieces": 148,
+              "legible": 0,
+              "maxPx": 1.57
+            },
+            "poster": {
+              "pieces": 27,
+              "legible": 0,
+              "maxPx": 1.13
+            }
+          }
+        }
       },
-      "ms": 15313
+      "ms": 29802
     },
     {
       "id": "hammer-located",
@@ -114,13 +290,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/hammer-located.png",
+      "file": "/tmp/probe7/hammer-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.22735243055555557,
-        "litPct": 22.74,
-        "mean": 42.346,
-        "max": 237
+        "lit": 0.23065321180555556,
+        "litPct": 23.07,
+        "mean": 43.372,
+        "max": 238
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 86,
+        "legible": 19,
+        "kinds": 4,
+        "nearest": 21.3,
+        "byKind": {
+          "dumpster": {
+            "pieces": 24,
+            "legible": 10,
+            "maxPx": 13.9
+          },
+          "trashBag": {
+            "pieces": 14,
+            "legible": 0,
+            "maxPx": 1.55
+          },
+          "vending": {
+            "pieces": 1,
+            "legible": 0,
+            "maxPx": 1.65
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 7.64
+          },
+          "bike": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bollard": {
+            "pieces": 36,
+            "legible": 4,
+            "maxPx": 4.54
+          },
+          "poster": {
+            "pieces": 7,
+            "legible": 1,
+            "maxPx": 3.3
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -131,7 +351,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 14716,
+        "ms": 27123,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -148,9 +368,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 86,
+          "legible": 19,
+          "kinds": 4,
+          "nearest": 21.3,
+          "byKind": {
+            "dumpster": {
+              "pieces": 24,
+              "legible": 10,
+              "maxPx": 13.9
+            },
+            "trashBag": {
+              "pieces": 14,
+              "legible": 0,
+              "maxPx": 1.55
+            },
+            "vending": {
+              "pieces": 1,
+              "legible": 0,
+              "maxPx": 1.65
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 7.64
+            },
+            "bike": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bollard": {
+              "pieces": 36,
+              "legible": 4,
+              "maxPx": 4.54
+            },
+            "poster": {
+              "pieces": 7,
+              "legible": 1,
+              "maxPx": 3.3
+            }
+          }
+        }
       },
-      "ms": 14716
+      "ms": 27123
     },
     {
       "id": "hammer-awakening",
@@ -159,13 +423,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/hammer-awakening.png",
+      "file": "/tmp/probe7/hammer-awakening.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.22940538194444443,
-        "litPct": 22.94,
-        "mean": 42.813,
-        "max": 236
+        "lit": 0.24217881944444444,
+        "litPct": 24.22,
+        "mean": 43.991,
+        "max": 238
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 76,
+        "legible": 17,
+        "kinds": 4,
+        "nearest": 15.8,
+        "byKind": {
+          "dumpster": {
+            "pieces": 24,
+            "legible": 10,
+            "maxPx": 18.74
+          },
+          "trashBag": {
+            "pieces": 14,
+            "legible": 0,
+            "maxPx": 1.66
+          },
+          "vending": {
+            "pieces": 1,
+            "legible": 0,
+            "maxPx": 1.69
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 8.05
+          },
+          "bike": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bollard": {
+            "pieces": 26,
+            "legible": 2,
+            "maxPx": 5.52
+          },
+          "poster": {
+            "pieces": 7,
+            "legible": 1,
+            "maxPx": 4.31
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -176,7 +484,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 38638,
+        "ms": 30144,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -193,9 +501,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 76,
+          "legible": 17,
+          "kinds": 4,
+          "nearest": 15.8,
+          "byKind": {
+            "dumpster": {
+              "pieces": 24,
+              "legible": 10,
+              "maxPx": 18.74
+            },
+            "trashBag": {
+              "pieces": 14,
+              "legible": 0,
+              "maxPx": 1.66
+            },
+            "vending": {
+              "pieces": 1,
+              "legible": 0,
+              "maxPx": 1.69
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 8.05
+            },
+            "bike": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bollard": {
+              "pieces": 26,
+              "legible": 2,
+              "maxPx": 5.52
+            },
+            "poster": {
+              "pieces": 7,
+              "legible": 1,
+              "maxPx": 4.31
+            }
+          }
+        }
       },
-      "ms": 38638
+      "ms": 30144
     },
     {
       "id": "portal-located",
@@ -204,13 +556,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/portal-located.png",
+      "file": "/tmp/probe7/portal-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.4168359375,
-        "litPct": 41.68,
-        "mean": 46.046,
-        "max": 219
+        "lit": 0.4169118923611111,
+        "litPct": 41.69,
+        "mean": 47.281,
+        "max": 218
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 114,
+        "legible": 2,
+        "kinds": 1,
+        "nearest": 74.5,
+        "byKind": {
+          "dumpster": {
+            "pieces": 32,
+            "legible": 0,
+            "maxPx": 2.06
+          },
+          "trashBag": {
+            "pieces": 16,
+            "legible": 0,
+            "maxPx": 0.87
+          },
+          "vending": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 2,
+            "maxPx": 3.79
+          },
+          "bike": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bollard": {
+            "pieces": 54,
+            "legible": 0,
+            "maxPx": 1.88
+          },
+          "poster": {
+            "pieces": 8,
+            "legible": 0,
+            "maxPx": 0.68
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -221,7 +617,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 20648,
+        "ms": 17061,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -238,9 +634,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 114,
+          "legible": 2,
+          "kinds": 1,
+          "nearest": 74.5,
+          "byKind": {
+            "dumpster": {
+              "pieces": 32,
+              "legible": 0,
+              "maxPx": 2.06
+            },
+            "trashBag": {
+              "pieces": 16,
+              "legible": 0,
+              "maxPx": 0.87
+            },
+            "vending": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 2,
+              "maxPx": 3.79
+            },
+            "bike": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bollard": {
+              "pieces": 54,
+              "legible": 0,
+              "maxPx": 1.88
+            },
+            "poster": {
+              "pieces": 8,
+              "legible": 0,
+              "maxPx": 0.68
+            }
+          }
+        }
       },
-      "ms": 20648
+      "ms": 17061
     },
     {
       "id": "portal-shutdown",
@@ -249,13 +689,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/portal-shutdown.png",
+      "file": "/tmp/probe7/portal-shutdown.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8857118055555555,
-        "litPct": 88.57,
-        "mean": 33.448,
+        "lit": 0.8852821180555556,
+        "litPct": 88.53,
+        "mean": 33.254,
         "max": 189
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 120,
+        "legible": 2,
+        "kinds": 1,
+        "nearest": 72.2,
+        "byKind": {
+          "dumpster": {
+            "pieces": 32,
+            "legible": 0,
+            "maxPx": 2.1
+          },
+          "trashBag": {
+            "pieces": 16,
+            "legible": 0,
+            "maxPx": 0.88
+          },
+          "vending": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 2,
+            "maxPx": 3.83
+          },
+          "bike": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bollard": {
+            "pieces": 58,
+            "legible": 0,
+            "maxPx": 1.94
+          },
+          "poster": {
+            "pieces": 10,
+            "legible": 0,
+            "maxPx": 0.69
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -266,7 +750,7 @@
           "height": 720
         },
         "steps": 3,
-        "ms": 15423,
+        "ms": 26569,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -283,9 +767,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 120,
+          "legible": 2,
+          "kinds": 1,
+          "nearest": 72.2,
+          "byKind": {
+            "dumpster": {
+              "pieces": 32,
+              "legible": 0,
+              "maxPx": 2.1
+            },
+            "trashBag": {
+              "pieces": 16,
+              "legible": 0,
+              "maxPx": 0.88
+            },
+            "vending": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 2,
+              "maxPx": 3.83
+            },
+            "bike": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bollard": {
+              "pieces": 58,
+              "legible": 0,
+              "maxPx": 1.94
+            },
+            "poster": {
+              "pieces": 10,
+              "legible": 0,
+              "maxPx": 0.69
+            }
+          }
+        }
       },
-      "ms": 15423
+      "ms": 26569
     },
     {
       "id": "creature-stalking",
@@ -294,13 +822,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/creature-stalking.png",
+      "file": "/tmp/probe7/creature-stalking.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.3009353298611111,
-        "litPct": 30.09,
-        "mean": 43.796,
-        "max": 251
+        "lit": 0.3110590277777778,
+        "litPct": 31.11,
+        "mean": 44.051,
+        "max": 253
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 294,
+        "legible": 14,
+        "kinds": 2,
+        "nearest": 54.44,
+        "byKind": {
+          "dumpster": {
+            "pieces": 56,
+            "legible": 0,
+            "maxPx": 2.62
+          },
+          "trashBag": {
+            "pieces": 18,
+            "legible": 0,
+            "maxPx": 1.11
+          },
+          "vending": {
+            "pieces": 17,
+            "legible": 6,
+            "maxPx": 5.35
+          },
+          "shelter": {
+            "pieces": 8,
+            "legible": 8,
+            "maxPx": 8
+          },
+          "bike": {
+            "pieces": 20,
+            "legible": 0,
+            "maxPx": 1.48
+          },
+          "bollard": {
+            "pieces": 146,
+            "legible": 0,
+            "maxPx": 2.57
+          },
+          "poster": {
+            "pieces": 29,
+            "legible": 0,
+            "maxPx": 0.94
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -311,7 +883,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 22242,
+        "ms": 37244,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -328,9 +900,53 @@
         "awareness": 0.382,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 294,
+          "legible": 14,
+          "kinds": 2,
+          "nearest": 54.44,
+          "byKind": {
+            "dumpster": {
+              "pieces": 56,
+              "legible": 0,
+              "maxPx": 2.62
+            },
+            "trashBag": {
+              "pieces": 18,
+              "legible": 0,
+              "maxPx": 1.11
+            },
+            "vending": {
+              "pieces": 17,
+              "legible": 6,
+              "maxPx": 5.35
+            },
+            "shelter": {
+              "pieces": 8,
+              "legible": 8,
+              "maxPx": 8
+            },
+            "bike": {
+              "pieces": 20,
+              "legible": 0,
+              "maxPx": 1.48
+            },
+            "bollard": {
+              "pieces": 146,
+              "legible": 0,
+              "maxPx": 2.57
+            },
+            "poster": {
+              "pieces": 29,
+              "legible": 0,
+              "maxPx": 0.94
+            }
+          }
+        }
       },
-      "ms": 22242
+      "ms": 37244
     },
     {
       "id": "creature-chasing",
@@ -339,13 +955,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/creature-chasing.png",
+      "file": "/tmp/probe7/creature-chasing.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9311024305555555,
-        "litPct": 93.11,
-        "mean": 45.967,
-        "max": 250
+        "lit": 0.9308355034722222,
+        "litPct": 93.08,
+        "mean": 46.134,
+        "max": 248
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 305,
+        "legible": 14,
+        "kinds": 3,
+        "nearest": 50.01,
+        "byKind": {
+          "dumpster": {
+            "pieces": 48,
+            "legible": 2,
+            "maxPx": 3.69
+          },
+          "trashBag": {
+            "pieces": 24,
+            "legible": 0,
+            "maxPx": 1.56
+          },
+          "vending": {
+            "pieces": 15,
+            "legible": 8,
+            "maxPx": 7
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 6.97
+          },
+          "bike": {
+            "pieces": 30,
+            "legible": 0,
+            "maxPx": 1.88
+          },
+          "bollard": {
+            "pieces": 156,
+            "legible": 0,
+            "maxPx": 1.99
+          },
+          "poster": {
+            "pieces": 28,
+            "legible": 0,
+            "maxPx": 1.55
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -356,7 +1016,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 30717,
+        "ms": 23167,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -373,9 +1033,53 @@
         "awareness": 0.938,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 305,
+          "legible": 14,
+          "kinds": 3,
+          "nearest": 50.01,
+          "byKind": {
+            "dumpster": {
+              "pieces": 48,
+              "legible": 2,
+              "maxPx": 3.69
+            },
+            "trashBag": {
+              "pieces": 24,
+              "legible": 0,
+              "maxPx": 1.56
+            },
+            "vending": {
+              "pieces": 15,
+              "legible": 8,
+              "maxPx": 7
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 6.97
+            },
+            "bike": {
+              "pieces": 30,
+              "legible": 0,
+              "maxPx": 1.88
+            },
+            "bollard": {
+              "pieces": 156,
+              "legible": 0,
+              "maxPx": 1.99
+            },
+            "poster": {
+              "pieces": 28,
+              "legible": 0,
+              "maxPx": 1.55
+            }
+          }
+        }
       },
-      "ms": 30717
+      "ms": 23167
     },
     {
       "id": "banish",
@@ -384,13 +1088,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/banish.png",
+      "file": "/tmp/probe7/banish.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8028797743055556,
-        "litPct": 80.29,
-        "mean": 69.452,
-        "max": 231
+        "lit": 0.7993098958333333,
+        "litPct": 79.93,
+        "mean": 70.895,
+        "max": 246
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 293,
+        "legible": 9,
+        "kinds": 2,
+        "nearest": 68.61,
+        "byKind": {
+          "dumpster": {
+            "pieces": 55,
+            "legible": 0,
+            "maxPx": 3
+          },
+          "trashBag": {
+            "pieces": 24,
+            "legible": 0,
+            "maxPx": 1.26
+          },
+          "vending": {
+            "pieces": 15,
+            "legible": 5,
+            "maxPx": 5.26
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 6.04
+          },
+          "bike": {
+            "pieces": 20,
+            "legible": 0,
+            "maxPx": 1.63
+          },
+          "bollard": {
+            "pieces": 148,
+            "legible": 0,
+            "maxPx": 1.57
+          },
+          "poster": {
+            "pieces": 27,
+            "legible": 0,
+            "maxPx": 1.13
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -401,7 +1149,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 22991,
+        "ms": 40043,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -418,9 +1166,53 @@
         "awareness": 0.576,
         "dusk": 0,
         "fade": 0,
-        "banished": 1
+        "banished": 1,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 293,
+          "legible": 9,
+          "kinds": 2,
+          "nearest": 68.61,
+          "byKind": {
+            "dumpster": {
+              "pieces": 55,
+              "legible": 0,
+              "maxPx": 3
+            },
+            "trashBag": {
+              "pieces": 24,
+              "legible": 0,
+              "maxPx": 1.26
+            },
+            "vending": {
+              "pieces": 15,
+              "legible": 5,
+              "maxPx": 5.26
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 6.04
+            },
+            "bike": {
+              "pieces": 20,
+              "legible": 0,
+              "maxPx": 1.63
+            },
+            "bollard": {
+              "pieces": 148,
+              "legible": 0,
+              "maxPx": 1.57
+            },
+            "poster": {
+              "pieces": 27,
+              "legible": 0,
+              "maxPx": 1.13
+            }
+          }
+        }
       },
-      "ms": 22991
+      "ms": 40043
     },
     {
       "id": "capture-reset",
@@ -429,13 +1221,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/capture-reset.png",
+      "file": "/tmp/probe7/capture-reset.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8411827256944444,
-        "litPct": 84.12,
-        "mean": 75.688,
+        "lit": 0.8337760416666666,
+        "litPct": 83.38,
+        "mean": 74.191,
         "max": 249
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 293,
+        "legible": 9,
+        "kinds": 2,
+        "nearest": 68.61,
+        "byKind": {
+          "dumpster": {
+            "pieces": 55,
+            "legible": 0,
+            "maxPx": 3
+          },
+          "trashBag": {
+            "pieces": 24,
+            "legible": 0,
+            "maxPx": 1.26
+          },
+          "vending": {
+            "pieces": 15,
+            "legible": 5,
+            "maxPx": 5.26
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 6.04
+          },
+          "bike": {
+            "pieces": 20,
+            "legible": 0,
+            "maxPx": 1.63
+          },
+          "bollard": {
+            "pieces": 148,
+            "legible": 0,
+            "maxPx": 1.57
+          },
+          "poster": {
+            "pieces": 27,
+            "legible": 0,
+            "maxPx": 1.13
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -446,7 +1282,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 24159,
+        "ms": 49698,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -463,9 +1299,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 293,
+          "legible": 9,
+          "kinds": 2,
+          "nearest": 68.61,
+          "byKind": {
+            "dumpster": {
+              "pieces": 55,
+              "legible": 0,
+              "maxPx": 3
+            },
+            "trashBag": {
+              "pieces": 24,
+              "legible": 0,
+              "maxPx": 1.26
+            },
+            "vending": {
+              "pieces": 15,
+              "legible": 5,
+              "maxPx": 5.26
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 6.04
+            },
+            "bike": {
+              "pieces": 20,
+              "legible": 0,
+              "maxPx": 1.63
+            },
+            "bollard": {
+              "pieces": 148,
+              "legible": 0,
+              "maxPx": 1.57
+            },
+            "poster": {
+              "pieces": 27,
+              "legible": 0,
+              "maxPx": 1.13
+            }
+          }
+        }
       },
-      "ms": 24159
+      "ms": 49698
     },
     {
       "id": "finale-headlights",
@@ -474,13 +1354,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/finale-headlights.png",
+      "file": "/tmp/probe7/finale-headlights.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9335763888888889,
-        "litPct": 93.36,
-        "mean": 41.407,
+        "lit": 0.9333745659722222,
+        "litPct": 93.34,
+        "mean": 41.955,
         "max": 247
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 68,
+        "legible": 6,
+        "kinds": 3,
+        "nearest": 7.19,
+        "byKind": {
+          "dumpster": {
+            "pieces": 8,
+            "legible": 0,
+            "maxPx": 1.54
+          },
+          "trashBag": {
+            "pieces": 8,
+            "legible": 0,
+            "maxPx": 0.65
+          },
+          "vending": {
+            "pieces": 6,
+            "legible": 0,
+            "maxPx": 2.19
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 1,
+            "maxPx": 3.44
+          },
+          "bike": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bollard": {
+            "pieces": 30,
+            "legible": 4,
+            "maxPx": 19.48
+          },
+          "poster": {
+            "pieces": 12,
+            "legible": 1,
+            "maxPx": 9.9
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -491,7 +1415,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 78124,
+        "ms": 112069,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -508,9 +1432,53 @@
         "awareness": 1,
         "dusk": 1,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 68,
+          "legible": 6,
+          "kinds": 3,
+          "nearest": 7.19,
+          "byKind": {
+            "dumpster": {
+              "pieces": 8,
+              "legible": 0,
+              "maxPx": 1.54
+            },
+            "trashBag": {
+              "pieces": 8,
+              "legible": 0,
+              "maxPx": 0.65
+            },
+            "vending": {
+              "pieces": 6,
+              "legible": 0,
+              "maxPx": 2.19
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 1,
+              "maxPx": 3.44
+            },
+            "bike": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bollard": {
+              "pieces": 30,
+              "legible": 4,
+              "maxPx": 19.48
+            },
+            "poster": {
+              "pieces": 12,
+              "legible": 1,
+              "maxPx": 9.9
+            }
+          }
+        }
       },
-      "ms": 78124
+      "ms": 112069
     },
     {
       "id": "win",
@@ -519,13 +1487,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/win.png",
+      "file": "/tmp/probe7/win.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.098984375,
-        "litPct": 9.9,
-        "mean": 15.553,
+        "lit": 0.09943793402777777,
+        "litPct": 9.94,
+        "mean": 15.609,
         "max": 196
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 74,
+        "legible": 4,
+        "kinds": 3,
+        "nearest": 18.01,
+        "byKind": {
+          "dumpster": {
+            "pieces": 8,
+            "legible": 0,
+            "maxPx": 1.64
+          },
+          "trashBag": {
+            "pieces": 8,
+            "legible": 0,
+            "maxPx": 0.69
+          },
+          "vending": {
+            "pieces": 6,
+            "legible": 0,
+            "maxPx": 2.34
+          },
+          "shelter": {
+            "pieces": 3,
+            "legible": 1,
+            "maxPx": 3.61
+          },
+          "bike": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bollard": {
+            "pieces": 38,
+            "legible": 2,
+            "maxPx": 5.52
+          },
+          "poster": {
+            "pieces": 11,
+            "legible": 1,
+            "maxPx": 4.31
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -536,7 +1548,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 93330,
+        "ms": 106387,
         "phase": "won",
         "paused": false,
         "simFrozen": false,
@@ -553,9 +1565,53 @@
         "awareness": 1,
         "dusk": 1,
         "fade": 0.6,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 74,
+          "legible": 4,
+          "kinds": 3,
+          "nearest": 18.01,
+          "byKind": {
+            "dumpster": {
+              "pieces": 8,
+              "legible": 0,
+              "maxPx": 1.64
+            },
+            "trashBag": {
+              "pieces": 8,
+              "legible": 0,
+              "maxPx": 0.69
+            },
+            "vending": {
+              "pieces": 6,
+              "legible": 0,
+              "maxPx": 2.34
+            },
+            "shelter": {
+              "pieces": 3,
+              "legible": 1,
+              "maxPx": 3.61
+            },
+            "bike": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bollard": {
+              "pieces": 38,
+              "legible": 2,
+              "maxPx": 5.52
+            },
+            "poster": {
+              "pieces": 11,
+              "legible": 1,
+              "maxPx": 4.31
+            }
+          }
+        }
       },
-      "ms": 93330
+      "ms": 106387
     },
     {
       "id": "responsive",
@@ -564,13 +1620,57 @@
         "width": 480,
         "height": 854
       },
-      "file": "benchmark/screenshots/responsive.png",
+      "file": "/tmp/probe7/responsive.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9299960967993754,
-        "litPct": 93,
-        "mean": 64.159,
+        "lit": 0.9304449648711943,
+        "litPct": 93.04,
+        "mean": 65.698,
         "max": 249
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 108,
+        "legible": 4,
+        "kinds": 1,
+        "nearest": 68.61,
+        "byKind": {
+          "dumpster": {
+            "pieces": 16,
+            "legible": 0,
+            "maxPx": 1.85
+          },
+          "trashBag": {
+            "pieces": 6,
+            "legible": 0,
+            "maxPx": 0.65
+          },
+          "vending": {
+            "pieces": 9,
+            "legible": 4,
+            "maxPx": 6.23
+          },
+          "shelter": {
+            "pieces": 0,
+            "legible": 0,
+            "maxPx": 0
+          },
+          "bike": {
+            "pieces": 10,
+            "legible": 0,
+            "maxPx": 1.93
+          },
+          "bollard": {
+            "pieces": 56,
+            "legible": 0,
+            "maxPx": 1.86
+          },
+          "poster": {
+            "pieces": 11,
+            "legible": 0,
+            "maxPx": 1.34
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -581,7 +1681,7 @@
           "height": 854
         },
         "steps": 4,
-        "ms": 14607,
+        "ms": 12694,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -598,9 +1698,53 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 108,
+          "legible": 4,
+          "kinds": 1,
+          "nearest": 68.61,
+          "byKind": {
+            "dumpster": {
+              "pieces": 16,
+              "legible": 0,
+              "maxPx": 1.85
+            },
+            "trashBag": {
+              "pieces": 6,
+              "legible": 0,
+              "maxPx": 0.65
+            },
+            "vending": {
+              "pieces": 9,
+              "legible": 4,
+              "maxPx": 6.23
+            },
+            "shelter": {
+              "pieces": 0,
+              "legible": 0,
+              "maxPx": 0
+            },
+            "bike": {
+              "pieces": 10,
+              "legible": 0,
+              "maxPx": 1.93
+            },
+            "bollard": {
+              "pieces": 56,
+              "legible": 0,
+              "maxPx": 1.86
+            },
+            "poster": {
+              "pieces": 11,
+              "legible": 0,
+              "maxPx": 1.34
+            }
+          }
+        }
       },
-      "ms": 14607
+      "ms": 12694
     },
     {
       "id": "pause",
@@ -609,13 +1753,57 @@
         "width": 1280,
         "height": 720
       },
-      "file": "benchmark/screenshots/pause.png",
+      "file": "/tmp/probe7/pause.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.6803624131944445,
-        "litPct": 68.04,
-        "mean": 45.816,
+        "lit": 0.6813302951388889,
+        "litPct": 68.13,
+        "mean": 46.65,
         "max": 196
+      },
+      "furniture": {
+        "pools": 8,
+        "onScreen": 293,
+        "legible": 9,
+        "kinds": 2,
+        "nearest": 68.61,
+        "byKind": {
+          "dumpster": {
+            "pieces": 55,
+            "legible": 0,
+            "maxPx": 3
+          },
+          "trashBag": {
+            "pieces": 24,
+            "legible": 0,
+            "maxPx": 1.26
+          },
+          "vending": {
+            "pieces": 15,
+            "legible": 5,
+            "maxPx": 5.26
+          },
+          "shelter": {
+            "pieces": 4,
+            "legible": 4,
+            "maxPx": 6.04
+          },
+          "bike": {
+            "pieces": 20,
+            "legible": 0,
+            "maxPx": 1.63
+          },
+          "bollard": {
+            "pieces": 148,
+            "legible": 0,
+            "maxPx": 1.57
+          },
+          "poster": {
+            "pieces": 27,
+            "legible": 0,
+            "maxPx": 1.13
+          }
+        }
       },
       "status": "captured",
       "state": {
@@ -626,7 +1814,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 10194,
+        "ms": 16932,
         "phase": "playing",
         "paused": true,
         "simFrozen": true,
@@ -643,19 +1831,63 @@
         "awareness": 0,
         "dusk": 0,
         "fade": 0,
-        "banished": 0
+        "banished": 0,
+        "furniture": {
+          "pools": 8,
+          "onScreen": 293,
+          "legible": 9,
+          "kinds": 2,
+          "nearest": 68.61,
+          "byKind": {
+            "dumpster": {
+              "pieces": 55,
+              "legible": 0,
+              "maxPx": 3
+            },
+            "trashBag": {
+              "pieces": 24,
+              "legible": 0,
+              "maxPx": 1.26
+            },
+            "vending": {
+              "pieces": 15,
+              "legible": 5,
+              "maxPx": 5.26
+            },
+            "shelter": {
+              "pieces": 4,
+              "legible": 4,
+              "maxPx": 6.04
+            },
+            "bike": {
+              "pieces": 20,
+              "legible": 0,
+              "maxPx": 1.63
+            },
+            "bollard": {
+              "pieces": 148,
+              "legible": 0,
+              "maxPx": 1.57
+            },
+            "poster": {
+              "pieces": 27,
+              "legible": 0,
+              "maxPx": 1.13
+            }
+          }
+        }
       },
-      "ms": 10194
+      "ms": 16932
     }
   ],
   "luma": {
     "floor": 6,
-    "mean": 61.391,
+    "mean": 61.521,
     "tightest": {
       "id": "win",
-      "litPct": 9.9,
+      "litPct": 9.94,
       "floor": 6,
-      "margin": 3.9
+      "margin": 3.94
     }
   }
 }

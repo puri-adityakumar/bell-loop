@@ -62,13 +62,23 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+// `THREE` for the probe's own vectors. The page is capture-only and already
+// builds a world out of Three.js, so this costs no bundle weight and keeps
+// `sightline` from reimplementing a projection three.js already owns.
+import * as THREE from 'three'
 import { LongQuietGame } from '../src/game/world.js'
 import { createStartStore, PHASE } from '../src/game/store.js'
 import { hudSnapshot } from '../src/ui/hud.js'
 import * as beast from '../src/game/creature.js'
 import * as hood from '../src/game/neighborhood.js'
 import * as rules from '../src/game/rules.js'
-import { captureView, STREET_NODE } from '../src/game/capture.js'
+import {
+  captureView,
+  STREET_NODE,
+  FURNITURE_FAMILIES,
+  FURNITURE_POOLS,
+  FURNITURE_MIN_LEGIBLE_PX,
+} from '../src/game/capture.js'
 import Hud from '../src/ui/Hud.jsx'
 import PauseOverlay from '../src/ui/PauseOverlay.jsx'
 import StartOverlay from '../src/ui/StartOverlay.jsx'
@@ -589,6 +599,166 @@ async function applyStep(step) {
 }
 
 /**
+ * sightline — how much pass-7 furniture is ACTUALLY IN THE FRAME.
+ *
+ * WHY THIS IS HERE AND NOT IN verify-world.mjs
+ * --------------------------------------------
+ * Every pass-7 world check reads a COUNT: `pool.used`, "a machine has one liner",
+ * "nothing stands in a carriageway". A count cannot see the camera. So the pass
+ * was able to satisfy all six of its own checks while placing every family
+ * outside the frustum of all fourteen views, and the gallery was a street with
+ * nothing on the kerb. This is the only place in the repository that can answer
+ * the question honestly, because it is the only place holding the real
+ * `PerspectiveCamera` after the real steps have run.
+ *
+ * HOW A PIECE IS MEASURED
+ * ----------------------
+ * The instance matrix's translation is the piece's origin, and its three basis
+ * columns give the world-space half-extents. Those make a bounding SPHERE — a
+ * box's half-diagonal — which is projected through the camera and turned back
+ * into a pixel radius. Three properties of that choice are load-bearing:
+ *
+ *   - The radius comes from the COLUMN NORMS, not from single matrix ELEMENTS.
+ *     `place` composes a yaw, so element 0 of a yawed instance is
+ *     `scaleX * cos(yaw)` and element 8 is `scaleX * sin(yaw)`: at 60 degrees
+ *     element 0 reads 0.055 for a true 0.11, and the scale is wrong by a factor
+ *     of two. The NORM of that column is `scaleX` at every yaw, because rotation
+ *     preserves length. Measured, not asserted — and note the direction of the
+ *     damage: it is a cone, not a box, that collapses under a wrong scale, and
+ *     `bollards` is the one pass-7 family built from a cylinder and the one
+ *     placed with a yaw.
+ *   - The extent is the GEOMETRY's own, per pool, so a torus wheel and a plane
+ *     poster are measured by their real extents rather than by the box the pool
+ *     was created with. `posters` is a `PlaneGeometry(POSTER_U, 1)`: measuring
+ *     it as a cube would inflate its screen size by 1.7 and let a poster 60 m
+ *     away pass a gate meant to keep furniture close enough to read.
+ *   - A sphere rather than the box's eight corners, because the corners of a
+ *     piece straddling the near plane project to nonsense (some behind the eye,
+ *     `w < 0`, and the division flips), and a piece CLIPPED by the near plane is
+ *     a piece the photographer has a real problem with.
+ *
+ * AND WHY IT IS NOT A RAYCAST
+ * ---------------------------
+ * A raycast from the lens to each piece would prove the piece is unoccluded,
+ * which is stronger than "it is in frame". It is also the wrong gate here: a
+ * dumpster 30 m down an avenue is *in the photograph* whether or not a lamp post
+ * is 2 cm of its way, and demanding zero occlusion across 14 views x ~700
+ * instances would fail on a hair. The floor's job is to exclude furniture that
+ * is not in the picture at all.
+ *
+ * The result is recorded, not merely asserted: `tools/capture.mjs` writes it into
+ * `benchmark/captures.json` and `verify.mjs` reads it back, so a reviewer sees
+ * the counts instead of trusting a pass/fail.
+ */
+function sightline() {
+  const street = game.streetView
+  const camera = game.camera
+  // The drawing buffer's own pixel height, which is what the focal length below
+  // has to be in: a pixel radius is only a pixel radius against the frame the PNG
+  // was cut to. `devicePixelRatio` is 1 here (the harness pins the viewport), so
+  // this equals the viewport height, and reading it rather than restating the
+  // number is what keeps a future DPR-aware capture honest instead of measuring
+  // a frame twice the size of the one on disk.
+  const canvas = game.canvas ?? game.renderer?.domElement
+  const height = canvas?.height || view.viewport.height
+  // `fov` is the VERTICAL field in degrees, so the focal length in pixels is
+  // half-height over its tangent — recovered from the camera rather than restated
+  // as `height / 2 / tan(36)`, which is the same number right up until someone
+  // changes the FOV and the gate silently measures a different lens than the one
+  // taking the picture.
+  const focal = height / 2 / Math.tan((camera.fov * Math.PI) / 360)
+  // `Vector4` because the projection needs w (see the note in the loop below).
+  // `position` is gone for the same reason: with a 4-wide vector the instance
+  // origin is written straight into `viewPoint`, and a second vector holding the
+  // same three numbers is a third place for the two to disagree.
+  const viewPoint = new THREE.Vector4()
+  const clip = new THREE.Vector4()
+  const families = {}
+  let onScreen = 0
+  let legible = 0
+  let nearest = Infinity
+
+  for (const family of FURNITURE_FAMILIES) {
+    let pieces = 0
+    let read = 0
+    let biggest = 0
+    for (const name of family.pools) {
+      const pool = street.pools[name]
+      if (!pool) continue
+      const array = pool.mesh.instanceMatrix.array
+      // the geometry's own extent, in its own units, so a plane is not a cube
+      const geometry = pool.mesh.geometry
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere()
+      const unit = (geometry.boundingSphere?.radius ?? 0.87) * 0.5
+      for (let i = 0; i < pool.used; i += 1) {
+        const at = (k) => array[i * 16 + k]
+        // COLUMN NORMS, not single elements: rotation preserves length, so the
+        // norm of a basis column is the scale at every yaw. See the note above.
+        const sx = Math.hypot(at(0), at(1), at(2))
+        const sy = Math.hypot(at(4), at(5), at(6))
+        const sz = Math.hypot(at(8), at(9), at(10))
+        const radius = unit * Math.max(sx, sy, sz)
+        // The view matrix FIRST, and the depth test on its output. In view space
+        // `z` is negative in front of the lens, so `depth = -z` is the distance a
+        // reader would measure with a tape, and rejecting anything at or behind
+        // `camera.near` is what stops the OTHER TWO WRAPPED COPIES of the world
+        // from padding the count. Every pool sets `frustumCulled = false`, so
+        // nothing else in the build does this for us — a 448 m window holds three
+        // copies of every piece in it, and all but a few hundred of those are
+        // behind the camera at any moment.
+        viewPoint.set(at(12), at(13), at(14), 1).applyMatrix4(camera.matrixWorldInverse)
+        const depth = -viewPoint.z
+        if (!(depth > camera.near) || depth > camera.far) continue
+        clip.copy(viewPoint).applyMatrix4(camera.projectionMatrix)
+        // `Vector4` and not `Vector3`, and this line is the whole reason the probe
+        // works at all. `Vector3.applyMatrix4` divides by w for you, throws w away,
+        // and leaves a point 5 m in front of the lens indistinguishable from one
+        // behind it — so a `w > 0` guard written against it rejects the ENTIRE
+        // frustum and reports an empty frame.
+        //
+        // The first version of this probe did exactly that: correct reasoning,
+        // `Vector3`, and zero furniture in all fourteen views — which reads
+        // precisely like the defect it was built to find. It was found by
+        // checking the probe against a camera pointed at a known point, and it is
+        // written down here because the failure is so attractive: a gate that can
+        // only report "nothing there" agrees with any bug that puts nothing there,
+        // including its own.
+        const w = clip.w
+        if (!(w > 0)) continue
+        const ndcX = clip.x / w
+        const ndcY = clip.y / w
+        // Off-frame on BOTH axes is out. On one axis it is not: a dumpster filling
+        // the right third of the frame is in the photograph, and rejecting it for
+        // crossing the edge would make this a gate on the crop, not the world.
+        if (Math.abs(ndcX) > 1 || Math.abs(ndcY) > 1) continue
+        // A sphere of world radius r at depth d covers r * focal / d pixels of
+        // radius — an exact identity for a sphere on the optical axis and the
+        // right order of magnitude off it. It needs no second look at the NDC
+        // position: a pixel size is a property of the distance and the lens, not
+        // of where on the frame the piece landed.
+        const pixels = (radius * focal) / depth
+        if (pixels > biggest) biggest = pixels
+        if (depth < nearest) nearest = depth
+        pieces += 1
+        if (pixels >= FURNITURE_MIN_LEGIBLE_PX) read += 1
+      }
+    }
+    families[family.kind] = { pieces, legible: read, maxPx: Number(biggest.toFixed(2)) }
+    onScreen += pieces
+    legible += read
+  }
+  const kinds = Object.values(families).filter((entry) => entry.legible > 0).length
+  return {
+    pools: FURNITURE_POOLS.length,
+    onScreen,
+    legible,
+    kinds,
+    nearest: Number.isFinite(nearest) ? Number(nearest.toFixed(2)) : null,
+    byKind: families,
+  }
+}
+
+/**
  * run — take one view, and report what the world looked like when it finished.
  *
  * The report goes back to the harness rather than to a log file, because the one
@@ -634,6 +804,9 @@ async function run(id) {
     dusk: game.state.dusk,
     fade: Number(game.fade.toFixed(3)),
     banished: game.state.banishCount,
+    // pass 7's gate. Measured here because this is the only place holding the
+    // camera the PNG is taken through, after the steps that aimed it.
+    furniture: sightline(),
   }
   window.__captureDone = snapshot
   return snapshot
