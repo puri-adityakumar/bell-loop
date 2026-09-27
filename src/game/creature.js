@@ -1821,6 +1821,21 @@ export const CREATURE_SHAPE = Object.freeze({
   /** Shoulder joint height, `legLength + torsoLength`. */
   armRoot: 2.32,
   armLength: 1.36,
+  // ITERATION 2, PASS 10 — LIMB ARTICULATION. BEFORE: `armLength` was one number
+  // and one number bought one rigid stick, so the arm swung from the shoulder as a
+  // single segment and the whole limb *slid* rather than articulated. The split is
+  // the shoulder-to-elbow bone and the elbow-to-claw bone, and it is a SPLIT rather
+  // than two new numbers so that the claw still hangs at exactly `armLength`: the
+  // tip of the arm is where it was, which is the one measurement of this rig the
+  // §12.1 silhouette check can make from `CREATURE_SHAPE` alone, and a pass that
+  // moved it would have to re-justify 7:1.
+  //
+  // 0.74 / 0.62 is a 54/46 split, which is the proportion a human arm breaks at and
+  // the proportion that makes an elbow read as an elbow: equal bones read as a
+  // hinge, a long upper bone reads as a wing. `verify.mjs` asserts the sum rather
+  // than either number, so a retune of the split cannot quietly lengthen the arm.
+  armUpper: 0.74,
+  armFore: 0.62,
   neckLength: 0.14,
   headRadius: 0.15,
   headCentre: 2.65,
@@ -1850,8 +1865,34 @@ export const CREATURE_SHAPE = Object.freeze({
  * this table already had once: gating the §6.1 edge-of-vision angle on "does this
  * state sway at all" also caught `chase`, which sways 0.05, and a chase presented
  * 42° off the bearing to the player is a chase that appears not to be coming at
- * them. The two properties are different — `sway` is the gait, `edge` is *where
- * in the frame the thing stands* — and only the ranging states set the second.
+ * them. The two properties are different — `sway` is the idle drift, `edge` is
+ * *where in the frame the thing stands* — and only the ranging states set the
+ * second.
+ *
+ * `sway` AND `stride` — PASS 10, and one of them is a repair.
+ *
+ * BEFORE this pass `sway` was documented right here as "the gait" and was read by
+ * NOTHING: the view hard-coded one swing amplitude (0.5 on the legs, 0.7 on the
+ * arms) and applied it to every state, so a stalking thing and a hunting thing had
+ * identical limbs and a telegraph's arms flailed at chase amplitude. `verify.mjs`
+ * asserted the column was ordered and the column never reached the screen, which
+ * is the pass-9 review's finding in its purest form: a number that is logged is
+ * not a gate.
+ *
+ * AFTER, the two columns are two different motions and both are read:
+ *
+ *  - `sway` is the **idle** sway — the weight shifting across the feet, the slow
+ *    drift of a standing figure — in units of `IDLE_SWAY_RADIANS`. It is largest
+ *    for the ranging states, which is the same sentence the old comment was making
+ *    with the wrong word, and it is near zero for a chase, which is squared up to
+ *    the player and closing.
+ *  - `stride` is the **gait** — how hard the limbs are driven, 0 (dormant) to 1.08
+ *    (enraged). It is the per-state drive that the amplitude is scaled BY, so the
+ *    ordering is a claim about the frame: a chase's shoulder swing is 0.84 rad and
+ *    a telegraph's is 0.035, a factor of 24, where before it was exactly 1.0.
+ *
+ * The `edge` bug story above is unchanged and is exactly why `edge` stayed its own
+ * column through this pass rather than being folded into either of them.
  *
  * `dormant` and `dismissing` are not §6.1 states — they are what a *removal* and a
  * *departure* look like, and they are here because §8.2's phase-out and §7.4's
@@ -1859,18 +1900,29 @@ export const CREATURE_SHAPE = Object.freeze({
  */
 export const CREATURE_PRESENTATION = Object.freeze({
   /** Off the field entirely (§7.4, §8.2, and every pre-awakening frame). */
+  // `stride: 0` and `sway: 0`: a thing that is not there does not breathe and does
+  // not walk. BEFORE this pass `dormant`'s row was read by nothing, so it did not
+  // matter; now both columns reach the screen, and a non-zero value here would
+  // animate a figure nobody can see.
   dormant: Object.freeze({
     present: 0, scale: 1, presence: 0, eye: 0, flicker: null,
-    lean: 0, sway: 0, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 0,
+    lean: 0, sway: 0, stride: 0, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 0,
   }),
   /**
    * The departure, §8.2's phase-out and §7.4's banish fading out. A removal the
    * player cannot see is a removal they read as a stutter, and §8.2 exists so that
    * being cornered is *survivable* — it has to be legible as relief.
+   *
+   * `stride: 0` is a decision and not an omission. A departing figure whose legs
+   * kept striding would be walking away while it dissolved, and a figure that stops
+   * dead is a figure being switched off; `presence` is already falling across
+   * `FADE_SECONDS.dismiss`, so the motion has nothing left to support. BEFORE: the
+   * row inherited the gait that every other row had, because the gait had one
+   * amplitude for every state.
    */
   dismissing: Object.freeze({
     present: 1, scale: 1, presence: 0.72, eye: 1.1, flicker: null,
-    lean: 0.08, sway: 0, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 0,
+    lean: 0.08, sway: 0, stride: 0, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 0,
   }),
   /**
    * TELEGRAPH — "appears at long range and is gone when you look back" (§6.1).
@@ -1882,30 +1934,40 @@ export const CREATURE_PRESENTATION = Object.freeze({
    * the player to be unsure whether they saw it at all. A thing that is there,
    * then is not, then is, is the apparition. It is also the only state that does
    * not lean: it has not arrived, so it does not read as moving towards anything.
+   *
+   * `sway: 0.03 -> 0.35` and a NEW `stride: 0.12`. The apparition is a rumour at
+   * ninety metres, so both its motions are scaled to the point where a player
+   * would swear they saw the shape shift and could not say which part of it
+   * moved. BEFORE: it walked at full gait amplitude, because the gait had exactly
+   * one amplitude and it was applied to every state.
    */
   telegraph: Object.freeze({
     present: 1, scale: 0.88, presence: 0.3, eye: 0.5,
     flicker: Object.freeze({ rate: 5.4, depth: 0.62, floor: 0.06 }),
-    lean: 0, sway: 0.03, scan: 0.12, edge: 0, recoil: 0, redden: 0, heave: 0.35,
+    lean: 0, sway: 0.35, stride: 0.12, scan: 0.12, edge: 0, recoil: 0, redden: 0, heave: 0.35,
   }),
   /**
    * STALK — "moves to the player's last-heard position and ranges around it. It
    * does not beeline" (§6.1).
    *
-   * The lean is nearly upright and the sway is the widest of any hunting state,
-   * because this is a thing *ranging*, not a thing *coming*. The scan term turns
-   * the head independently of the body, which is the second half of the same
+   * The lean is nearly upright and the idle sway is the widest of any hunting
+   * state, because this is a thing *ranging*, not a thing *coming*. The scan term
+   * turns the head independently of the body, which is the second half of the same
    * sentence: a searcher visibly checks a street. The positioning angle itself is
    * `stalkEdgeAngle`, a property of the camera rather than of this row.
+   *
+   * `sway: 0.1 -> 1` — a full idle sway, i.e. `IDLE_SWAY_RADIANS` of drift — and a
+   * NEW `stride: 0.55`: a ranging thing walks, at a little over half a chase's
+   * drive.
    */
   stalk: Object.freeze({
     present: 1, scale: 0.96, presence: 0.62, eye: 0.8, flicker: null,
-    lean: 0.06, sway: 0.1, scan: 0.5, edge: 1, recoil: 0, redden: 0, heave: 0.6,
+    lean: 0.06, sway: 1, stride: 0.55, scan: 0.5, edge: 1, recoil: 0, redden: 0, heave: 0.6,
   }),
   /** REPOSITION is STALK with the search origin changing; §6.1's searching beat. */
   reposition: Object.freeze({
     present: 1, scale: 0.96, presence: 0.62, eye: 0.8, flicker: null,
-    lean: 0.04, sway: 0.16, scan: 0.72, edge: 1, recoil: 0, redden: 0, heave: 0.7,
+    lean: 0.04, sway: 1.15, stride: 0.68, scan: 0.72, edge: 1, recoil: 0, redden: 0, heave: 0.7,
   }),
   /**
    * CHASE — the full form. Everything that was withheld arrives at once: the
@@ -1913,10 +1975,17 @@ export const CREATURE_PRESENTATION = Object.freeze({
    * fastest heave. A chase that still drifted and still scanned would be
    * indistinguishable from a stalk, and the player is owed an unambiguous read on
    * the one state that can end the run.
+   *
+   * `sway: 0.05 -> 0.4` and a NEW `stride: 1`. The idle sway is nearly OFF for a
+   * chase, and that is the readable half: this is the one state that is squared up
+   * to you and closing, and a thing that drifts while it closes is a thing that is
+   * not sure it has you. The stride is the whole of the pass's third claim — the
+   * arms swing 0.84 rad at the shoulder with the elbow a further 1.05 rad behind
+   * them, and the same three numbers on a telegraph produce 0.035.
    */
   chase: Object.freeze({
     present: 1, scale: 1.04, presence: 1, eye: 1.6, flicker: null,
-    lean: 0.26, sway: 0.05, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 1.5,
+    lean: 0.26, sway: 0.4, stride: 1, scan: 0, edge: 0, recoil: 0, redden: 0, heave: 1.5,
   }),
   /**
    * STAGGER — §7.4's recoil, and the one beat where the hammer is visibly *doing*
@@ -1924,11 +1993,17 @@ export const CREATURE_PRESENTATION = Object.freeze({
    * uncertainty of a telegraph. The displacement itself is not a constant here — it
    * is read off the §7.4 recoil clock by `staggerRecoil`, so the figure is thrown
    * exactly as hard as the window is long.
+   *
+   * `stride: 0.4` is deliberately not 0. §7.4's window is 1.6 s and the figure is
+   * being thrown backwards through it; a limb that locks while the body is still
+   * moving reads as a mannequin on a swing. It is the only state whose limbs move
+   * for a reason other than walking, and the drive is a floor under the recoil pose
+   * rather than a replacement for it.
    */
   stagger: Object.freeze({
     present: 1, scale: 1, presence: 0.85, eye: 1.2,
     flicker: Object.freeze({ rate: 7.7, depth: 0.3, floor: 0.45 }),
-    lean: -0.1, sway: 0.3, scan: 0, edge: 0, recoil: 1, redden: 0, heave: 0.2,
+    lean: -0.1, sway: 0.8, stride: 0.4, scan: 0, edge: 0, recoil: 1, redden: 0, heave: 0.2,
   }),
   /**
    * ENRAGED — §10.2, reddened. The only other state with a colour of its own, and
@@ -1937,10 +2012,15 @@ export const CREATURE_PRESENTATION = Object.freeze({
    * survive both, because the finale is the moment the player is looking at it
    * hardest. `redden` is a 0..1 mix factor; the two hexes it mixes are art, and
    * they live in `creatureView.js`.
+   *
+   * `stride: 1.08` is the only value above 1 in the table and it is what §10.2's
+   * 5.2 m/s asks for: the same rig, driven 8% harder, at the tier where the
+   * creature is faster than a walking player. `sway: 0.04 -> 0.3` keeps the finale
+   * from drifting while it runs you down, which is the same rule as CHASE's.
    */
   enraged: Object.freeze({
     present: 1, scale: 1.08, presence: 1, eye: 2.1, flicker: null,
-    lean: 0.34, sway: 0.04, scan: 0, edge: 0, recoil: 0, redden: 1, heave: 1.9,
+    lean: 0.34, sway: 0.3, stride: 1.08, scan: 0, edge: 0, recoil: 0, redden: 1, heave: 1.9,
   }),
 })
 
@@ -2152,6 +2232,599 @@ export function apparitionFlicker(time, offset = 0) {
   return Math.pow(clampUnit(0.5 + 0.5 * (a * 0.62 + b * 0.38)), 2.2)
 }
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 10 — CREATURE FIDELITY I
+//
+// The figure is the only thing in the game a player looks at on purpose, and nine
+// passes of world-building had left it doing four things: standing, bobbing, sliding
+// its limbs and glowing. This block is the four things it was not doing, and all
+// four are HERE, in the pure half, because `creatureView.js` is a renderer: a
+// number decided in the view is a number the gate cannot see. That is the pass-9
+// review's finding, and it is why `stride` and `sway` had to be read here rather
+// than invented there.
+//
+//  1. `idleBreath`   — a slow, deterministic breath and shoulder sway, so a thing
+//                      standing ninety metres away in fog is alive, not a cut-out.
+//  2. `limbGait`     — a stride amplitude PER STATE and an elbow that lags the
+//                      shoulder, which is the difference between a limb that
+//                      articulates and a limb that slides.
+//  3. `dripStep`     — the viscous trail: decals at footfalls, a hard cap on how
+//                      many are alive, and the oldest fading first.
+//  4. `eyeFlare`     — the eyes flaring on the frame the creature first spots you,
+//                      and settling afterwards.
+//
+// EVERY MOTION HERE IS A FUNCTION OF `(time, offset)` OR OF A COUNT OF METRES. No
+// `Math.random`, no `Date.now`, no `performance.now`, no frame counter, and no
+// state that survives a call — which is what D10 asks for and what makes §16.5's
+// fourteen captures reproducible twice each.
+// ---------------------------------------------------------------------------
+
+/**
+ * IDLE_BREATH_SECONDS — seconds per breath, 4.2.
+ *
+ * BEFORE: none. A standing figure was perfectly still between its bobs.
+ *
+ * 4.2 s is 14 breaths a minute, which is roughly what a 2.8 m figure that is not
+ * trying to look like a person breathes. It is also the number that makes the
+ * motion a *breath* rather than a sway: at 1.2 s the same curve is a tremble, and
+ * at 9 s a player stops noticing it inside the first chase, which is where this
+ * motion has to survive longest.
+ */
+export const IDLE_BREATH_SECONDS = 4.2
+
+/**
+ * IDLE_BREATH_RATIO — the second partial's rate, as a multiple of the first.
+ *
+ * Two sines again, for `apparitionFlicker`'s reason: one sine is a pulse and a
+ * pulse is a machine. 0.41 is close enough to 5/12 that the two beat against each
+ * other over ~10 s and far enough from any round ratio that the composite never
+ * quite repeats inside a chase. It is deliberately NOT 2 or 3 — those would put a
+ * clean sub-harmonic in the breath and give the figure a visible double-bounce.
+ */
+export const IDLE_BREATH_RATIO = 0.41
+
+/**
+ * IDLE_BREATH_DEPTH — the peak scale change, as a fraction.
+ *
+ * BEFORE: none. AFTER: ±0.016, so a 2.80 m figure rises and falls 4.5 cm at the
+ * crown. That is the number the brief's "subtle" is: below about 0.008 the whole
+ * rig shimmers like a bad shadow map and a reviewer blames the renderer; above
+ * about 0.03 the figure visibly pulses and reads as a cut-out on a turntable
+ * rather than as a body.
+ */
+export const IDLE_BREATH_DEPTH = 0.016
+
+/**
+ * IDLE_SWAY_SECONDS / IDLE_SWAY_RADIANS — the shoulder sway.
+ *
+ * BEFORE: none, and the `sway` column it now drives was read by nothing. AFTER:
+ * ±0.03 rad (1.7°) at a full `sway` of 1, on a 5.9 s period that shares no factor
+ * with the breath.
+ *
+ * Why 1.7°: the shoulder line is 0.40 m wide, so a yaw of 0.03 rad moves the far end
+ * of that bar by 6 mm. It has to be that small — a shoulder sway you can name is a
+ * shoulder twitch — and it has to run on a *different* period from the breath, or
+ * the two lock into one loop and the figure reads as rocking rather than breathing.
+ */
+export const IDLE_SWAY_SECONDS = 5.9
+export const IDLE_SWAY_RADIANS = 0.03
+
+/**
+ * idleBreath — the idle micro-motion, as two signed numbers.
+ *
+ * `breath` is a SCALE DELTA, not a scale: the caller adds it to 1. It is bounded by
+ * construction (`IDLE_BREATH_DEPTH` is the amplitude of a weighted sum of two unit
+ * sines), so a pose can never hand the view a negative figure.
+ *
+ * `sway` is in RADIANS and has already been multiplied by the state's `sway`
+ * column, so `sway: 0` in a row means no idle drift at all and the view has nothing
+ * to apply. Multiplying here rather than in the view is the point: a per-state depth
+ * and a per-state angle are the same fact, and the view is not allowed to own it.
+ *
+ * Pure in `time` and `offset` exactly as `apparitionFlicker` is, so a capture that
+ * steps the world to a known clock gets the same breath twice.
+ *
+ * @param {number} time seconds, the world's own animation clock
+ * @param {number} [offset] per-creature phase
+ * @param {number} [sway] the state's `sway` column, 0..1.2
+ * @returns {{breath: number, sway: number}} both signed; `breath` is a scale delta
+ */
+export function idleBreath(time, offset = 0, sway = 1) {
+  if (!Number.isFinite(time)) return { breath: 0, sway: 0 }
+  const rate = (2 * Math.PI) / IDLE_BREATH_SECONDS
+  const a = Math.sin(time * rate + offset)
+  const b = Math.sin(time * rate * IDLE_BREATH_RATIO + offset * 1.7)
+  const depth = Number.isFinite(sway) ? Math.max(0, sway) : 0
+  return {
+    breath: (a * 0.7 + b * 0.3) * IDLE_BREATH_DEPTH,
+    sway: Math.sin(time * ((2 * Math.PI) / IDLE_SWAY_SECONDS) + offset * 0.6) * IDLE_SWAY_RADIANS * depth,
+  }
+}
+
+/**
+ * STRIDE_ARC — the rate multiplier the gait phase runs at.
+ *
+ * BEFORE: the rate was `26` and the amplitude `0.5`, both hard-coded in
+ * `creatureView.js` and neither reachable from a check. AFTER: the rate is here and
+ * `stridePhase` below applies it, so "how fast does a chase walk" is a number a
+ * test can read and a retune can move without opening a file a test cannot import.
+ *
+ * 26 against a `heave` of 1.5 is 2.87 rad/s at the peak of the bob, a 0.46 Hz
+ * stride — a slow, deliberate walk. That is UNCHANGED from before this pass on
+ * purpose: the brief asks for better articulation, not a sprint, and this figure's
+ * pace is a design decision (a thing that lopes) rather than a fidelity one.
+ */
+export const STRIDE_ARC = 26
+
+/** The phase offset the state name contributes, so two creatures are not in step. */
+const STRIDE_STATE_OFFSET = 0.7
+
+/**
+ * LEG_SWING — the leg amplitude at a full `stride` of 1, radians.
+ *
+ * BEFORE: the literal `0.5` in `creatureView.js`, applied to every state. AFTER:
+ * the same 0.5, at a full stride, scaled by the row. A chase still swings its legs
+ * exactly as far as it did; a telegraph now swings them 0.06 rad, which is the
+ * whole of "the apparition is barely there".
+ */
+export const LEG_SWING = 0.5
+
+/**
+ * ARM_SWING_BASE / ARM_SWING_GAIN — the shoulder amplitude, `drive x (base + gain x
+ * drive)`.
+ *
+ * BEFORE: the literal `0.7`, applied to every state, so the arms of a thing at
+ * ninety metres swung exactly as hard as the arms of the thing about to catch you.
+ * AFTER: 0.84 rad (48°) at a full stride, and 0.035 rad (2°) at a telegraph's 0.12.
+ *
+ * The quadratic shape is why it is two numbers and not one. A linear
+ * `drive x amplitude` would give a 0.12-stride telegraph 12% of a chase, which is
+ * 0.10 rad — visible on a figure whose entire job is to be unsure of. The quadratic
+ * costs 0.035 rad instead, and the extra it spends at the top is that an enraged
+ * stride drives 8% past a chase's rather than landing on the same number.
+ */
+export const ARM_SWING_BASE = 0.22
+export const ARM_SWING_GAIN = 0.62
+
+/**
+ * ARM_ELBOW_REST / ELBOW_FLEX — the elbow's bend in radians, and how much of it is
+ * gait.
+ *
+ * BEFORE: there was no elbow. The arm was one cylinder on one pivot, so the whole
+ * limb rotated rigidly from the shoulder — which is what the brief calls sliding,
+ * and it is worse than it sounds: a rigid swinging stick keeps its own silhouette at
+ * every angle, so the eye reads one object oscillating rather than two segments
+ * working.
+ *
+ * The bend is never zero, and that is the other half of the fix. `ARM_ELBOW_REST`
+ * 0.35 rad is the hang of a long-armed thing at rest; an elbow that straightened
+ * once per stride would be a mechanism, and a mechanism is a machine.
+ */
+export const ARM_ELBOW_REST = 0.35
+export const ELBOW_FLEX = 0.7
+
+/**
+ * ELBOW_LAG — how far behind the shoulder the elbow peaks, in radians of gait.
+ *
+ * THIS is the claim the pass is actually making about the arms, and it is a
+ * *phase* relationship rather than an amplitude, which is why it can be asserted:
+ * sweep a stride, find each peak, and the elbow's has to come later.
+ *
+ * BEFORE: nothing to lag. AFTER: 0.66 rad, a fifth of a stride cycle — about 0.23 s
+ * at a chase's 2.87 rad/s. Long enough to read as a forearm trailing an upper arm,
+ * short enough that the limb does not look broken. A lag of 0 is a rigid stick with
+ * a decorative joint; a lag of pi puts the elbow's peak opposite the shoulder's,
+ * which is a bird's wing and reads as broken rather than as fast.
+ */
+export const ELBOW_LAG = 0.66
+
+/**
+ * stridePhase — the gait phase in radians, derived from the pose and never from a
+ * clock of the view's own.
+ *
+ * Moved here from `creatureView.js` for the reason `apparitionFlicker` lives in
+ * this file: a rig that keeps its own phase accumulator is a rig that drifts away
+ * from the pose it is drawing. `heave` carries the bob and therefore the rate, so
+ * the phase speeds up and slows down with it; the state name contributes a constant
+ * offset so two creatures in one scene are never in step.
+ *
+ * BEFORE: `pose.heave * 26 + pose.state.length * 0.7`, in the view. AFTER: the same
+ * arithmetic with `STRIDE_ARC` and `STRIDE_STATE_OFFSET`, here, where a test can
+ * read it.
+ *
+ * @param {number} heave the pose's `heave`, the bob amplitude and the gait rate
+ * @param {string} state the state name
+ * @returns {number} radians
+ */
+export function stridePhase(heave, state) {
+  const rate = Number.isFinite(heave) ? heave : 0
+  const name = typeof state === 'string' ? state : ''
+  return rate * STRIDE_ARC + name.length * STRIDE_STATE_OFFSET
+}
+
+/**
+ * limbGait — the three joint angles for one stride, radians.
+ *
+ * `leg` and `swing` are the counter-phase pair the view has always applied, now
+ * scaled by the state's `stride`. `elbow` is the new one, and it is NEGATIVE
+ * because a bend forward is a negative rotation about +X for a limb hanging down
+ * local -Y — the sign is stated here so the view never has to reason about it.
+ *
+ * The elbow's curve is `-(rest + flex x drive) x (0.5 + 0.5 sin(phase - lag))`: a
+ * full bend-and-straighten through the stride, peaking `ELBOW_LAG` after the
+ * shoulder reaches forward. `verify.mjs` measures that delay off the function rather
+ * than restating the constant.
+ *
+ * @param {number} phase radians, from `stridePhase`
+ * @param {number} [drive] the state's `stride` column
+ * @returns {{leg: number, swing: number, elbow: number}}
+ */
+export function limbGait(phase, drive = 0) {
+  if (!Number.isFinite(phase)) return { leg: 0, swing: 0, elbow: 0 }
+  const d = Number.isFinite(drive) ? Math.max(0, drive) : 0
+  const wave = Math.sin(phase)
+  const bend = ARM_ELBOW_REST + ELBOW_FLEX * d
+  return {
+    leg: wave * LEG_SWING * d,
+    // A negative rotation about +X swings the limb FORWARD, so the arm is furthest
+    // forward where `sin(phase)` is 1, and the elbow's curve below is phased against
+    // that. It was the other way round in the first version — `0.5 - 0.5 sin(...)` —
+    // which put the deepest bend at the top of the BACK swing, and the check below
+    // found it by measuring the two peaks instead of restating the lag.
+    swing: -wave * d * (ARM_SWING_BASE + ARM_SWING_GAIN * d),
+    elbow: -bend * (0.5 + 0.5 * Math.sin(phase - ELBOW_LAG)),
+  }
+}
+
+/**
+ * isSpot — did the creature just SEE the player, on this transition?
+ *
+ * BEFORE: nothing in the codebase asked this question. The presentation had a
+ * `telegraph` state for the Act I apparition and a jump to full chase, and the
+ * player's eye was given nothing at all in between: awareness filled from 0 to 1
+ * over about eight seconds of §6.2's rate, and the only sign was the vignette
+ * tightening as the HUD quantized.
+ *
+ * AFTER: one function, and it is deliberately narrow. It fires on the §6.2 edge
+ * `-> chase` and on nothing else, which excludes three transitions that a looser
+ * test would have caught:
+ *
+ *  - `chase -> chase`, which is every frame of a chase. A test that asked "is it
+ *    chasing" would re-arm the flare sixty times a second and the eye would sit
+ *    permanently bright.
+ *  - `stalk -> enraged`, §10.2's finale edge. The finale is not a spotting: the
+ *    creature is given permanent position knowledge by the third portal, so it has
+ *    nothing to discover, and a flare here would claim a surprise the design has
+ *    already spent. That is also why this names the state rather than testing
+ *    `CAPTURE_STATES`, which is `['chase', 'enraged']` and would have fired on
+ *    both.
+ *  - anything out of `telegraph`, which cannot see at all. Act I is a rumour.
+ *
+ * @param {{from?: string, to?: string}} [step] a `creatureStep` result
+ * @returns {boolean}
+ */
+export function isSpot(step) {
+  if (!step || typeof step.to !== 'string') return false
+  return step.to === 'chase' && step.from !== 'chase'
+}
+
+/**
+ * EYE_FLARE_SECONDS — how long the flare lasts, 0.9 s.
+ *
+ * BEFORE: none. AFTER: 0.9 s from the spotting frame.
+ *
+ * 0.9 s is about a third of §6.2's eight-second fill, which is the relationship
+ * that matters: the flare is the *punctuation* on a meter the player has been
+ * watching for eight seconds, so it has to be short enough that the next one
+ * registers as a new event. At 2 s two chases in a §8.2 cycle overlap into one
+ * long bright eye and the second one stops being a surprise.
+ */
+export const EYE_FLARE_SECONDS = 0.9
+
+/**
+ * EYE_FLARE_GAIN — the peak ADDED brightness of the eye, as a multiplier.
+ *
+ * BEFORE: none; the eye's own `pose.eye` was the whole of its brightness and is
+ * clamped to 1 by `clampUnit` in `creaturePose`. AFTER: up to 3.2x that at the peak,
+ * falling to 1x at the end of the window.
+ *
+ * Why the gain is a *colour* multiplier and not an opacity: `eyeMaterial` is
+ * `AdditiveBlending` with `fog: false` and its opacity is already spent on
+ * `pose.eye`, which the flicker also scales (`stagger` multiplies both by the same
+ * `g`). Pushing opacity above 1 would work and would also be unreadable — the
+ * flicker could no longer dim a flaring eye without a second term. Scaling the
+ * colour keeps the two independent: the eye can flare AND flicker.
+ *
+ * Why 2.2 and not 1.2: the eye is unfogged additive over a body that is near-black,
+ * so a 1.2x gain is a change nobody would notice at 30 m, and this is a telegraph
+ * that has to survive the same fog everything else does. 3.2x at the peak is still
+ * a small quad — `EYE_MAX_SPAN` in `tools/png-luma.mjs` rejects anything past 14 px
+ * precisely so a lamp head cannot pass as an eye, and a flare that GREW the quad
+ * would be eating the creature gate's own margin. So the gain is brightness only.
+ */
+export const EYE_FLARE_GAIN = 2.2
+
+/**
+ * EYE_FLARE_GROWTH — the quad's peak size multiplier, 1.2.
+ *
+ * A real eye that flares dilates as well as brightens, and 20% is the smallest
+ * swell that reads at all. The ceiling is the gate's, not this file's: the eye is
+ * held at `EYE_PIXEL_FLOOR` 7 px by `eyeWorldSize`, so the worst case this can
+ * produce is 8.4 px against `EYE_MAX_SPAN` 14 — and the check that says so is in
+ * `verify.mjs`, because "a flare must not grow the eye past the eye-finder's own
+ * ceiling" is a claim about a number in another repository file.
+ */
+export const EYE_FLARE_GROWTH = 1.2
+
+/**
+ * eyeFlare — the flare envelope, `0` outside the window and `1` on the frame the
+ * creature spots you.
+ *
+ * BEFORE: nothing read a sighting. AFTER: a squared fall from the peak, which is
+ * the shape the brief asks for ("briefly flare bright ... then settle to their
+ * normal glow") and the cheapest of the three candidates:
+ *
+ *  - a linear fall is a triangle, and a triangle has a visible corner at the end
+ *    where the derivative jumps;
+ *  - an exponential never reaches zero, so "settle to normal" has no frame at
+ *    which it HAS settled and the gate would have to test an epsilon;
+ *  - `1 - u` squared reaches exactly zero at `EYE_FLARE_SECONDS` and is
+ *    continuous, so `eyeFlare(w) === 0` is a fact about the function.
+ *
+ * A sighting is a frame, not a moment, so the value on that frame is the PEAK and
+ * there is no attack: a telegraph that ramps up over 200 ms is a telegraph the
+ * player can miss, and this one fires on the same frame as the state change.
+ *
+ * @param {number} seconds since the spotting frame; `null`/negative before it
+ * @returns {number} 0..1
+ */
+export function eyeFlare(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds >= EYE_FLARE_SECONDS) return 0
+  const u = 1 - seconds / EYE_FLARE_SECONDS
+  return u * u
+}
+
+/**
+ * DRIP_STRIDE_METRES — metres of ground between one footfall's decal and the next.
+ *
+ * BEFORE: nothing. The creature left no trace of any kind: it walked, and where it
+ * had been was indistinguishable from where it had not.
+ *
+ * 0.9 m is a stride, and the decision it encodes is that the trail is keyed to
+ * DISTANCE rather than to the drawn gait — because a trail's density is a fact
+ * about how far a thing walked, and tying it to `STRIDE_ARC` would have made the
+ * marks' spacing depend on the bob's amplitude, which is 1.5 in a chase and 0.6 in
+ * a stalk. At 0.9 m a creature closing at §10.2's 5.2 m/s lays 5.8 marks a second
+ * and one at tier 0's 2.2 lays 2.4, which is the difference between a smear and a
+ * dotted line, and both read.
+ *
+ * The arithmetic is frame-rate independent by construction, and that is the whole
+ * reason it is a count of metres rather than an accumulator of per-frame steps: at
+ * 5.2 m/s a 60 Hz frame moves 8.7 cm, so an accumulator that added `walked` and
+ * tested a threshold would place the same marks at 30 fps and at 144 fps and only
+ * agree with the 60 fps number by luck. The remainder is CARRIED, never dropped.
+ */
+export const DRIP_STRIDE_METRES = 0.9
+
+/**
+ * TRAIL_MAX — decals alive at once.
+ *
+ * BEFORE: none, so there was no ceiling to have. AFTER: 16, and the ceiling is
+ * load-bearing rather than decorative, which is the only interesting thing about a
+ * cap: at 5.8 marks a second and `DRIP_LIFE` 3.2 s the finale wants 18.6 marks and
+ * gets 16, so the two oldest are evicted mid-chase. `verify.mjs` drives the
+ * reducer to `TRAIL_MAX + 8` and requires that it is still `TRAIL_MAX`.
+ *
+ * 16 is also the draw-call budget's answer: the whole trail is ONE mesh with
+ * `TRAIL_MAX` quads in it (see `creatureView.js`), so a bigger cap would cost
+ * vertices and a smaller one would cost the trail. Below about 10 a tier-0 chase
+ * runs out of marks and the creature appears to stop leaving a trail at exactly the
+ * moment it is walking towards you.
+ */
+export const TRAIL_MAX = 16
+
+/**
+ * DRIP_SPREAD — seconds for a mark to reach full strength, 0.12.
+ *
+ * A mark that appears at full opacity is a decal that switches on; one that fades
+ * in over 0.12 s reads as something landing and spreading, which is the whole
+ * difference between "a sprite appeared" and "something dripped here". It is short
+ * enough to be invisible as a delay — at 0.4 s a player would watch the trail grow
+ * behind the creature.
+ */
+export const DRIP_SPREAD = 0.12
+
+/**
+ * DRIP_LIFE — seconds a mark is visible, 3.2.
+ *
+ * 3.2 s at a tier-0 chase is 7.7 marks of tail; at the finale's 5.2 m/s it is 18.6,
+ * which is the number `TRAIL_MAX` is set against. The floor is a legible trail
+ * rather than a permanent stain: this world resets its maze every bell and the
+ * creature re-emerges 90 m away, so a trail that never dried would accumulate
+ * into a map of everywhere the thing has ever been and stop being information.
+ */
+export const DRIP_LIFE = 3.2
+
+/**
+ * DRIP_RADIUS / DRIP_ASPECT / DRIP_LIFT — the mark itself, in metres.
+ *
+ * 0.15 m across is a foot's worth of road, and it is rejected as the creature's eye
+ * TWICE OVER, which is the whole reason the size is what it is. At §16.5.8's 9 m a
+ * mark spans about 16 px, past `tools/png-luma.mjs`'s own `EYE_MAX_SPAN` 14 — so even
+ * a bright one could not pass — and at luma 12 it is nowhere near that module's
+ * `EYE_MIN` 150 floor, so a dark one is never even considered. The checks that say so
+ * are in `verify.mjs`, because the claim is about a number in another repository file.
+ *
+ * `DRIP_ASPECT` 0.62 squashes it into an ellipse, for `streetView.js`'s puddle
+ * reason: a circle of anything is a painted dot, and a puddle pass that had
+ * learned this is the precedent being followed. `DRIP_LIFT` 0.03 m is ABOVE pass
+ * 8's water: `PUDDLE_HALO_LIFT` is 0.01 and the water surface sits
+ * `PUDDLE_LIFT_GAP` 0.004 above that, so a mark drawn at the halo's height is
+ * invisible on a third of the road. No `polygonOffset`, for the same reason the
+ * puddles use none: this is a plane at a fixed lift and a z-fight would need them
+ * to be coplanar, which is the one thing they are not.
+ */
+export const DRIP_RADIUS = 0.15
+export const DRIP_ASPECT = 0.62
+export const DRIP_LIFT = 0.03
+
+/**
+ * DRIP_OPACITY — the peak alpha of a mark, 0.55.
+ *
+ * It is a BLEND and can never reach 1: an opaque mark is a hole cut in the road,
+ * and a hole cut in the road is a shadow, which this world already has a family of.
+ * 0.55 over asphalt under a sodium pool is the difference between a stain and a
+ * shadow, and the number is asserted in both directions — too low and the trail is
+ * only visible where a lamp happens to be.
+ */
+export const DRIP_OPACITY = 0.55
+
+/**
+ * DRIP_COLOUR — the mark's colour, as a hex.
+ *
+ * BEFORE: nothing. AFTER: `0x0b0c10`, which is a shade cooler and a shade darker
+ * than `PALETTE.puddle` (0x0d0e11) and darker than `PALETTE.wetSheen`. A mark that
+ * is wet rather than shadowed is *slightly* lighter than the water it sits in, and
+ * this is a wet thing: it is asserted against both in `verify.mjs` so a later pass
+ * cannot repaint the trail as a shadow and leave the "viscous" claim unbacked.
+ */
+export const DRIP_COLOUR = 0x0b0c10
+
+/** The region of the mix that owns each mark's shape, so a seed replay is identical. */
+const DRIP_SALT = 0x44524950
+
+/**
+ * dripAlpha — a mark's strength at a given age, 0..1.
+ *
+ * Two segments and a reason for each: `DRIP_SPREAD` to come up (it landed) and the
+ * rest of `DRIP_LIFE` to go down, quadratically (it is drying). A linear tail would
+ * be visible as a mark being switched off; this one has no corner in it.
+ *
+ * This is where "oldest fades first" is TRUE rather than claimed: alpha is a pure
+ * function of age, so among a set of marks the oldest is always the faintest and is
+ * always the next to go, and `verify.mjs` asserts the monotonicity rather than the
+ * ordering of a particular frame.
+ *
+ * @param {number} age seconds since the mark was laid
+ * @returns {number} 0..1
+ */
+export function dripAlpha(age) {
+  if (!Number.isFinite(age) || age < 0) return 0
+  if (age >= DRIP_LIFE) return 0
+  if (age < DRIP_SPREAD) return age / DRIP_SPREAD
+  const u = (age - DRIP_SPREAD) / (DRIP_LIFE - DRIP_SPREAD)
+  return (1 - u) * (1 - u)
+}
+
+/** An empty trail: fresh arrays, so a caller cannot reach in and edit one it was given. */
+export function createDripTrail() {
+  return { marks: [], walked: 0, dropped: 0, suppressed: 0, spare: 0 }
+}
+
+/**
+ * dripStep — one frame of the viscous trail, as a pure reducer.
+ *
+ * The trail is the only state in this pass, and it is a REDUCER rather than a class
+ * for the reason §6.5 wants of this file: `dripStep(trail, frame)` returns a new
+ * trail and touches nothing, so `verify.mjs` can run a thousand frames of walking in
+ * a loop and compare the result against a hundred frames of the same walk taken in
+ * one go. A class with a `this.marks.push` could only be tested by watching it.
+ *
+ * The rules, in the order they are applied:
+ *
+ *  1. **Nothing is laid while the creature is not there.** `present: false` is the
+ *     §7.4 banish and the Act I telegraph, and a telegraph that drips on the road it
+ *     has not walked to is the bug this rule exists to prevent.
+ *  2. **Nothing is laid for standing still.** The carrier is `walked`, a count of
+ *     METRES, so a creature that is present and motionless accumulates nothing. This
+ *     is why the drip is not keyed to the drawn stride: the drawn stride advances
+ *     for a standing creature, and a version keyed to it would drip in place forever.
+ *  3. **`clear: false` suppresses the drop** and counts it. That is the §16.5.5 pupil
+ *     stand-off: a mark laid inside `PORTAL_FURNITURE_CLEAR` of a portal is a dark
+ *     decal on the road between the gate and the camera that photographs it, and the
+ *     pass-3 gate measures the luma of the HOLE in that frame. `suppressed` is
+ *     published so a check can require the rule to have fired, which is the
+ *     `dressingRejected` discipline pass 6 established for the same reason.
+ *  4. **The cap evicts the OLDEST**, which `dripAlpha` has already made the
+ *     faintest. The survivor list is oldest-first, always, so "oldest fades first"
+ *     and "oldest goes first" are the same statement and cannot be got wrong in a way
+ *     the ordering hides.
+ *
+ * @param {object} trail from `createDripTrail`
+ * @param {object} [frame]
+ * @param {number} [frame.walked] metres the creature covered this frame
+ * @param {number} [frame.dx] this frame's x delta, for the foot that planted
+ * @param {number} [frame.dz] this frame's z delta
+ * @param {number} [frame.x] the drawn x to lay the mark at
+ * @param {number} [frame.z] the drawn z
+ * @param {number} [frame.time] the world's clock, for the mark's age
+ * @param {boolean} [frame.present] is the figure on screen
+ * @param {boolean} [frame.clear] is this spot outside the portal stand-off
+ * @param {number} [frame.seed] the run's seed
+ * @returns {{trail: object, dropped: object|null}} the new trail and the new mark
+ */
+export function dripStep(trail, frame = {}) {
+  const before = trail && Array.isArray(trail.marks) ? trail : createDripTrail()
+  const walked = Number.isFinite(frame.walked) ? Math.max(0, frame.walked) : 0
+  const walkedTotal = before.walked + walked
+  if (frame.present !== true || walked <= 0) {
+    return { trail: { ...before, walked: walkedTotal }, dropped: null }
+  }
+  // The remainder is CARRIED, not floored: a 0.4 m frame lays nothing, a 0.5 m
+  // frame lays nothing, and the eighth of them lays one. See `DRIP_STRIDE_METRES`.
+  const spare = before.spare + walked
+  if (spare < DRIP_STRIDE_METRES) {
+    return { trail: { ...before, walked: walkedTotal, spare }, dropped: null }
+  }
+  const laid = Math.floor(spare / DRIP_STRIDE_METRES)
+  const remaining = spare - laid * DRIP_STRIDE_METRES
+
+  const time = Number.isFinite(frame.time) ? frame.time : 0
+  const seed = Number.isFinite(frame.seed) ? frame.seed : 0
+  const clear = frame.clear !== false
+  const dx = Number.isFinite(frame.dx) ? frame.dx : 0
+  const dz = Number.isFinite(frame.dz) ? frame.dz : 0
+  // The foot that planted the mark is the one on the outside of the turn, so the
+  // marks alternate sides by PARITY rather than by a coin: the same walk lays the
+  // same marks in the same order, which is the determinism the brief asks for.
+  const travel = Math.hypot(dx, dz)
+  const lateral = travel > 1e-6 ? CREATURE_SHAPE.hip / 2 + 0.06 : 0
+  const px = travel > 1e-6 ? -dz / travel : 1
+  const pz = travel > 1e-6 ? dx / travel : 0
+  const x = Number.isFinite(frame.x) ? frame.x : 0
+  const z = Number.isFinite(frame.z) ? frame.z : 0
+
+  const marks = before.marks.slice()
+  let droppedCount = before.dropped
+  let suppressed = before.suppressed
+  let dropped = null
+  for (let n = 0; n < laid; n += 1) {
+    if (!clear) {
+      suppressed += 1
+      continue
+    }
+    const salt = hash32(seed, droppedCount, DRIP_SALT)
+    const side = droppedCount % 2 === 0 ? 1 : -1
+    droppedCount += 1
+    dropped = {
+      x: x + px * lateral * side,
+      z: z + pz * lateral * side,
+      born: time,
+      radius: DRIP_RADIUS * (0.78 + 0.44 * ((salt & 0xffff) / 0xffff)),
+      spin: (((salt >>> 16) & 0xffff) / 0xffff) * Math.PI,
+    }
+    marks.push(dropped)
+  }
+  // THE CAP. Slice from the front: `marks[0]` is the oldest, and `dripAlpha` has
+  // already made it the faintest, so evicting the head IS "oldest fades first" and
+  // there is no ordering in which the cap could keep a faint mark and drop a dark one.
+  const alive = marks.length > TRAIL_MAX ? marks.slice(marks.length - TRAIL_MAX) : marks
+  return {
+    trail: { marks: alive, walked: walkedTotal, dropped: droppedCount, suppressed, spare: remaining },
+    dropped,
+  }
+}
+
 /**
  * creaturePose — every number the view needs for one frame, and nothing else.
  *
@@ -2176,9 +2849,12 @@ export function apparitionFlicker(time, offset = 0) {
  *   — the view measures it, because the camera is the only thing that knows which
  *   way "left" is
  * @param {number} [frame.viewHalfFov] the camera's horizontal half-field, radians
+ * @param {number} [frame.sinceSpot] seconds since the creature first spotted the
+ *   player, for §10's eye flare; `null`/absent before it has
  * @param {{fov?: number, viewportHeight?: number}} [frame.view] camera numbers
- * @returns {object} `present`, `scale`, `presence`, `eye`, `eyeSize`, `pitch`,
- *   `roll`, `heave`, `scan`, `redden`, `push`, `lift`, `spin`, `state`
+ * @returns {object} `present`, `scale`, `presence`, `eye`, `eyeSize`, `eyeFlare`,
+ *   `pitch`, `roll`, `heave`, `scan`, `redden`, `push`, `lift`, `spin`, `breath`,
+ *   `sway`, `legSwing`, `armSwing`, `armElbow`, `stride`, `state`
  */
 export function creaturePose(creature, frame = {}) {
   const state = typeof creature?.state === 'string' ? creature.state : 'dormant'
@@ -2204,6 +2880,7 @@ export function creaturePose(creature, frame = {}) {
       fov: frame.view?.fov,
       viewportHeight: frame.view?.viewportHeight,
     }),
+    eyeFlare: eyeFlare(frame.sinceSpot),
     pitch: row.lean,
     roll: 0,
     heave: 0,
@@ -2212,6 +2889,18 @@ export function creaturePose(creature, frame = {}) {
     push: 0,
     lift: 0,
     spin: 0,
+    // PASS 10. The five below are the whole of the fidelity pass on the pose: two
+    // idle numbers and three joint angles, all of them read off `row` and `time`
+    // here so the view applies them without deciding anything. They are seeded by
+    // nothing but `offset`, which is `CreatureView`'s own hashed phase, so two
+    // creatures in one scene breathe out of step and one creature in two runs
+    // breathes identically.
+    breath: 0,
+    sway: 0,
+    stride: row.stride,
+    legSwing: 0,
+    armSwing: 0,
+    armElbow: 0,
   }
 
   // §6.1's edge-of-vision positioning. The offset is *proportional* to how near the
@@ -2220,8 +2909,10 @@ export function creaturePose(creature, frame = {}) {
   // presenting it as though it were at the edge of your vision would be a lie the
   // player can see through. The sign comes from the bearing for free.
   //
-  // Gated on the `edge` column and not on `sway`, so a chase — which does have a
-  // gait, and a small one — is still squared up to the player.
+  // Gated on the `edge` column and not on `sway` or `stride`, so a chase — which
+  // has the HARDEST gait in the table (pass 10's `stride: 1`) and only 0.4 of an
+  // idle sway — is still squared up to the player. This is the bug the table's own
+  // note records: gating `edge` on "does this state move" caught `chase` before.
   if (row.edge > 0 && Number.isFinite(frame.bearing) && Number.isFinite(frame.viewHalfFov) && frame.viewHalfFov > 0) {
     const off = Math.max(-1, Math.min(1, frame.bearing / frame.viewHalfFov))
     pose.roll = stalkEdgeAngle(frame.viewHalfFov) * off
@@ -2248,6 +2939,21 @@ export function creaturePose(creature, frame = {}) {
     // the gait: a slow breath when it is still looking, a hard one at a sprint
     pose.heave += Math.sin(time * row.heave * 2.1 + offset) * 0.035 * row.heave
   }
+
+  // PASS 10 — THE MICRO-MOTION, and it is applied AFTER the heave for a reason
+  // that is not tidiness. `heave` is the bob the whole rig rides on and it is what
+  // sets `stridePhase`'s rate, so the joint angles below are derived from the bob
+  // this frame has already been given. Applying them before would mean deriving
+  // them from `row.heave` — a different number from the one the bob actually used,
+  // and the limbs would drift against the body by exactly the recoil's and fade's
+  // contributions.
+  const gait = limbGait(stridePhase(pose.heave, state), row.stride)
+  pose.legSwing = gait.leg
+  pose.armSwing = gait.swing
+  pose.armElbow = gait.elbow
+  const idle = idleBreath(time, offset, row.sway)
+  pose.breath = idle.breath
+  pose.sway = idle.sway
 
   if (dismissing > 0) pose.presence *= fadeOut(frame.elapsed ?? 0, FADE_SECONDS.dismiss)
 

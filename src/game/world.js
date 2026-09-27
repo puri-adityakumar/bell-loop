@@ -505,6 +505,34 @@ export class LongQuietGame {
     this.reemergeElapsed = beast.FADE_SECONDS.reemerge
     this._creatureFacing = 0
     this.creatureAwareness = 0
+    /**
+     * ITERATION 2, PASS 10 — THE SPOT CLOCK, and the frame the eyes flare on.
+     *
+     * `null` means "the creature has not spotted the player since it last left a
+     * state that can catch you", and it is the reason the flare is an EVENT and not
+     * a level: `creaturePose` reads `sinceSpot` and `eyeFlare(null)` is 0, so the
+     * eyes are at their normal glow for every frame of a stalk, of a banish, of the
+     * Act I apparition and of the frame a capture happens on.
+     *
+     * The alternative — leaving it at a large number and letting the envelope decay
+     * to zero — is a value that means "long ago" and has to be distinguished from
+     * "never", which is the kind of sentinel that eventually gets read as a real
+     * number. `null` cannot be.
+     */
+    this.spotElapsed = null
+    /**
+     * The viscous trail's state, and it is `dripStep`'s, not an array this file
+     * pushes to: the world owns the clock the ages come from, and the reducer is
+     * pure, so the whole trail is reproducible from the frames that made it.
+     *
+     * `_creatureDrawn` is the previous frame's drawn position, which is the only
+     * way the world can answer "how far did it move this frame" without a second
+     * accumulator — and the question has to be asked in the DRAWN frame, because
+     * the whole of the `walked` number is metres of road the player can see.
+     */
+    this.creatureTrail = beast.createDripTrail()
+    this._creatureDrawn = null
+    this._trailDrawn = []
     // --- runtime ------------------------------------------------------------
     this.phase = this.store.get().phase ?? PHASE.START
     this.resetElapsed = 0
@@ -1391,6 +1419,21 @@ export class LongQuietGame {
     }
     this.creature = { ...this.creature, banishCount: this.state.banishCount, tier: rules.portalsShut(this.state.portals) }
     this.creatureAwareness = step.awareness
+    // ITERATION 2, PASS 10 — THE SPOT EDGE. §6.2 fills the awareness meter at
+    // `SIGHT_FILL_PER_SEC` and the state machine turns that into `chase` at 1.0, so
+    // this is the one frame in a run where the creature stops ranging and starts
+    // coming, and it is the frame the eyes flare on.
+    //
+    // `isSpot` names `chase` specifically and not `PURSUING_STATES`, so §10.2's
+    // finale edge (`stalk -> enraged`) does not fire it: the finale's creature is
+    // given permanent knowledge by the third portal and has nothing to discover, and
+    // a flare there would announce a surprise the design has already spent. The
+    // clock is CLEARED to `null` on the way out of a pursuing state, so leaving a
+    // chase re-arms the flare for the next one rather than letting a stale
+    // `spotElapsed` count on.
+    if (beast.isSpot(step)) this.spotElapsed = 0
+    else if (this.spotElapsed !== null) this.spotElapsed += dt
+    if (!beast.PURSUING_STATES.includes(step.to)) this.spotElapsed = null
     // §6.4's readout, quantized on the way into the store. The vignette tightens
     // on the grid in `hud.STEPS.awareness` rather than every frame, which is what
     // makes it a repaint a few times a second instead of sixty.
@@ -1621,11 +1664,90 @@ export class LongQuietGame {
       sinceReemerge: this.creature.state === 'stalk' ? this.reemergeElapsed : null,
       offset: view.flickerOffset,
       chaseSeconds: this.creature.chaseSeconds ?? 0,
+      // PASS 10. `null` on every frame before the creature has spotted the player,
+      // which is every frame of Act I and of a banish, so the eyes are at their
+      // normal glow for all of them by construction rather than by a test.
+      sinceSpot: this.spotElapsed,
       bearing: signed,
       viewHalfFov: view.viewOf(this.camera).viewHalfFov,
       view: view.viewOf(this.camera),
     })
-    view.present(pose, { position: drawn, yaw: this._creatureFacing, camera: this.camera })
+    view.present(pose, {
+      position: drawn,
+      yaw: this._creatureFacing,
+      camera: this.camera,
+      trail: this._advanceTrail(drawn, pose.present, dt),
+      time: this.animTime,
+    })
+  }
+
+  /**
+   * `_advanceTrail` — one frame of the viscous trail, and the fold it has to survive.
+   *
+   * ITERATION 2, PASS 10. The reducer is `creature.js`'s and the clock is this
+   * file's, which is the same division the rest of the creature's presentation uses:
+   * the world owns time and this owns the frame; the pure module owns what a metre
+   * of road is worth.
+   *
+   * FOUR THINGS THIS HAS TO GET RIGHT, and each one is a bug it did not have a
+   * moment before this pass existed:
+   *
+   *  - **`walked` is measured in the DRAWN frame.** `creaturePosition` is canonical
+   *    and the player's is not (§3.3's seam), so a delta taken between the two is a
+   *    delta between two different maps and can be 448 m. The previous drawn position
+   *    is kept for exactly this and for nothing else.
+   *  - **the marks are stored CANONICALLY and folded on the way out.** A mark is a
+   *    place in the world, not a place in a frame; the player's coordinates run
+   *    monotonically and the world slides behind them in whole periods, so a mark
+   *    stored in drawn coordinates would be 448 m from its own road after the first
+   *    wrap. `worldOf` is the same fold `root.position` gets two lines above.
+   *  - **the portal stand-off is applied, and counted.** A mark inside
+   *    `PORTAL_FURNITURE_CLEAR` of a gate is a dark decal on the road between that
+   *    gate and the camera §16.5.5 photographs it from, and the pass-3 gate measures
+   *    the luma of the hole in that frame. `dripStep` counts what it suppressed so a
+   *    check can require the rule to have fired.
+   *  - **a jump lays nothing.** §8.3's re-emergence moves the creature 90 m in one
+   *    frame, and laying a hundred marks along that line would be the visible
+   *    artefact this whole design exists to avoid. The test is a DERIVED one rather
+   *    than a magic number: the fastest the creature can legitimately move is
+   *    `SPEED_CEILING` m/s, so a frame that claims more than one and a half frames'
+   *    worth of that is a placement and not a walk.
+   *  - **the list handed over is the same array every frame.** `_presentTrail` reads
+   *    it and copies out what it needs; reallocating sixteen objects sixty times a
+   *    second to hand over a list that did not change is the kind of cost that is
+   *    invisible in a profile and obvious in a frame budget.
+   *
+   * @param {{x: number, z: number}} drawn the creature's drawn position this frame
+   * @param {boolean} present is the figure on screen
+   * @param {number} dt this frame's seconds, for the jump test
+   * @returns {object[]} the marks, folded into the copy being drawn
+   */
+  _advanceTrail(drawn, present, dt) {
+    const previous = this._creatureDrawn
+    this._creatureDrawn = { x: drawn.x, z: drawn.z }
+    const dx = previous ? drawn.x - previous.x : 0
+    const dz = previous ? drawn.z - previous.z : 0
+    const walked = Math.hypot(dx, dz)
+    const step = Number.isFinite(dt) ? Math.max(0, dt) : 0
+    const jumped = walked > beast.SPEED_CEILING * step * 1.5
+    this.creatureTrail = beast.dripStep(this.creatureTrail, {
+      walked: jumped ? 0 : walked,
+      dx,
+      dz,
+      x: this.creaturePosition.x,
+      z: this.creaturePosition.z,
+      time: this.animTime,
+      present: present === true,
+      clear: this.streetView.clearOfPortals(drawn.x, drawn.z),
+      seed: this.seed,
+    }).trail
+    const origin = this.streetView.origin
+    const out = this._trailDrawn
+    out.length = 0
+    for (const mark of this.creatureTrail.marks) {
+      out.push({ x: mark.x + origin.x, z: mark.z + origin.z, born: mark.born, radius: mark.radius, spin: mark.spin })
+    }
+    return out
   }
 
   /**
@@ -2155,7 +2277,19 @@ export class LongQuietGame {
     this.dismissing = false
     this.dismissElapsed = beast.FADE_SECONDS.dismiss
     this.reemergeElapsed = beast.FADE_SECONDS.reemerge
-    this.creatureView?.present(beast.creaturePose(null))
+    // ITERATION 2, PASS 10. The trail is RUN state, and §9.1's wipe is the place run
+    // state goes: a new loop's street has been permuted under the last one's marks, so
+    // a survivor from the previous run would be a stain on a road that is not there.
+    //
+    // It is cleared by re-presenting an empty trail rather than by reaching into the
+    // view's buffer, because the buffer is the view's and this file's contract with it
+    // is `present(pose, context)`. `_creatureDrawn` goes with it for the same reason
+    // and one more: a stale previous position would make the first frame after a wipe
+    // report the distance between two worlds, and the trail would lay a mark on it.
+    this.spotElapsed = null
+    this.creatureTrail = beast.createDripTrail()
+    this._creatureDrawn = null
+    this.creatureView?.present(beast.creaturePose(null), { trail: [], time: this.animTime })
     this._prompt = null
     // §14.3: the same two tells, wiped with everything else. The finale's level
     // goes back to zero because §10.4's wipe is the one place a full reset is

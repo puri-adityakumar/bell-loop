@@ -6731,6 +6731,44 @@ export class StreetView {
   }
 
   /**
+   * `clearOfPortals` — is this DRAWN spot far enough from every portal to draw on?
+   *
+   * ITERATION 2, PASS 10, and the third reader of `PORTAL_FURNITURE_CLEAR`: the
+   * creature's viscous trail lays marks on the road at runtime, and a mark inside the
+   * stand-off is a dark decal between the gate and the camera §16.5.5 photographs it
+   * from — the same reason passes 6, 7 and 8 all filter their own families through
+   * the same radius.
+   *
+   * IT DOES NOT COUNT, and that is the difference from `_portalClear` above. That one
+   * is a placement filter and its `dressingRejected` counter is a statistic about the
+   * BUILD, which `verify-world.mjs` requires to have fired at least once so the rule
+   * cannot be a rule that never rejects. A mark laid sixty times a second at runtime
+   * would put that counter out of the build's hands and the check would stop meaning
+   * what it says. This one answers a question and nothing else, and the count of what
+   * the trail lost lives in `dripStep`'s own `suppressed`.
+   *
+   * FOLDED, PER AXIS, and the per-axis part is the bug this would otherwise have.
+   * `_portalClear` folds with a single `copy` because a lot's copies are diagonal —
+   * one index applied to both coordinates — while `origin` is `originFor(x)` and
+   * `originFor(z)` INDEPENDENTLY. A player at (230, 0) is in copy +1 on x and copy 0
+   * on z, so a single shift would put the query 448 m from every portal on one axis
+   * and the exclusion would silently exist in a third of the world. Taking the origin
+   * out per axis is the same arithmetic `_compose` uses for the colliders.
+   *
+   * @param {number} x world x, in the drawn copy
+   * @param {number} z world z, in the drawn copy
+   * @returns {boolean} true if a mark may be laid here
+   */
+  clearOfPortals(x, z) {
+    const cx = x - this.origin.x
+    const cz = z - this.origin.z
+    for (const anchor of this.objectives.portals) {
+      if (Math.hypot(cx - anchor.position.x, cz - anchor.position.z) < PORTAL_FURNITURE_CLEAR) return false
+    }
+    return true
+  }
+
+  /**
    * A canonical anchor's position in the copy currently drawn around the player.
    *
    * The optional second argument is the point to fold around, for callers that are

@@ -2058,6 +2058,11 @@ const APP_SOURCE = readFileSync(new URL('./src/App.jsx', import.meta.url), 'utf8
 // seam is the reason `verify.mjs` is a pure module that never constructs a
 // renderer. A source read costs nothing and keeps it that way.
 const CREATURE_VIEW_SOURCE = readFileSync(new URL('./src/game/creatureView.js', import.meta.url), 'utf8')
+// Iteration 2, pass 10: the same treatment for the creature's PURE half. A mutation
+// of `creature.js` cannot break a claim about `creatureView.js` and vice versa, and
+// the pass-10 table has one row of each kind — the seeded mark's shape lives in the
+// pure module, the buffer that draws it lives in the view.
+const CREATURE_SOURCE = readFileSync(new URL('./src/game/creature.js', import.meta.url), 'utf8')
 
 test('the view layer is drawn from the pure modules and never from v1', () => {
   // §15.1's split, asserted rather than described: `streetView.js` may reach for
@@ -10162,6 +10167,801 @@ test('the sky claims are the source contracts, and each one fails when its code 
     )
   }
   console.log(`\n  sky claims: ${claims.length} source contracts, ${mutations.length} mutations, every one caught`)
+})
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 10 — the creature beyond the silhouette
+//
+// WHAT THIS SECTION CLAIMS, AND WHY EACH CLAIM IS HERE RATHER THAN IN THE WORLD
+// ---------------------------------------------------------------------------
+// Four features, split across the two harnesses by what each one is ABOUT rather
+// than by convenience:
+//
+//  1. the idle micro-motion and the limb articulation are FUNCTIONS, and a function
+//     can be swept. `idleBreath` and `limbGait` are pure, so "the elbow peaks 0.66
+//     rad after the shoulder" is a measurement of a phase relationship and not a
+//     claim about a screenshot. Both are asserted here with the properties that
+//     make them motion rather than noise: bounded, slow, seeded, deterministic, and
+//     on periods that share no factor.
+//  2. the trail is a REDUCER, so "a walk of N metres lays floor(N / stride) marks,
+//     a standing creature lays none, the cap holds, and the cap evicts the oldest"
+//     are four short loops. The frame-rate independence is the interesting one: the
+//     same walk in 60 frames and in 600 frames has to produce the same trail, and an
+//     accumulator-based version of this fails it.
+//  3. the eye flare is an ENVELOPE plus one boolean, and the interesting claim is
+//     the SYNC: the brief asks the flare to land on the existing audio, and the
+//     only audio that changes on that frame is the routed creature breath sharpening
+//     as awareness crosses 1.0. Both are read here through the real router, so "the
+//     eye flares on the same frame the breath reaches its hunting timbre" is a fact
+//     about two pieces of code rather than an intention.
+//  4. the parts that are about DRAWING — one mesh, an RGBA vertex colour, the
+//     render order, the eye's colour rather than its opacity — cannot be swept, so
+//     they are `creatureFidelityClaims` over the source with mutations, and the
+//     built results are measured in `verify-world.mjs`.
+//
+// WHAT IT DELIBERATELY DOES NOT CLAIM
+// ----------------------------------
+// That the trail is visible in the gallery. §16.5's chase view stands the creature
+// 9 m out and waits 0.3 s, which at tier 0's 2.2 m/s is 0.66 m of road and not
+// quite the 0.9 m a drip needs — so `creature-chasing.png` photographs a creature
+// whose trail is a few centimetres old or not yet started. Re-staging a §16.5 view
+// to make a pass's feature legible is a worse trade than the feature being
+// measurable, and the check that walks the creature twenty metres lives in the
+// world harness instead.
+// ---------------------------------------------------------------------------
+
+section('Creature fidelity I (iteration 2, pass 10)')
+
+/** The gait phase's own input, restated: §6.1's chase bob amplitude. */
+const CHASE_HEAVE = 1.5
+
+test('the arm split did not lengthen the arm, and the elbow is a hinge not a wing', () => {
+  const S = beast.CREATURE_SHAPE
+  // The whole of §12.1's silhouette claim is that the rig is built from one set of
+  // numbers, and pass 10 added two of them. The invariant is the SUM, not either
+  // value: the claw has to hang at `armLength`, or the 7:1 ratio and the crown
+  // height become two claims and the figure is quietly 8 cm longer than it was.
+  assert.ok(
+    Math.abs(S.armUpper + S.armFore - S.armLength) < 1e-9,
+    `the arm is ${(S.armUpper + S.armFore).toFixed(3)} m and the shape table says ${S.armLength}`,
+  )
+  assert.ok(S.armUpper > 0 && S.armFore > 0, 'one of the two bones is zero, so there is no arm')
+  // A hinge, not a wing and not a flagpole. Below a third the "elbow" is a wrist and
+  // the limb reads as a hand on a long stick; above two thirds the forearm is a stump
+  // and the bend is at the shoulder, which is the rigid case this pass exists to fix
+  // wearing a different name.
+  const share = S.armFore / S.armLength
+  assert.ok(share > 1 / 3 && share < 2 / 3, `the forearm is ${(share * 100).toFixed(0)}% of the arm`)
+  // and the split is not the only invariant: the shoulder is still where the two
+  // trunk lengths put it, or the arm is on the wrong torso
+  assert.ok(Math.abs(S.legLength + S.torsoLength - S.armRoot) < 1e-9)
+})
+
+test('the idle motion is slow, bounded, seeded, and it does not lock to one loop', () => {
+  // 1. BOUNDED. A breath is a scale DELTA and it may not be able to shrink the
+  // figure, which is why its amplitude is a constant rather than a two-sided range.
+  for (let t = 0; t < 40; t += 1 / 37) {
+    const idle = beast.idleBreath(t, 0.61)
+    assert.ok(Math.abs(idle.breath) <= beast.IDLE_BREATH_DEPTH + 1e-12, `breath ${idle.breath} at t=${t}`)
+    assert.ok(Math.abs(idle.sway) <= beast.IDLE_SWAY_RADIANS + 1e-12, `sway ${idle.sway} at t=${t}`)
+  }
+  // 2. SLOW, and slow is a number. A cycle a player can count is a metronome, and the
+  // whole claim of this feature is that the figure moves too little to time. The
+  // measurement is the MEAN interval between up-crossings over a minute, and not a
+  // single interval, because the second partial at `IDLE_BREATH_RATIO` is there
+  // precisely to make the crossings uneven — a breath with a constant period is a
+  // pulse, and a pulse is a machine. The band is ±25% rather than ±2% for the same
+  // reason: the crossings bunch, the mean is what the constant is about.
+  const rising = []
+  let wasLow = beast.idleBreath(0, 0).breath <= 0
+  for (let t = 1 / 600; t < 60; t += 1 / 600) {
+    const now = beast.idleBreath(t, 0).breath <= 0
+    if (now && !wasLow) rising.push(t)
+    wasLow = now
+  }
+  assert.ok(rising.length >= 8, `the breath rose through zero ${rising.length} times in 60 s, which is not slow`)
+  const mean = (rising[rising.length - 1] - rising[0]) / (rising.length - 1)
+  assert.ok(
+    Math.abs(mean - beast.IDLE_BREATH_SECONDS) < beast.IDLE_BREATH_SECONDS * 0.25,
+    `the breath's mean cycle is ${mean.toFixed(2)} s and the constant says ${beast.IDLE_BREATH_SECONDS}`,
+  )
+  // and the two crossings of a single cycle are NOT evenly spaced, which is the
+  // measurable form of "a player cannot time it"
+  const gapA = rising[1] - rising[0]
+  const gapB = rising[2] - rising[1]
+  assert.ok(Math.abs(gapA - gapB) > 0.05, `the breath's gaps are ${gapA.toFixed(2)} and ${gapB.toFixed(2)} s, which is a metronome`)
+  // 3. THE TWO MOTIONS SHARE NO FACTOR. Breath at 4.2 s and sway at 5.9 s: if they
+  // agreed, the composite would repeat every 4.2 s and the figure would rock. A
+  // ratio near an integer is the same problem with extra steps, so the RATIO is
+  // asserted and not merely the difference.
+  const ratio = beast.IDLE_SWAY_SECONDS / beast.IDLE_BREATH_SECONDS
+  assert.ok(ratio > 1.05 && ratio < 1.95, `the two periods are in a ratio of ${ratio.toFixed(3)}, which repeats or nests`)
+  let swaySwings = 0
+  let wasSwayLow = beast.idleBreath(0, 0).sway <= 0
+  for (let t = 1 / 600; t < 60; t += 1 / 600) {
+    const now = beast.idleBreath(t, 0).sway <= 0
+    if (now !== wasSwayLow) swaySwings += 1
+    wasSwayLow = now
+  }
+  assert.ok(swaySwings >= 4, 'the shoulder sway is not a slow drift')
+  // 4. SEEDED, AND ONLY SEEDED. Two creatures in one scene must not breathe in
+  // lockstep, and the same creature on a replayed seed must breathe identically.
+  assert.notEqual(
+    beast.idleBreath(3.3, 0).breath,
+    beast.idleBreath(3.3, 1.7).breath,
+    'two creatures with different offsets breathe identically',
+  )
+  assert.equal(beast.idleBreath(3.3, 0.61).breath, beast.idleBreath(3.3, 0.61).breath, 'the breath is not deterministic')
+  // 5. PER STATE, through the pose — and the direction is the readable one. A
+  // ranging creature sways more than a closing one, because a thing that drifts
+  // while it is chasing you is a thing that is not sure it has you.
+  const swayPeak = (state) => {
+    let peak = 0
+    for (let t = 0; t < 12; t += 1 / 120) peak = Math.max(peak, Math.abs(beast.creaturePose({ state }, { time: t }).sway))
+    return peak
+  }
+  const stalk = swayPeak('stalk')
+  const chase = swayPeak('chase')
+  const telegraph = swayPeak('telegraph')
+  assert.ok(stalk > chase * 1.8, `a stalk sways ${stalk.toFixed(4)} rad and a chase ${chase.toFixed(4)}`)
+  assert.ok(telegraph < stalk, 'the apparition at ninety metres sways as much as a ranging thing')
+  assert.equal(swayPeak('dormant'), 0, 'a creature that is not there is breathing')
+  // 6. And the breath REACHES the pose, which is the only way the view ever sees it.
+  assert.ok(Math.abs(beast.creaturePose({ state: 'stalk' }, { time: 2.2 }).breath) > 0, 'the pose carries no breath')
+  // 7. And it is small enough to be micro-motion rather than a pulse: at the crown,
+  //    IDLE_BREATH_DEPTH on a 2.8 m figure is the number a player cannot point at.
+  const crown = beast.IDLE_BREATH_DEPTH * beast.CREATURE_SHAPE.height
+  assert.ok(crown > 0.02 && crown < 0.08, `the crown moves ${(crown * 100).toFixed(1)} cm per breath`)
+  console.log(`\n  pass-10 idle: breath ±${beast.IDLE_BREATH_DEPTH} (crown ${(crown * 100).toFixed(1)} cm) over ${beast.IDLE_BREATH_SECONDS} s, sway ±${beast.IDLE_SWAY_RADIANS} rad over ${beast.IDLE_SWAY_SECONDS} s (ratio ${ratio.toFixed(3)}); stalk ${stalk.toFixed(4)} rad, chase ${chase.toFixed(4)}, telegraph ${telegraph.toFixed(4)}`)
+})
+
+test('the stride is per state, and the elbow peaks behind the shoulder', () => {
+  // 1. THE PER-STATE DRIVE is the pass's actual claim about the arms. BEFORE: one
+  // amplitude (0.7) for every state, so a telegraph's arms swung exactly as hard as
+  // a chase's. The number is a RATIO, asserted as one, because the two amplitudes
+  // are separately tunable and the ratio is the property that survives a retune.
+  const swingPeak = (state) => {
+    const drive = beast.presentationFor(state).stride
+    let peak = 0
+    for (let phase = 0; phase < Math.PI * 2; phase += 0.001) {
+      peak = Math.max(peak, Math.abs(beast.limbGait(phase, drive).swing))
+    }
+    return peak
+  }
+  const chase = swingPeak('chase')
+  const stalk = swingPeak('stalk')
+  const telegraph = swingPeak('telegraph')
+  const enraged = swingPeak('enraged')
+  assert.ok(chase / telegraph > 10, `a chase swings ${chase.toFixed(3)} rad and a telegraph ${telegraph.toFixed(3)}`)
+  assert.ok(stalk > telegraph && stalk < chase, 'the three states are not ordered rumour, ranging, hunting')
+  assert.ok(enraged > chase, 'the finale does not drive the same rig harder than a chase')
+  assert.equal(swingPeak('dormant'), 0, 'a creature that is not there is walking')
+  assert.equal(swingPeak('dismissing'), 0, 'a departing figure is walking away from its own banish')
+  // 2. THE ELBOW LAGS THE SHOULDER, measured rather than restated: sweep a stride,
+  // find the phase at which the arm reaches furthest forward, and the phase at which
+  // the elbow is most bent, and require the second to be later by `ELBOW_LAG`.
+  const peakPhase = (fn) => {
+    let best = -Infinity
+    let at = 0
+    for (let phase = 0; phase < Math.PI * 2; phase += 0.0005) {
+      const value = fn(phase)
+      if (value > best) {
+        best = value
+        at = phase
+      }
+    }
+    return at
+  }
+  const drive = beast.presentationFor('chase').stride
+  const shoulder = peakPhase((phase) => -beast.limbGait(phase, drive).swing)
+  const elbow = peakPhase((phase) => -beast.limbGait(phase, drive).elbow)
+  const lag = elbow - shoulder
+  assert.ok(
+    Math.abs(lag - beast.ELBOW_LAG) < 0.01,
+    `the elbow peaks ${lag.toFixed(3)} rad after the shoulder and ELBOW_LAG is ${beast.ELBOW_LAG}`,
+  )
+  // ...and it is a LAG and not a coincidence. The two peaks are in different halves
+  // of the stride, and a mutation that set `ELBOW_LAG` to 0 or to pi fails HERE
+  // while passing every amplitude check above — which is the whole reason this is a
+  // phase measurement and not a restatement of the constant.
+  assert.ok(lag > 0.1 && lag < Math.PI * 0.75, `the lag is ${lag.toFixed(3)} rad, which is in phase or inverted`)
+  // 3. THE BEND IS NEVER ZERO, which is the other half of "articulated": a forearm
+  // that straightened once per stride is a mechanism, and a mechanism is a machine.
+  let straightest = Infinity
+  for (let phase = 0; phase < Math.PI * 2; phase += 0.001) {
+    straightest = Math.min(straightest, beast.limbGait(phase, drive).elbow)
+  }
+  assert.ok(Math.abs(straightest) > 0.05, `the elbow fully straightens (${straightest.toFixed(4)} rad)`)
+  // 4. THE PHASE IS STILL THE ONE THE VIEW USED, derived from the pose. The RATE is
+  //    unchanged from before this pass, and it is MEASURED rather than derived: the
+  //    `heave * 26` term is a phase OFFSET, not a rate, because `heave` itself is
+  //    oscillating — the stride's speed is the derivative of the bob, and reading
+  //    `STRIDE_ARC * heave` as a frequency is a mistake this comment now records.
+  assert.ok(
+    Math.abs(beast.stridePhase(CHASE_HEAVE, 'chase') - (CHASE_HEAVE * 26 + 5 * 0.7)) < 1e-9,
+    'the gait phase is no longer the heave x 26 the view used to compute',
+  )
+  const crossingsOf = (state) => {
+    let count = 0
+    let wasLow = beast.creaturePose({ state }, { time: 0 }).legSwing <= 0
+    for (let t = 1 / 600; t < 6; t += 1 / 600) {
+      const now = beast.creaturePose({ state }, { time: t }).legSwing <= 0
+      if (now && !wasLow) count += 1
+      wasLow = now
+    }
+    return count / 6
+  }
+  const hz = crossingsOf('chase')
+  const stalkHz = crossingsOf('stalk')
+  assert.ok(hz > 0.25 && hz < 0.9, `a chase strides at ${hz.toFixed(2)} Hz, which is neither a walk nor a lope`)
+  assert.ok(stalkHz < hz, 'a ranging thing strides faster than a hunting one, so the rate is not coming from the phase')
+  // 5. TOTAL, because a NaN in a joint angle is a limb at ninety degrees for ever.
+  for (const bad of [NaN, Infinity, 'x', undefined, null]) {
+    const gait = beast.limbGait(bad, bad)
+    assert.ok(
+      Number.isFinite(gait.leg) && Number.isFinite(gait.swing) && Number.isFinite(gait.elbow),
+      `limbGait(${bad}) produced ${JSON.stringify(gait)}`,
+    )
+  }
+  console.log(`\n  pass-10 gait: shoulder swing chase ${chase.toFixed(3)} / stalk ${stalk.toFixed(3)} / telegraph ${telegraph.toFixed(3)} rad (${(chase / telegraph).toFixed(1)}x), elbow lag ${lag.toFixed(3)} rad, stride ${hz.toFixed(2)} Hz`)
+})
+
+test('the trail lays one mark per stride of ground, and lays none for standing still', () => {
+  // The carrier is METRES, not frames and not the drawn gait, so the first claim is
+  // the one an accumulator gets wrong: the same walk has to produce the same trail
+  // whether it is delivered in 60 frames or in 600.
+  const walk = (metres, frames, seed = 1337) => {
+    let trail = beast.createDripTrail()
+    const step = metres / frames
+    for (let i = 0; i < frames; i += 1) {
+      trail = beast.dripStep(trail, {
+        walked: step,
+        dx: step,
+        dz: 0,
+        x: i * step,
+        z: 0,
+        time: i / 60,
+        present: true,
+        seed,
+      }).trail
+    }
+    return trail
+  }
+  const coarse = walk(40, 60)
+  const fine = walk(40, 600)
+  const expected = Math.floor(40 / beast.DRIP_STRIDE_METRES)
+  assert.equal(coarse.dropped, expected, `40 m at ${beast.DRIP_STRIDE_METRES} m a mark is ${expected} marks, not ${coarse.dropped}`)
+  assert.equal(fine.dropped, coarse.dropped, 'the trail depends on the frame rate')
+  // The SHAPES are identical, because they are hashed from the drop's own index and
+  // not from the frame. The POSITIONS are not, and cannot be: a mark is laid at
+  // wherever the creature happened to be when the stride completed, so a finer frame
+  // resolves the footfall to a different millimetre. The bound is ONE COARSE FRAME of
+  // travel, because that is the coarsest frame's own resolution of where the foot
+  // landed, and it is asserted rather than assumed.
+  assert.deepEqual(
+    fine.marks.map((mark) => [mark.radius.toFixed(9), mark.spin.toFixed(9)]),
+    coarse.marks.map((mark) => [mark.radius.toFixed(9), mark.spin.toFixed(9)]),
+    'the same walk lays differently SHAPED marks at 600 fps than at 60',
+  )
+  for (let i = 0; i < coarse.marks.length; i += 1) {
+    const gap = Math.abs(fine.marks[i].x - coarse.marks[i].x)
+    assert.ok(gap < 40 / 60, `mark ${i} is ${gap.toFixed(4)} m apart between the two frame rates`)
+  }
+  // the marks are STRIDE-SCALED, i.e. they are spread down the road rather than
+  // stacked on the spot the creature finished on. Measured on a walk short enough to
+  // fit inside the cap, because on the 40 m walk above the list is the LAST
+  // TRAIL_MAX of 44 and the first survivors are already 26 m down the road — which is
+  // the cap working, not the marks bunching.
+  const short = walk(12, 60)
+  const shortXs = short.marks.map((mark) => mark.x)
+  assert.equal(short.marks.length, Math.floor(12 / beast.DRIP_STRIDE_METRES))
+  assert.ok(Math.min(...shortXs) < 2.5 && Math.max(...shortXs) > 10.5, `a 12 m walk laid marks from ${Math.min(...shortXs).toFixed(1)} m to ${Math.max(...shortXs).toFixed(1)} m`)
+  // and the remainder is CARRIED, not floored. Nine frames of 0.11 m is 0.99 m — one
+  // stride SHORT of a mark, so nothing is laid; the tenth frame carries it over.
+  let carried = beast.createDripTrail()
+  for (let i = 0; i < 8; i += 1) {
+    carried = beast.dripStep(carried, { walked: 0.11, present: true, seed: 1 }).trail
+  }
+  assert.equal(carried.dropped, 0, 'eight frames short of a stride laid a mark anyway')
+  carried = beast.dripStep(carried, { walked: 0.02, present: true, seed: 1 }).trail
+  assert.equal(carried.dropped, 1, 'the sub-stride remainder is dropped instead of carried')
+  // STANDING STILL. The drawn gait advances for a motionless creature, so a version
+  // keyed to it would drip in place for ever; a version keyed to metres does not.
+  let still = beast.createDripTrail()
+  for (let i = 0; i < 600; i += 1) {
+    still = beast.dripStep(still, { walked: 0, present: true, time: i / 60, seed: 1 }).trail
+  }
+  assert.equal(still.dropped, 0, 'a stationary creature leaves a trail')
+  assert.equal(still.marks.length, 0)
+  // and a creature that is not on the field lays nothing at all, however far it is
+  // notionally moved — that is the §7.4 banish and the Act I telegraph
+  const gone = beast.dripStep(beast.createDripTrail(), { walked: 20, present: false, seed: 1 })
+  assert.equal(gone.dropped, null)
+  assert.equal(gone.trail.marks.length, 0, 'a banished creature dripped on the road')
+  // TOTAL, because this runs sixty times a second inside a render loop.
+  for (const bad of [NaN, Infinity, 'x', undefined, null]) {
+    const out = beast.dripStep(beast.createDripTrail(), { walked: bad, present: true, seed: 1 })
+    assert.equal(out.trail.marks.length, 0, `dripStep with walked=${bad} laid marks`)
+    assert.equal(out.dropped, null)
+  }
+  assert.ok(Array.isArray(beast.createDripTrail().marks), 'the empty trail has no marks list')
+})
+
+test('the trail caps at TRAIL_MAX, and the cap evicts the oldest — the faintest', () => {
+  // 1. THE CAP HOLDS, and it is load-bearing: at the finale's 5.2 m/s and a 3.2 s
+  //    life the trail wants 18.6 marks and gets 16, so the overflow is not a
+  //    hypothetical. The walk below is 400 m, which is 444 marks' worth of attempts.
+  let trail = beast.createDripTrail()
+  for (let i = 0; i < 2400; i += 1) {
+    trail = beast.dripStep(trail, {
+      walked: 1 / 6,
+      dx: 1 / 6,
+      dz: 0,
+      x: i / 6,
+      z: 0,
+      time: i / 60,
+      present: true,
+      seed: 5,
+    }).trail
+  }
+  assert.equal(trail.marks.length, beast.TRAIL_MAX, `a 400 m walk left ${trail.marks.length} marks`)
+  assert.ok(trail.dropped > beast.TRAIL_MAX, 'the walk did not overflow the cap at all')
+  // 2. THE OLDEST IS THE ONE THAT GOES. `marks` is oldest-first by construction, so
+  //    the survivors must be the LAST TRAIL_MAX drops and the first drop must be
+  //    gone — and so must the second, which is the second oldest.
+  const firsts = trail.marks.slice(0, 2)
+  assert.ok(firsts.every((mark) => mark.x > 380), `the trail kept marks from the start of a 400 m walk: ${firsts[0].x.toFixed(1)} m`)
+  assert.ok(trail.marks[trail.marks.length - 1].x > trail.marks[0].x, 'the survivor list is not ordered oldest-first')
+  // 3. "OLDEST FADES FIRST" IS A PROPERTY OF THE ALPHA FUNCTION, so it is asserted
+  //    there and not here: among marks PAST THE SPREAD, the oldest is the faintest.
+  //    It is stated with that qualification because it is true with it and false
+  //    without it — a mark in its first 120 ms is rising, and a trail's newest mark is
+  //    almost always in its first 120 ms. The two claims together are the brief's
+  //    sentence; either one alone would be a different, weaker claim.
+  for (let i = 0; i < 40; i += 1) {
+    const ages = [beast.DRIP_SPREAD + 0.05, 0.4, 1.1, 2.0, 2.9]
+    const alphas = ages.map(beast.dripAlpha)
+    for (let k = 1; k < alphas.length; k += 1) {
+      assert.ok(alphas[k] < alphas[k - 1], `a mark aged ${ages[k]} s is at ${alphas[k]} and an older one at ${alphas[k - 1]}`)
+    }
+    // ...and the other half, which is what makes it a mark that LANDED rather than a
+    // decal that switched on
+    assert.ok(beast.dripAlpha(beast.DRIP_SPREAD * 0.5) < beast.dripAlpha(beast.DRIP_SPREAD), 'the spread does not rise')
+  }
+  assert.equal(beast.dripAlpha(beast.DRIP_LIFE), 0, 'a mark is still visible at the end of its life')
+  assert.equal(beast.dripAlpha(beast.DRIP_LIFE * 2), 0)
+  assert.equal(beast.dripAlpha(0), 0, 'a mark is at full strength the instant it lands, which is a decal that switches on')
+  assert.equal(beast.dripAlpha(-1), 0, 'a mark from the future is visible')
+  assert.equal(beast.dripAlpha(NaN), 0, 'a mark of unknown age is visible')
+  assert.equal(beast.dripAlpha(beast.DRIP_SPREAD), 1, 'the spread never reaches full strength')
+  // 4. AND THE LIST NEVER HOLDS A DEAD MARK. The cap is by RECENCY, so a list that were
+  //    not capped would eventually hold marks past `DRIP_LIFE`, and a view that trusted
+  //    the list would draw them at their last alpha for ever. The one mark that CAN be
+  //    listed with no strength is the newest, inside its spread window — which is the
+  //    whole of what `dripAlpha(0) === 0` buys.
+  const now = trail.marks[trail.marks.length - 1].born
+  let spreading = 0
+  for (const mark of trail.marks) {
+    const age = now - mark.born
+    assert.ok(age < beast.DRIP_LIFE, `a listed mark is ${age.toFixed(2)} s old, which is past its life`)
+    if (beast.dripAlpha(age) <= 0) spreading += 1
+  }
+  assert.ok(spreading <= 1, `${spreading} listed marks have no strength, so the list is holding dead marks`)
+  // 5. THE MARKS ALTERNATE SIDES, because a trail down the middle of a road is a
+  //    dotted line drawn by a machine and one down each side is a pair of feet.
+  const sides = trail.marks.map((mark) => Math.sign(mark.z)).filter((sign) => sign !== 0)
+  assert.ok(sides.includes(1) && sides.includes(-1), 'the marks do not alternate sides')
+})
+
+test('the eyes flare on the frame the creature spots you — and on the same frame the breath turns', () => {
+  // 1. THE SPOT IS AN EDGE, and the three transitions it must NOT be are each a
+  //    failure somebody would ship. `chase -> chase` is every frame of a chase, so
+  //    asking "is it chasing" would hold the eye bright permanently; `-> enraged` is
+  //    §10.2's finale, where the creature is GIVEN knowledge and has nothing to
+  //    discover; and `telegraph` cannot see at all.
+  assert.equal(beast.isSpot({ from: 'stalk', to: 'chase' }), true, 'the sighting does not flare')
+  assert.equal(beast.isSpot({ from: 'reposition', to: 'chase' }), true)
+  assert.equal(beast.isSpot({ from: 'chase', to: 'chase' }), false, 'the flare re-arms every frame of a chase')
+  assert.equal(beast.isSpot({ from: 'stalk', to: 'enraged' }), false, 'the finale is not a spotting')
+  assert.equal(beast.isSpot({ from: 'telegraph', to: 'stalk' }), false, 'Act I wakes into a stalk, not a sighting')
+  assert.equal(beast.isSpot({ from: 'stalk', to: 'dormant' }), false)
+  assert.equal(beast.isSpot(null), false)
+  assert.equal(beast.isSpot(undefined), false)
+  assert.equal(beast.isSpot({}), false)
+  assert.equal(beast.isSpot('chase'), false)
+
+  // 2. THE SPOT IS THE AWARENESS EDGE, which is what makes the audio sync below a
+  //    fact rather than a coincidence: the state only becomes `chase` at
+  //    `AWARENESS_CHASE`, so on the spotting frame the meter is exactly full.
+  const look = { seen: true, sightDistance: 2, sightRange: 14, distance: 2, playerPosition: { x: 2, z: 0 } }
+  let state = beast.createCreature({ state: 'stalk', awareness: 0.1 })
+  let reached = null
+  let meter = 0
+  for (let frames = 0; frames < 3000 && state.state !== 'chase'; frames += 1) {
+    const next = beast.creatureStep(state, 1 / 60, look)
+    if (beast.isSpot(next)) reached = next
+    state = next.creature
+    meter = next.awareness
+  }
+  assert.ok(reached, 'a creature looking straight at the player never reached a chase in 50 s')
+  assert.equal(reached.to, 'chase')
+  assert.ok(Math.abs(meter - beast.AWARENESS_CHASE) < 1e-9, `the chase began at awareness ${meter}, not 1.0`)
+
+  // 3. THE SYNC — the part the brief actually asks for. §13's table has no dedicated
+  //    "it has seen you" sting, and inventing one would be a NEW sound rather than
+  //    this feature syncing with an existing one. The audio that does change on this
+  //    frame is the routed `creatureBreath`, whose `rate` and `sharp` are functions
+  //    of awareness and reach their hunting values at exactly 1.0. So the flare and
+  //    the breath's turn are the same event read twice, and it is asserted through
+  //    the real router rather than by calling `creatureBreathVoice` directly.
+  const breathCue = (awareness) => audio
+    .routeAudio({
+      started: true,
+      playing: true,
+      creaturePresent: true,
+      creatureDistance: 6,
+      creatureAwareness: awareness,
+      portals: [],
+    })
+    .find((cue) => cue.id === 'creatureBreath')
+  const onSpot = breathCue(meter)
+  assert.ok(onSpot, 'the creature breath is not routed on a frame with the creature six metres away')
+  assert.equal(onSpot.params.sharp, 1, 'the breath is not at its sharpest on the frame the creature spots you')
+  assert.equal(onSpot.params.rate, audio.CREATURE_BREATH_CHASE_RATE)
+  // ...and it is a TRANSITION and not a level: half a meter ago the same voice was
+  // still halfway between the two timbres, so the frame carries the information.
+  const earlier = breathCue(meter - 0.5)
+  assert.ok(earlier.params.sharp < 1, 'the breath is as sharp a moment before the spotting as on it')
+  assert.ok(earlier.params.rate < audio.CREATURE_BREATH_CHASE_RATE)
+  console.log(`\n  pass-10 flare: ${beast.EYE_FLARE_SECONDS} s window, peak ${(beast.EYE_FLARE_GAIN + 1).toFixed(1)}x colour and ${beast.EYE_FLARE_GROWTH}x size; breath sharp ${earlier.params.sharp.toFixed(2)} -> ${onSpot.params.sharp.toFixed(2)} on the same frame`)
+})
+
+test('the flare settles, and it cannot cost the creature gate its anchor', () => {
+  // 1. THE ENVELOPE. Peak on the spotting frame, exactly zero at the end of the
+  //    window, strictly falling, and bright enough to be seen for most of it.
+  assert.equal(beast.eyeFlare(0), 1, 'the flare does not peak on the frame the creature spots you')
+  assert.equal(beast.eyeFlare(beast.EYE_FLARE_SECONDS), 0, 'the eye never settles back to its normal glow')
+  assert.equal(beast.eyeFlare(beast.EYE_FLARE_SECONDS * 2), 0)
+  assert.equal(beast.eyeFlare(-0.1), 0, 'the eye flares before the creature has spotted anything')
+  assert.equal(beast.eyeFlare(null), 0)
+  assert.equal(beast.eyeFlare(NaN), 0)
+  let previous = Infinity
+  for (let t = 0; t <= beast.EYE_FLARE_SECONDS; t += 0.01) {
+    const value = beast.eyeFlare(t)
+    assert.ok(value <= previous, `the flare rose again at ${t.toFixed(2)} s`)
+    assert.ok(value >= 0 && value <= 1)
+    previous = value
+  }
+  assert.ok(beast.eyeFlare(beast.EYE_FLARE_SECONDS / 4) > 0.5, 'the flare is a slow swell rather than a flash')
+  // ...and the window is a FRACTION of the meter that fills it, which is what stops
+  // two chases inside one §8.2 cycle from reading as a single long bright eye.
+  assert.ok(
+    beast.EYE_FLARE_SECONDS < 1 / beast.SIGHT_FILL_PER_SEC,
+    `the flare lasts ${beast.EYE_FLARE_SECONDS} s and §6.2 fills the meter in ${(1 / beast.SIGHT_FILL_PER_SEC).toFixed(1)} s`,
+  )
+  // 2. AND THE POSE CARRIES IT — and carries NOTHING before the spot, which is what
+  //    keeps the flare off every Act I frame and every banish.
+  assert.equal(beast.creaturePose({ state: 'stalk' }, { time: 3 }).eyeFlare, 0, 'a stalking eye is flaring')
+  assert.equal(beast.creaturePose({ state: 'telegraph' }, { time: 3 }).eyeFlare, 0, 'the apparition is flaring')
+  assert.equal(beast.creaturePose(null, {}).eyeFlare, 0)
+  const flaring = beast.creaturePose({ state: 'chase' }, { time: 3, sinceSpot: 0 })
+  assert.equal(flaring.eyeFlare, 1)
+  assert.equal(beast.creaturePose({ state: 'chase' }, { time: 3, sinceSpot: beast.EYE_FLARE_SECONDS }).eyeFlare, 0)
+
+  // 3. THE REGRESSION GUARD THE BRIEF NAMES. A brighter eye is fine for the creature
+  //    gate — `EYE_MIN` 150 in `tools/png-luma.mjs` is a FLOOR, and the brief's own
+  //    instruction was to verify rather than assume. But the flare also GROWS the
+  //    quad, and the same module rejects any eye-shaped blob past `EYE_MAX_SPAN` 14 px
+  //    precisely so a lamp head cannot pass as a creature's eye. The eye is held at
+  //    `EYE_PIXEL_FLOOR` 7 px, so the worst case this pass can produce is
+  //    7 x EYE_FLARE_GROWTH, and it has to stay under that ceiling with room to
+  //    spare — the margin is the claim, not the pass.
+  const worst = beast.EYE_PIXEL_FLOOR * beast.EYE_FLARE_GROWTH
+  assert.ok(worst < 14, `a flaring eye is ${worst.toFixed(1)} px against the eye-finder's 14 px ceiling`)
+  assert.ok(worst < 14 * 0.75, `a flaring eye is ${worst.toFixed(1)} px, which eats the eye-finder's margin`)
+  assert.ok(beast.EYE_FLARE_GAIN > 1, 'the flare does not brighten the eye at all')
+  assert.ok(beast.EYE_FLARE_GAIN + 1 < 5, `the eye is ${(beast.EYE_FLARE_GAIN + 1).toFixed(1)}x its own colour, which is a headlight`)
+  // 4. THE EYE'S OWN COLUMN IS UNTOUCHED. `pose.eye` is still the flicker's to spend
+  //    and is still clamped to one unit, so the flash lives entirely in the gain —
+  //    which is what lets a `stagger` flicker a flaring eye instead of fighting it.
+  assert.equal(flaring.eye, 1, 'the flare leaks into the eye opacity the flicker also spends')
+  const stagger = beast.creaturePose({ state: 'stagger' }, { time: 3, sinceSpot: 0 })
+  assert.equal(stagger.eyeFlare, 1, 'the flare is not drawn on a staggering creature')
+  assert.equal(stagger.eye, 1, "a stagger's own eye column already clamps to 1, so this is a fact about §7.4's row")
+  // The flicker is `pose.eye`'s to spend, and it is spent on TELEGRAPH: a stagger's
+  // 1.2 clamps to 1 whatever the flicker does, which is a property of that row and not
+  // of the flare. Sampled across a telegraph's beat so the assertion is about the
+  // column being live rather than about one lucky instant.
+  let dimmed = 0
+  let brightest = 0
+  for (let t = 0; t < 6; t += 1 / 240) {
+    const value = beast.creaturePose({ state: 'telegraph' }, { time: t, sinceSpot: 0 }).eye
+    assert.ok(value > 0 && value <= 1, `a telegraph's eye is at ${value}, which the clamp should not allow`)
+    if (value < brightest) dimmed += 1
+    brightest = Math.max(brightest, value)
+  }
+  assert.ok(dimmed > 100 && brightest < 0.55, 'the flicker no longer scales the eye at all')
+  // ...and the eye's WORLD SIZE is untouched by the flare's brightness, because the
+  // two are separate terms: `eyeSize` is the pixel floor's answer and the swell is
+  // `EYE_FLARE_GROWTH` on top of it, in the view.
+  assert.equal(flaring.eyeSize, beast.creaturePose({ state: 'chase' }, { time: 3, sinceSpot: 9 }).eyeSize)
+})
+
+/**
+ * `creatureFidelityClaims` — pass 10's source contracts, as predicates over a
+ * source string.
+ *
+ * The same shape as `waterClaims` and `skyClaims`, for the same reason: a gate
+ * expressed as `assert.ok` can only ever run on the real file, and a gate that can
+ * only run on the real file cannot be asked whether it would have caught the bug.
+ *
+ * These are ABOUT THE SOURCE because six of this pass's properties are invisible to
+ * any measurement of the pure module and are only visible as a pattern of what is
+ * written: that the trail is ONE mesh rather than sixteen, that its per-mark alpha
+ * rides on a FOUR-component vertex colour (three.js sets `USE_COLOR_ALPHA` from
+ * `itemSize === 4`, so a three-component attribute silently throws the alpha away —
+ * a fade that does not fade, which every other check in this file would pass), that
+ * the eyes are given the breath's inverse so a pixel promise does not wobble, and
+ * that the flare is applied to the eye's COLOUR and not to the opacity the flicker
+ * has already spent.
+ *
+ * @param {string} view `creatureView.js`, comments NOT yet stripped
+ * @param {string} world `world.js`
+ * @param {string} street `streetView.js`
+ * @param {string} creature `creature.js`
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function creatureFidelityClaims(view, world, street, creature) {
+  const code = stripProse(view)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+
+  // 1. THE ARM HAS TWO JOINTS, and both are driven by the pose. A rig that builds an
+  //    elbow and then animates the shoulder alone is the pass-9 finding in
+  //    miniature: the geometry exists and nothing reads it.
+  claim(
+    'the arm is a shoulder and an elbow, and the elbow is driven',
+    /const elbow = new THREE\.Group\(\)/.test(code)
+      && /elbow\.position\.y = -S\.armUpper/.test(code)
+      && /this\.elbows\.push\(elbow\)/.test(code)
+      && /this\.elbows\[0\]\.rotation\.x = pose\.armElbow/.test(code)
+      && /this\.elbows\[1\]\.rotation\.x = pose\.armElbow/.test(code)
+      && /this\._limb\(0\.03, 0\.022, S\.armFore\)/.test(code),
+    "an elbow that exists but is never rotated is a decorative joint, and a forearm at the upper bone's own radius is a long limb with a seam in the middle of it",
+  )
+  // 2. THE BREATH IS ON `lean` AND THE EYES ARE DIVIDED BACK OUT. The first half is
+  //    the feature; the second is the reason it can be added at all. `EYE_PIXEL_FLOOR`
+  //    is a promise about pixels, and a ±1.6% volume change that also moved the eye
+  //    would be a promise that breathes.
+  claim(
+    'the breath scales the rig and is divided back out of the eyes',
+    /this\.lean\.scale\.setScalar\(1 \+ pose\.breath\)/.test(code)
+      && /this\.lean\.rotation\.y = pose\.sway/.test(code)
+      && /const breath = 1 \/ Math\.max\(0\.001, 1 \+ pose\.breath\)/.test(code)
+      && /const inverse = breath \/ Math\.max\(0\.001, pose\.scale\)/.test(code),
+    'a breath on the body that also moves the eye breaks EYE_PIXEL_FLOOR, and a sway computed in the view rather than read off the pose is a number no check can see',
+  )
+  // 3. THE TRAIL IS ONE MESH WITH A REAL PER-MARK ALPHA. The `itemSize === 4` is the
+  //    load-bearing half: three.js enables `USE_COLOR_ALPHA` from it, and a
+  //    three-component attribute compiles, runs, and discards the alpha.
+  claim(
+    'the whole trail is one mesh, and its fade is a real per-mark alpha',
+    /new Float32Array\(TRAIL_MAX \* 4 \* 4\)/.test(code)
+      && /new THREE\.BufferAttribute\(colours, 4\)/.test(code)
+      && /vertexColors: true/.test(code)
+      && (code.match(/new THREE\.Mesh\(geometry, this\.trailMaterial\)/g) ?? []).length === 1
+      && !/InstancedMesh/.test(code),
+    "sixteen marks as sixteen meshes is sixteen draw calls for something the eye reads as a stain, and an instanced pool has no per-instance alpha in stock three.js so the fade would silently become nothing",
+  )
+  // 4. THE MARK IS A DARK BLEND ON THE ROAD, not a light and not a hole. It is
+  //    asserted against pass 8's own water numerically below; here the claim is the
+  //    the three material properties that make it a a decal at all. The additive
+  //    exclusion is scoped to `_buildTrail`'s own body, because the EYE in the same
+  //    file is additive and a whole-file negative would be a claim about nothing.
+  const trailBody = methodBody(code, '_buildTrail')
+  claim(
+    'the mark is a dark, blended, fogged decal',
+    /color: DRIP_COLOUR/.test(trailBody)
+      && /opacity: DRIP_OPACITY/.test(trailBody)
+      && /fog: true/.test(trailBody)
+      && !/AdditiveBlending/.test(trailBody),
+    "an additive mark adds light and could sit above the eye-finder's own EYE_MIN floor as a false eye, and an unfogged one is a black hole in the haze at eighty metres",
+  )
+  // 5. THE TRAIL IS DRAWN BEFORE THE EYE, and the RELATION is the claim rather than
+  //    the number. This is pass 6's finding turned against pass 10: a near, dark,
+  //    `depthWrite: false` decal given a slot after the eye erases the creature gate's
+  //    only anchor, exactly as a luma-17.6 cable did.
+  claim(
+    'the trail is drawn before the eye, and the eye keeps its lift out of the depth sort',
+    /const TRAIL_RENDER_ORDER = 0/.test(code)
+      && /this\.trail\.renderOrder = TRAIL_RENDER_ORDER/.test(code)
+      && /const EYE_RENDER_ORDER = ([1-9]\d*)/.exec(code) !== null
+      && /eye\.renderOrder = EYE_RENDER_ORDER/.test(code),
+    'a dark decal sorted after the additive eye paints over the one mark the creature gate anchors on, which is the pass-6 wire bug wearing a decal',
+  )
+  // 6. THE FLARE IS A COLOUR, not an opacity. `pose.eye` is clamped to 1 and is
+  //    already the flicker's to spend, so an opacity flare would be invisible (the
+  //    clamp eats it) and would then stop `stagger` from dimming anything.
+  claim(
+    'the flare multiplies the eye colour and leaves the flicker alone',
+    /this\.eyeMaterial\.color\.multiplyScalar\(1 \+ EYE_FLARE_GAIN \* pose\.eyeFlare\)/.test(code)
+      && /this\.eyeMaterial\.opacity = pose\.eye/.test(code)
+      && /const flare = 1 \+ \(EYE_FLARE_GROWTH - 1\) \* pose\.eyeFlare/.test(code),
+    'an opacity flare is eaten by `clampUnit(pose.eye)` and then by the flicker, so the eye would never brighten, and a size flare on its own is a decal moving rather than an eye flaring',
+  )
+  // 7. THE WORLD'S SPOT EDGE IS THE PURE ONE, and its trail is the pure reducer. A
+  //    second `step.to === 'chase'` in `world.js` would be a second definition of one
+  //    moment, and it is exactly the kind that ends up meaning something slightly
+  //    different from the one the tests read.
+  claim(
+    'the world arms the flare from the pure spot test, and the trail from the pure reducer',
+    /if \(beast\.isSpot\(step\)\) this\.spotElapsed = 0/.test(world)
+      && /if \(!beast\.PURSUING_STATES\.includes\(step\.to\)\) this\.spotElapsed = null/.test(world)
+      && /beast\.dripStep\(this\.creatureTrail, \{/.test(world)
+      && /this\.creatureTrail = beast\.createDripTrail\(\)/.test(world)
+      && /sinceSpot: this\.spotElapsed/.test(world),
+    'a second definition of "the creature has spotted you" in the world is a second moment, and a trail the world builds for itself is a trail the pure harness cannot test',
+  )
+  // 8. THE MARKS ARE FOLDED ON THE WAY OUT, in the drawn copy, and the stand-off is
+  //    asked of `streetView`. A mark stored in drawn coordinates is 448 m from its
+  //    own road after the first wrap, and a mark inside the §16.5.5 stand-off is a
+  //    decal between the gate and the camera the portal gate measures.
+  claim(
+    'the trail is folded into the drawn copy and kept out of the portal stand-off',
+    /mark\.x \+ origin\.x, z: mark\.z \+ origin\.z/.test(world)
+      && /clear: this\.streetView\.clearOfPortals\(drawn\.x, drawn\.z\)/.test(world)
+      && /clearOfPortals\(x, z\) \{/.test(street)
+      && /const cx = x - this\.origin\.x/.test(street)
+      && /const cz = z - this\.origin\.z/.test(street)
+      && /PORTAL_FURNITURE_CLEAR/.test(street),
+    'a mark in the wrong frame is 448 m from its own road, and a mark inside PORTAL_FURNITURE_CLEAR is a dark decal in the pupil stand-off the pass-3 gate photographs',
+  )
+  // 9. THE TRAIL IS RELEASED. §15's teardown is a definition of done, and this is a
+  //    SIBLING of `root` rather than a child, so `root.parent.remove(root)` does not
+  //    take it with it: a 16-quad buffer and a material left on a dead scene, which
+  //    never shows up as a bug and is exactly the debt pass 19 exists to sweep.
+  claim(
+    'the trail is removed from the scene on dispose',
+    /this\.scene\?\.remove\(this\.trail\)/.test(code) && /this\._materials\.push\(this\.trailMaterial\)/.test(code),
+    "the trail is a sibling of the figure, so disposing the figure does not dispose it, and §15's teardown is exactly the check that would notice",
+  )
+  // 10. AND NOTHING NEW IS UNSEEDED OR WALL-CLOCKED. D10 is the repository's rule and
+  //     §16.5 needs fourteen frames that are each the same frame twice. The whole of
+  //     this pass is motion, so this is the claim with the most ways to fail quietly.
+  claim(
+    'the rig is seeded and clock-driven, so a capture of it is reproducible',
+    !/Math\.random|performance\.now|Date\.now/.test(code)
+      && !/Math\.random|performance\.now|Date\.now/.test(stripProse(world))
+      && /dripAlpha\(time - mark\.born\)/.test(code)
+      && /hash32\(seed, droppedCount, DRIP_SALT\)/.test(stripProse(creature)),
+    'an unseeded or wall-clocked mark is a frame no capture can reproduce, and a trail whose shapes are rolled rather than hashed is a different street on every run',
+  )
+  return claims
+}
+
+test('the creature-fidelity claims are the source contracts, and every one holds', () => {
+  const claims = creatureFidelityClaims(CREATURE_VIEW_SOURCE, WORLD_SOURCE, STREET_VIEW_SOURCE, CREATURE_SOURCE)
+  assert.ok(claims.length >= 10, `only ${claims.length} claims, so the table is short`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name} — ${entry.why}`)
+  }
+  // THE NUMBERS, and they are in this file rather than in the view because the view
+  // cannot be imported. Each is a RELATION between two modules, which is the shape of
+  // claim that survives a legitimate retune on either side.
+  const dripLuma = (hex) => 0.299 * ((hex >> 16) & 255) + 0.587 * ((hex >> 8) & 255) + 0.114 * (hex & 255)
+  // a WET mark, so it is darker than the water it sits in and darker than the road.
+  // Pass 8 established the ordering (halo < puddle < asphalt) and the trail joins the
+  // bottom of it rather than inventing a new relation.
+  assert.ok(dripLuma(beast.DRIP_COLOUR) < paletteLuma('puddle'), `the mark is luma ${dripLuma(beast.DRIP_COLOUR).toFixed(1)} and the water is ${paletteLuma('puddle').toFixed(1)}, so it is a shadow on a puddle`)
+  assert.ok(dripLuma(beast.DRIP_COLOUR) < paletteLuma('asphalt'))
+  // and it is a BLEND, never an opaque hole cut in the road
+  assert.ok(beast.DRIP_OPACITY > 0.25 && beast.DRIP_OPACITY < 0.8, `the mark peaks at opacity ${beast.DRIP_OPACITY}`)
+  // the LIFT clears pass 8's water, or a third of the road swallows the trail
+  const halo = buildingNumber('PUDDLE_HALO_LIFT')
+  const gap = buildingNumber('PUDDLE_LIFT_GAP')
+  assert.ok(beast.DRIP_LIFT > halo + gap, `the mark sits at ${beast.DRIP_LIFT} m and pass 8's water tops out at ${(halo + gap).toFixed(3)} m, so a drip on a wet patch is invisible`)
+  assert.ok(beast.DRIP_LIFT < 0.05, `the mark sits at ${beast.DRIP_LIFT} m, which is most of the camera's 0.05 m near plane`)
+  // the CAP IS THE DENSITY, and both halves are derived from the finale's own speed
+  const perSecond = beast.SPEED_CEILING / beast.DRIP_STRIDE_METRES
+  const wanted = perSecond * beast.DRIP_LIFE
+  assert.ok(wanted > beast.TRAIL_MAX, `a 5.2 m/s chase wants ${wanted.toFixed(1)} marks and the cap is ${beast.TRAIL_MAX}, so the cap is not doing anything`)
+  assert.ok(wanted < beast.TRAIL_MAX * 1.8, `a 5.2 m/s chase wants ${wanted.toFixed(1)} marks, so the cap is truncating a trail that fits`)
+  // and the mark is small enough to read as a stain AND too big to be mistaken for an
+  // eye even if it were bright: at §16.5.8's 9 m a mark spans ~16 px, which is past
+  // `tools/png-luma.mjs`'s own `EYE_MAX_SPAN` 14. So the creature gate rejects it
+  // twice over — too DARK to clear the 150 luma floor, and too WIDE to pass the span
+  // ceiling — and a mark that somehow became bright would still not be an eye.
+  const px = ((beast.DRIP_RADIUS * 2) * 720) / (2 * 9 * Math.tan((VIEW_FOV * Math.PI) / 360))
+  assert.ok(dripLuma(beast.DRIP_COLOUR) < 150 * 0.2, `the mark is luma ${dripLuma(beast.DRIP_COLOUR).toFixed(1)} against the eye-finder's 150 floor`)
+  assert.ok(px > 14, `a mark is ${px.toFixed(1)} px at the chase capture's 9 m, which does not clear the eye-finder's own 14 px span ceiling`)
+  console.log(`\n  pass-10 constants: mark luma ${dripLuma(beast.DRIP_COLOUR).toFixed(1)} (puddle ${paletteLuma('puddle').toFixed(1)}, asphalt ${paletteLuma('asphalt').toFixed(1)}), opacity ${beast.DRIP_OPACITY}, lift ${beast.DRIP_LIFT} m over pass 8's ${(halo + gap).toFixed(3)} m, ${px.toFixed(1)} px at 9 m; the finale wants ${wanted.toFixed(1)} marks and the cap is ${beast.TRAIL_MAX}`)
+})
+
+test('every creature-fidelity claim can actually fail, and a mutation names the one it breaks', () => {
+  // The control for the test above, and the reason the table is a gate rather than a
+  // fingerprint of one file. Each row is a real edit somebody would plausibly make
+  // while tidying this rig up, and each must break exactly one named claim.
+  const mutations = [
+    ['an elbow that is built and never turned', 'the limb is a rigid stick with a decorative joint',
+      'the arm is a shoulder and an elbow, and the elbow is driven',
+      '    this.elbows[0].rotation.x = pose.armElbow\n    this.elbows[1].rotation.x = pose.armElbow', '    // the elbow follows the shoulder'],
+    ["a forearm at the upper bone's radius", 'two identical radii read as one long limb with a seam',
+      'the arm is a shoulder and an elbow, and the elbow is driven',
+      'this._limb(0.03, 0.022, S.armFore)', 'this._limb(0.042, 0.03, S.armFore)'],
+    ['the breath left on the eyes', 'EYE_PIXEL_FLOOR is a promise about pixels and a promise that breathes is not one',
+      'the breath scales the rig and is divided back out of the eyes',
+      'const inverse = breath / Math.max(0.001, pose.scale)', 'const inverse = 1 / Math.max(0.001, pose.scale)'],
+    ['the sway dropped', 'the shoulder drift is the half of the micro-motion that reads at ninety metres',
+      'the breath scales the rig and is divided back out of the eyes',
+      '    this.lean.rotation.y = pose.sway\n', ''],
+    ['a three-component vertex colour', 'three.js enables USE_COLOR_ALPHA from itemSize 4, so the fade is discarded and the trail never fades',
+      'the whole trail is one mesh, and its fade is a real per-mark alpha',
+      'new THREE.BufferAttribute(colours, 4)', 'new THREE.BufferAttribute(colours.subarray(0, 3), 3)'],
+    ['an instanced pool instead of one mesh', 'sixteen draw calls for a stain, and no per-instance alpha in stock three.js',
+      'the whole trail is one mesh, and its fade is a real per-mark alpha',
+      'this.trail = new THREE.Mesh(geometry, this.trailMaterial)', 'this.trail = new THREE.InstancedMesh(geometry, this.trailMaterial, 2)'],
+    ['an additive mark', "an additive decal adds light and could be found as the creature's eye by the gate that anchors on it",
+      'the mark is a dark, blended, fogged decal',
+      '      vertexColors: true,\n    })', '      vertexColors: true,\n      blending: THREE.AdditiveBlending,\n    })'],
+    ['an unfogged mark', "a dark unfogged decal at eighty metres is a hole in the haze, which is the creature's own job",
+      'the mark is a dark, blended, fogged decal',
+      '      fog: true,\n      // `vertexColors` is what makes the four-component', '      fog: false,\n      // `vertexColors` is what makes the four-component'],
+    ['the trail drawn after the eye', "a dark decal sorted after the additive eye erases the creature gate's only anchor, which is the pass-6 wire bug again",
+      'the trail is drawn before the eye, and the eye keeps its lift out of the depth sort',
+      'const TRAIL_RENDER_ORDER = 0', 'const TRAIL_RENDER_ORDER = 2'],
+    ['the eye put back in the depth sort', 'the pass-6 claim is about the eye and this pass must not undo it',
+      'the trail is drawn before the eye, and the eye keeps its lift out of the depth sort',
+      'const EYE_RENDER_ORDER = 1', 'const EYE_RENDER_ORDER = 0'],
+    ['the flare applied to the opacity', 'the clamp eats it and then the flicker cannot dim anything',
+      'the flare multiplies the eye colour and leaves the flicker alone',
+      'this.eyeMaterial.color.multiplyScalar(1 + EYE_FLARE_GAIN * pose.eyeFlare)', 'this.eyeMaterial.opacity = 1'],
+    ['the size half of the flare dropped', 'a brighter eye with no swell is a light going on rather than an eye dilating',
+      'the flare multiplies the eye colour and leaves the flicker alone',
+      'const flare = 1 + (EYE_FLARE_GROWTH - 1) * pose.eyeFlare', 'const flare = 1'],
+    ['the spot edge re-typed in the world', 'a second definition of one moment is how two files end up disagreeing about it',
+      'the world arms the flare from the pure spot test, and the trail from the pure reducer',
+      'if (beast.isSpot(step)) this.spotElapsed = 0', "if (step.to === 'chase') this.spotElapsed = 0"],
+    ['the spot clock never cleared', 'leaving a chase re-arms the flare, so the second sighting of a run never announces itself',
+      'the world arms the flare from the pure spot test, and the trail from the pure reducer',
+      'if (!beast.PURSUING_STATES.includes(step.to)) this.spotElapsed = null', ''],
+    ['the marks stored where they were laid', "a mark in the drawn frame is 448 m from its own road after the first wrap",
+      'the trail is folded into the drawn copy and kept out of the portal stand-off',
+      'mark.x + origin.x, z: mark.z + origin.z', 'mark.x, z: mark.z'],
+    ['the portal stand-off dropped', 'a dark decal inside PORTAL_FURNITURE_CLEAR sits in the pupil stand-off §16.5.5 photographs',
+      'the trail is folded into the drawn copy and kept out of the portal stand-off',
+      'clear: this.streetView.clearOfPortals(drawn.x, drawn.z)', 'clear: true'],
+    ['the stand-off folded on one axis', 'origin is per-axis, so a single shift puts the query 448 m from every portal',
+      'the trail is folded into the drawn copy and kept out of the portal stand-off',
+      'const cz = z - this.origin.z', 'const cz = z - this.origin.x'],
+    ['the trail left on the scene', "a sibling of the figure is not removed with it, and §15's teardown is the check that would notice",
+      'the trail is removed from the scene on dispose',
+      'this.scene?.remove(this.trail)', ''],
+    ['an unseeded mark', "D10 is the repository's rule and §16.5 needs each of fourteen frames twice",
+      'the rig is seeded and clock-driven, so a capture of it is reproducible',
+      'const salt = hash32(seed, droppedCount, DRIP_SALT)', 'const salt = Math.random() * 0xffffffff'],
+  ]
+  for (const [label, why, claimName, from, to] of mutations) {
+    // A mutation has to exist in AT LEAST ONE of the four sources, and the "no claim
+    // broke" assertion below is what catches the other failure mode the pass-9 review
+    // found: a fragment that only appears in a COMMENT, which `replace` rewrites and
+    // `stripProse` then ignores, leaving every claim green.
+    const sources = [[CREATURE_VIEW_SOURCE, 'creatureView.js'], [WORLD_SOURCE, 'world.js'], [STREET_VIEW_SOURCE, 'streetView.js'], [CREATURE_SOURCE, 'creature.js']]
+    if (!sources.some(([source]) => source.includes(from))) {
+      throw new Error(`the mutation "${label}" matches none of the four sources, so it is not testing anything`)
+    }
+    const broken = creatureFidelityClaims(
+      CREATURE_VIEW_SOURCE.replace(from, to),
+      WORLD_SOURCE.replace(from, to),
+      STREET_VIEW_SOURCE.replace(from, to),
+      CREATURE_SOURCE.replace(from, to),
+    ).filter((entry) => !entry.ok)
+    assert.ok(
+      broken.some((entry) => entry.name === claimName),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${claimName}" — ${why}`,
+    )
+  }
+  assert.ok(mutations.length >= 18, `only ${mutations.length} mutations, which is fewer than this pass needs`)
+  console.log(`\n  pass-10 claims: 10 source contracts, ${mutations.length} mutations, every one caught`)
 })
 
 // ---------------------------------------------------------------------------

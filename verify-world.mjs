@@ -6327,6 +6327,412 @@ check('the sky costs three draw calls and a point cloud, and teardown releases a
   console.log(`\n  pass-9 cost: 3 bands on 1 geometry + 1 texture, ${horizonParts.length} horizon parts on 1 material, 1 point cloud; teardown released ${geometries} geometries and ${textures} textures`)
 })
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 10 — CREATURE FIDELITY I, against the BUILT scene
+//
+// What the pure harness cannot answer about this pass, and why each answer has to be
+// here rather than in a screenshot:
+//
+//  1. the trail is ONE mesh, is a sibling of the figure rather than a child of it,
+//     carries an RGBA vertex colour, and is queued BEFORE the eye — four properties
+//     that are only true or false of the objects three.js will actually draw;
+//  2. the buffer's contents are the MARKS, at the positions the world says, in the
+//     copy the player is standing in, with the cap respected — a reducer can be
+//     perfectly correct and still be handed nothing to draw;
+//  3. the eye flare is visible in the BUILT material: the `THREE.Color` the renderer
+//     tone-maps is 3.2x its unflared value on the spotting frame and back to 1x a
+//     second later. The pure harness proves the envelope; only this can prove the
+//     envelope reaches the framebuffer;
+//  4. the rig actually breathes, the elbow actually lags, and two identical runs
+//     produce byte-identical buffers — the determinism D10 asks for, measured on the
+//     geometry rather than on the function that fills it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the trail buffer's live marks back out: quads with a non-zero alpha.
+ *
+ * The position read is the mark's CENTRE — the mean of its four corners — and not its
+ * first vertex, because a quad is four corners of an ellipse and the first one is
+ * `radius` away from the spot the reducer laid. Comparing a corner to a point and
+ * calling the difference a bug is how this harness would have reported a mark at
+ * 0.14 m from where it was put.
+ */
+function trailMarks(view) {
+  const colour = view.trail.geometry.attributes.color
+  const position = view.trail.geometry.attributes.position
+  const out = []
+  for (let mark = 0; mark < beast.TRAIL_MAX; mark += 1) {
+    const alpha = colour.getW(mark * 4)
+    if (alpha <= 0) continue
+    const vertex = mark * 4
+    let x = 0
+    let y = 0
+    let z = 0
+    for (let corner = 0; corner < 4; corner += 1) {
+      x += position.getX(vertex + corner)
+      y += position.getY(vertex + corner)
+      z += position.getZ(vertex + corner)
+    }
+    out.push({ alpha, x: x / 4, y: y / 4, z: z / 4 })
+  }
+  return out
+}
+
+check('pass-10: the trail is one mesh, a sibling of the figure, and queued before the eye', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.creatureView
+  // ONE MESH. The whole trail is `TRAIL_MAX` quads in one buffer, so the pass costs
+  // one draw call whatever is alive — which is the claim the InstancedMesh argument in
+  // `_buildTrail` is about, and the cheapest thing here to check by counting.
+  let named = 0
+  game.scene.traverse((object) => {
+    if (object.name === 'creatureTrail') named += 1
+  })
+  assert.equal(named, 1, `the world has ${named} trail meshes, and every extra one is a second draw call`)
+  assert.ok(!view.trail.isInstancedMesh, 'the trail is instanced, which has no per-instance alpha in stock three.js')
+  // A SIBLING OF THE FIGURE. A mark parented to `root` would travel with the creature
+  // for ever, and a trail that follows the thing that laid it is a shadow.
+  assert.equal(view.trail.parent, game.scene, 'the trail is not on the scene')
+  assert.notEqual(view.trail.parent, view.root, 'the trail is parented to the creature, so it follows it')
+  assert.notEqual(view.trail.parent, view.lean, 'or to its rig')
+  // THE ORDER. `EYE_RENDER_ORDER` is pass 6's claim and this pass must not undo it,
+  // and the trail has to be drawn first: a dark `depthWrite: false` decal sorted after
+  // an additive eye erases the creature gate's only anchor, which is the pass-6 wire
+  // bug arriving in a different vehicle.
+  const eyes = view.eyes.children
+  assert.equal(eyes.length, 2)
+  for (const eye of eyes) {
+    assert.ok(eye.renderOrder > view.trail.renderOrder, `the eye is at ${eye.renderOrder} and the trail at ${view.trail.renderOrder}, so a decal can paint over the eye`)
+  }
+  assert.equal(eyes[0].renderOrder, 1, 'pass 6 lifted the eye out of the depth sort and this pass undid it')
+  // THE VERTEX COLOUR IS FOUR COMPONENTS, which is the only thing that makes a
+  // per-mark alpha legal: three.js sets `USE_COLOR_ALPHA` from `itemSize === 4`, and a
+  // three-component attribute compiles, runs, and discards the alpha.
+  const colour = view.trail.geometry.attributes.color
+  assert.equal(colour.itemSize, 4, 'the trail colour is not RGBA, so the per-mark fade is discarded')
+  assert.equal(colour.count, beast.TRAIL_MAX * 4)
+  assert.equal(view.trail.material.vertexColors, true, 'the material is not reading the vertex colour')
+  assert.equal(view.trail.material.fog, true, 'a decal on the road has to recede with the road')
+  assert.equal(view.trail.material.blending, THREE.NormalBlending, 'the mark is not an alpha blend')
+  assert.equal(view.trail.material.depthWrite, false, 'a dark decal that writes depth is a sticker')
+  assert.ok(view.trail.material.opacity < 1, `the mark peaks at opacity ${view.trail.material.opacity}, which is an opaque hole in the road`)
+  assert.equal(view.trail.frustumCulled, false, 'the trail is frustum-culled, and its bounds are a static buffer whose vertices move')
+  // AND IT STARTS EMPTY AND INVISIBLE, which is what makes a walk the only way to see one.
+  assert.equal(view.trail.visible, false, 'a creature that has not walked is already trailing')
+  assert.equal(trailMarks(view).length, 0)
+  assert.equal(game.creatureTrail.marks.length, 0)
+})
+
+check('pass-10: walking lays marks, the cap holds, and they are drawn where the creature was', () => {
+  game.restart()
+  run(game, 1.6)
+  // Act I's telegraph does not walk, and that is the first half of the claim: nothing is
+  // laid for a figure that is on the field and motionless.
+  assert.equal(game.creature.state, 'telegraph')
+  run(game, 0.5)
+  assert.equal(game.creatureTrail.marks.length, 0, 'the Act I apparition laid a trail without walking')
+  assert.equal(game.creatureView.trail.visible, false)
+  // Act II. A stalking thing walks toward its evidence, which is enough to lay a
+  // trail, and the marks have to be on the road BEHIND where it now stands.
+  game.state = { ...game.state, hammerHeld: true }
+  game.creature = beast.createCreature({ state: 'stalk' })
+  placeCreature(game, 26)
+  game.update(DT)
+  run(game, 3.0)
+  const trail = game.creatureTrail
+  assert.ok(trail.marks.length > 0, 'a stalking creature walked three seconds and left nothing')
+  assert.ok(trail.walked > 0, 'and the world never measured how far it went')
+  // THE CAP, on the BUILT buffer and not only on the reducer.
+  assert.ok(trail.marks.length <= beast.TRAIL_MAX, `the trail holds ${trail.marks.length} marks`)
+  assert.equal(game.creatureView.trail.geometry.attributes.position.count, beast.TRAIL_MAX * 4)
+  const drawn = trailMarks(game.creatureView)
+  assert.ok(drawn.length > 0, 'the world has marks and the buffer is empty')
+  assert.equal(game.creatureView.trail.visible, true, 'a creature with a live trail is not drawing it')
+  // THE FADE IS WHAT THE FUNCTION SAYS, read back off the buffer: the oldest listed mark
+  // is the faintest, which is the brief's sentence in pixels rather than in data.
+  // The buffer is OLDEST-FIRST — `dripStep` keeps its list in that order and the view
+  // writes it slot for slot — so the alphas RISE along it, and that is the brief's
+  // sentence read back in pixels: the oldest mark is the faintest one on the road.
+  for (let i = 1; i < drawn.length; i += 1) {
+    assert.ok(drawn[i].alpha > drawn[i - 1].alpha, `mark ${i} is at ${drawn[i].alpha.toFixed(3)} and the OLDER one at ${drawn[i - 1].alpha.toFixed(3)}, so the fade is not by age`)
+  }
+  assert.ok(drawn[0].alpha < 0.5, `the oldest mark is at ${drawn[0].alpha.toFixed(3)}, which is not a faded one`)
+  assert.ok(drawn[drawn.length - 1].alpha < 1, `the newest mark is at full strength (${drawn[drawn.length - 1].alpha.toFixed(3)}), so it switched on rather than landed`)
+  // THE FRAME. Every mark is in the copy the player is standing in, and on the road
+  // rather than up in the air: a mark at the wrong height is a decal on a house.
+  const origin = game.streetView.origin
+  for (const mark of drawn) {
+    assert.ok(Math.abs(mark.y - beast.DRIP_LIFT) < 1e-6, `a mark is at y=${mark.y}, which is not the road`)
+    const canonical = { x: mark.x - origin.x, z: mark.z - origin.z }
+    const found = trail.marks.some((entry) => Math.hypot(entry.x - canonical.x, entry.z - canonical.z) < 0.01)
+    assert.ok(found, `a drawn mark at ${mark.x.toFixed(1)}, ${mark.z.toFixed(1)} is not in the trail at all once the fold is undone`)
+  }
+  // AND THE STAND-OFF, on the real predicate rather than on the source: the world asks
+  // `clearOfPortals` every frame, the trail loses marks inside the radius, and the
+  // count is published so this can require that it ever fired.
+  const portal = game.streetView.portals[0]
+  assert.ok(portal, 'the world has no portals')
+  const gate = game.streetView.worldOf(portal.anchor.position)
+  assert.equal(game.streetView.clearOfPortals(gate.x, gate.z), false, 'a spot on a gate is clear of the portals')
+  const before = game.creatureTrail.suppressed
+  game.creature = beast.createCreature({ state: 'stalk' })
+  game.creaturePosition = { x: portal.anchor.position.x, z: portal.anchor.position.z + 2 }
+  run(game, 1.2)
+  assert.ok(game.creatureTrail.suppressed > before, 'the creature walked across a gate and laid no suppression count')
+  console.log(`\n  pass-10 trail: ${drawn.length} marks drawn, ${game.creatureTrail.walked.toFixed(1)} m walked, ${game.creatureTrail.dropped} laid, ${game.creatureTrail.suppressed} suppressed at a gate`)
+})
+
+check('pass-10: the eyes flare on the frame the creature spots the player, and settle after', () => {
+  game.restart()
+  run(game, 1.6)
+  const view = game.creatureView
+  // §6.3's cone is tested on a position with no yaw, so the creature's forward is
+  // `forwardOf(0)` — straight down -z. A sighting therefore needs the player at LOWER z
+  // than the creature, and the probe below SEARCHES for a real §6.3 sighting rather than
+  // assuming one: eight bearings, five ranges, and a check that a change to the cone
+  // cannot quietly turn this into a check that never spots anything.
+  const player = { x: game.player.pos.x, z: game.player.pos.z }
+  const range = beast.detectionRange(0, 0)
+  const origin = game.streetView.origin
+  let placed = null
+  for (const dz of [3, 4, 5, 6, -3, -4, -5, -6]) {
+    for (const dx of [0, 1, -1, 2, -2]) {
+      // The canonical position is what the world stores and the DRAWN one is what
+      // `canSee` is asked about, and the two are a whole period apart here — which is
+      // the same fold bug the harness's own `placeCreature` note records, and the reason
+      // this probe builds the drawn copy rather than trusting the canonical one.
+      const canonical = { x: hood.canonicalCoord(player.x) + dx, z: hood.canonicalCoord(player.z) + dz }
+      const drawn = { x: canonical.x + origin.x, z: canonical.z + origin.z }
+      if (!beast.canSee(drawn, { x: player.x, z: player.z }, { range, occluders: game.streetView.occluders() })) continue
+      placed = { dx, dz, drawn, canonical }
+      break
+    }
+    if (placed) break
+  }
+  assert.ok(placed, 'no placement within 6 m of the player is a §6.3 sighting, so this check can never fire')
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0.6 })
+  game.creaturePosition = placed.canonical
+  game.update(DT)
+  // BEFORE. A stalking eye is at its normal glow, and `spotElapsed` is `null`, which is
+  // what keeps the flare off every Act I frame and off every banish.
+  assert.equal(game.spotElapsed, null, 'a stalking creature has already spotted the player')
+  assert.equal(view.pose.eyeFlare, 0, 'a stalking eye is flaring')
+  const calm = view.eyeMaterial.color.clone()
+  const calmScale = view.eyes.scale.x
+  assert.ok(calmScale > 0, 'the eye quad has no scale at all')
+  // THE SPOT. Fill the meter until §6.2 crosses 1.0 and the state machine turns it into
+  // a chase, and take the FIRST frame on which the world says so.
+  let spot = null
+  for (let frame = 0; frame < 900; frame += 1) {
+    // Re-pinned every frame, and the reason is §11.1: at three metres and tier 0's
+    // 2.2 m/s the creature reaches the player and CAPTURES inside two seconds, which is
+    // four seconds before §6.2's meter finishes filling. The sighting edge is between
+    // those two events, and this check is about the edge.
+    game.creaturePosition = placed.canonical
+    game.update(DT)
+    if (game.creature.state !== 'chase') continue
+    spot = { frame, colour: view.eyeMaterial.color.clone(), scale: view.eyes.scale.x, pose: view.pose.eyeFlare }
+    break
+  }
+  assert.ok(spot, `a creature staring at the player from ${Math.hypot(placed.dx, placed.dz)} m never reached a chase in 10 s`)
+  assert.equal(game.spotElapsed, 0, 'the spot clock did not start on the spotting frame')
+  assert.equal(spot.pose, 1, 'the pose does not carry a full flare on the frame the creature spots you')
+  // AND THE BUILT MATERIAL. This is the assertion the pure harness cannot make: the
+  // `THREE.Color` the renderer will tone-map is brighter on this frame than it was, and
+  // brighter by the documented gain.
+  const lit = spot.colour.r / calm.r
+  assert.ok(lit > beast.EYE_FLARE_GAIN, `the eye brightened by ${lit.toFixed(2)}x and EYE_FLARE_GAIN is ${beast.EYE_FLARE_GAIN}`)
+  assert.ok(lit < beast.EYE_FLARE_GAIN + 1.6, `the eye is ${lit.toFixed(2)}x, which is a headlight`)
+  assert.ok(spot.scale > calmScale, 'the flaring eye did not swell at all')
+  // THE SWELL IS 20% AND NOT AN INFINITY, which is the eye-finder's own ceiling: a quad
+  // grown past `EYE_MAX_SPAN` would stop being findable and the creature gate would lose
+  // its anchor, so the growth is a constant and not a free parameter.
+  const swell = spot.scale / calmScale
+  assert.ok(swell > 1.05 && swell < beast.EYE_FLARE_GROWTH + 0.02, `the eye swelled ${swell.toFixed(3)}x against a documented ${beast.EYE_FLARE_GROWTH}`)
+  // THE SETTLE. One frame later it is still bright, and after the window it is EXACTLY
+  // the unflared colour again — `setHex` rewrites the colour every frame, so nothing
+  // can accumulate across frames. Every frame from here is PINNED for the same reason
+  // the spot loop was: an unpinned chase at three metres captures inside two seconds
+  // and the capture is what this check would then be measuring.
+  const advance = (seconds) => {
+    for (let i = 0; i < Math.round(seconds / DT); i += 1) {
+      if (game.creature.state === 'chase') game.creaturePosition = placed.canonical
+      game.update(DT)
+    }
+  }
+  advance(DT)
+  assert.ok(view.eyeMaterial.color.r / calm.r > 1.5, 'the flare lasted one frame')
+  advance(beast.EYE_FLARE_SECONDS + 0.2)
+  assert.equal(game.creature.state, 'chase', 'the pinned chase did not survive its own meter')
+  const settled = view.eyeMaterial.color.r / calm.r
+  assert.ok(Math.abs(settled - 1) < 0.02, `the eye settled at ${settled.toFixed(3)}x its normal colour, so the flare accumulated`)
+  // THE SIZE, as a CONTROLLED pair rather than as a comparison across two states: the
+  // same pose at a fixed distance, presented once with the flare and once without, so
+  // the only thing that can move the quad is `eyeFlare`. Comparing the settled size
+  // against the size from BEFORE the spot would be comparing a chase against a stalk,
+  // and the figure's own `scale` column is the difference.
+  const poseAt = (sinceSpot) => beast.creaturePose(
+    { state: 'chase' },
+    { time: 3, distance: 12, sinceSpot, offset: view.flickerOffset, view: view.viewOf(game.camera) },
+  )
+  view.present(poseAt(null), { yaw: 0 })
+  const plain = view.eyes.scale.x
+  view.present(poseAt(0), { yaw: 0 })
+  const swelled = view.eyes.scale.x
+  assert.ok(
+    Math.abs(swelled / plain - beast.EYE_FLARE_GROWTH) < 1e-9,
+    `a flaring eye is ${(swelled / plain).toFixed(4)}x its size and EYE_FLARE_GROWTH is ${beast.EYE_FLARE_GROWTH}`,
+  )
+  view.present(poseAt(beast.EYE_FLARE_SECONDS), { yaw: 0 })
+  assert.equal(view.eyes.scale.x, plain, 'the eye did not go back to exactly the size it had before the flare')
+  assert.equal(view.eyeMaterial.color.r, calm.r, 'and the colour is not the unflared one either')
+  // AND LEAVING A CHASE RE-ARMS IT, which is the difference between a telegraph and a
+  // lamp: §6.3's release threshold drops the state back to `stalk`, the world clears the
+  // clock, and the next chase has to announce itself again. The meter is handed to the
+  // state machine rather than waited for, so the assertion is about the WORLD's clear
+  // and not about §6.2's eight seconds.
+  game.creature = beast.createCreature({ state: 'chase', awareness: beast.AWARENESS_CHASE_RELEASE - 0.05 })
+  game.creaturePosition = placed.canonical
+  game.update(DT)
+  assert.equal(game.creature.state, 'stalk', 'a meter under the release threshold did not end the chase')
+  assert.equal(game.spotElapsed, null, `leaving a chase left the spot clock at ${game.spotElapsed}`)
+  console.log(`\n  pass-10 eye: spotted on frame ${spot.frame}, ${lit.toFixed(2)}x colour and ${swell.toFixed(2)}x size at the peak, settled to ${settled.toFixed(3)}x after ${beast.EYE_FLARE_SECONDS} s`)
+})
+
+check('pass-10: the rig breathes, the elbow lags, and the whole thing is deterministic', () => {
+  game.restart()
+  run(game, 1.6)
+  const view = game.creatureView
+  // THE BREATH, on the built rig. §14.3 is respected elsewhere in the world and the
+  // creature's idle motion is not one of the suppressed terms — reduced motion covers
+  // the PLAYER's head bob, the shake and the finale effects — so this is a scale the
+  // figure really does breathe with, and it is a scale away from 1 that changes.
+  game.creature = beast.createCreature({ state: 'stalk' })
+  placeCreature(game, 30)
+  const scales = []
+  const yaws = []
+  for (let frame = 0; frame < 240; frame += 1) {
+    game.update(DT)
+    scales.push(view.lean.scale.x)
+    yaws.push(view.lean.rotation.y)
+  }
+  const spread = Math.max(...scales) - Math.min(...scales)
+  const swaySpread = Math.max(...yaws) - Math.min(...yaws)
+  assert.ok(spread > 0.01, `the figure's scale moved ${spread.toFixed(5)} over four seconds, which is not breathing`)
+  assert.ok(spread < 0.05, `the figure's scale moved ${spread.toFixed(4)}, which is a pulse and not a breath`)
+  assert.ok(swaySpread > 0.01, `the figure's shoulders yawed ${swaySpread.toFixed(5)} rad, which is not a sway`)
+  assert.ok(Math.max(...scales) < 1.02, 'a breath can inflate the figure, but not by two per cent')
+  assert.ok(Math.min(...scales) > 0.98, 'and it is a breath, so it comes back down')
+  // IT IS A BREATH AND NOT A BOB: the crown moves and the feet do not, which is what a
+  // scale on `lean` (whose origin is the floor) buys and a position offset would not.
+  assert.ok(Math.abs(view.lean.position.y - (view.pose.heave + view.pose.lift)) < 1e-9, 'the bob and the breath are on the same term')
+  // THE ELBOW, on the built rig, and the lag measured off the two curves rather than off
+  // the constant: the arm reaches furthest forward, and the forearm's deepest bend has
+  // to arrive after it.
+  // Swept over one stride and post-processed, rather than tracked inline, and the
+  // reason is worth recording: the phase is `heave x STRIDE_ARC` and `heave` is itself
+  // an oscillation, so the arm's forward reach and the elbow's deepest bend are two
+  // minima of two different curves and neither is known until the sweep is over. A
+  // single-pass version latches onto the first crossing and measures a lag of nothing.
+  const STRIDE_SWEEP = 2400
+  const armSeries = []
+  const elbowSeries = []
+  for (let i = 0; i < STRIDE_SWEEP; i += 1) {
+    view.present(beast.creaturePose({ state: 'chase' }, { time: i / 600, offset: 0 }), { yaw: 0 })
+    armSeries.push(view.arms[0].rotation.x)
+    elbowSeries.push(view.elbows[0].rotation.x)
+  }
+  const forwardMost = Math.min(...armSeries)
+  const reachIndex = armSeries.indexOf(forwardMost)
+  // the elbow's deepest bend, searching FORWARD from the reach and wrapping once, which
+  // is what "the next bend in the stride" means
+  let bentMost = Infinity
+  let elbowIndex = -1
+  for (let k = 0; k < STRIDE_SWEEP; k += 1) {
+    const index = (reachIndex + k) % STRIDE_SWEEP
+    if (elbowSeries[index] < bentMost) {
+      bentMost = elbowSeries[index]
+      elbowIndex = index
+    }
+  }
+  const lagSeconds = ((elbowIndex - reachIndex + STRIDE_SWEEP) % STRIDE_SWEEP) / 600
+  assert.ok(reachIndex >= 0, 'a chase never reached forward in four seconds')
+  assert.ok(forwardMost < -0.3, `the arm only reached ${forwardMost.toFixed(3)} rad forward, so the stride is not being driven`)
+  assert.ok(lagSeconds > 0, 'the elbow is most bent BEFORE the arm reaches forward, which is a broken elbow')
+  assert.ok(lagSeconds < 0.6, `the elbow lags ${lagSeconds.toFixed(3)} s, which is a limb that has come apart`)
+  assert.ok(bentMost < -0.3, `the elbow barely bends (${bentMost.toFixed(3)} rad), so the arm is still a stick`)
+  assert.equal(view.elbows[0].rotation.x, view.elbows[1].rotation.x, 'the two elbows bend opposite ways, which is a bird')
+  assert.notEqual(view.arms[0].rotation.x, view.arms[1].rotation.x, 'the two arms are in phase, so the figure marches')
+  // AND THE RIG IS A RIG: two joints per arm, and the claw still hangs at `armLength`
+  // from the shoulder, which is the silhouette §12.1 measures.
+  const S = beast.CREATURE_SHAPE
+  assert.equal(view.elbows.length, 2)
+  // The elbow's LOCAL height, not its world height: the rig is pitched, scaled by the
+  // breath and lifted by the bob, so a world Y is four other claims multiplied together
+  // and a check on it is a check on all of them at once. This one is about where the
+  // joint is hung — `armUpper` below the shoulder, which is what makes the forearm's
+  // tip land on `armLength` and the silhouette 7:1.
+  assert.equal(view.elbows[0].position.y, -S.armUpper, 'the elbow is not hung one upper-bone length below the shoulder')
+  assert.equal(view.elbows[1].position.y, -S.armUpper)
+  const upper = view.arms[0].children.find((child) => child.isMesh)
+  assert.ok(upper, 'the shoulder has no upper bone on it')
+  assert.equal(upper.position.y, -S.armUpper / 2, 'the upper bone is not centred on its own length')
+  // A TELEGRAPH IS BARELY THERE, which is the half of the stride claim a stalk frame
+  // cannot show: the same three numbers on the Act I apparition produce a fifth of the
+  // chase's swing, and the whole of the apparition is that you are not sure.
+  let chaseSwing = 0
+  let telegraphSwing = 0
+  for (let i = 0; i < 600; i += 1) {
+    const t = i / 100
+    view.present(beast.creaturePose({ state: 'chase' }, { time: t, offset: 0 }), { yaw: 0 })
+    chaseSwing = Math.max(chaseSwing, Math.abs(view.arms[0].rotation.x))
+    view.present(beast.creaturePose({ state: 'telegraph' }, { time: t, offset: 0 }), { yaw: 0 })
+    telegraphSwing = Math.max(telegraphSwing, Math.abs(view.arms[0].rotation.x))
+  }
+  assert.ok(chaseSwing > telegraphSwing * 8, `a chase swings ${chaseSwing.toFixed(3)} rad and a telegraph ${telegraphSwing.toFixed(3)}`)
+  // DETERMINISM, and the FORM of the claim is the point: the same walk, driven twice,
+  // has to produce the same buffer. A `Math.random` in a mark's shape, or a clock read
+  // in the view, would pass every check above and fail this one.
+  //
+  // It is two FRESH worlds rather than this one and a scratch, and the reason is that a
+  // determinism claim is a claim about a seed and a frame count, not about a world that
+  // has already been through eighty-eight checks. `game` here has a different
+  // `animTime` from a scratch by two hundred seconds of simulation, its creature has a
+  // history, and the walk it takes is a walk through that history. Both marks would be
+  // seeded identically and neither would be a replay, so comparing them would measure
+  // the harness's own history instead of the trail's determinism.
+  const walk = (target) => {
+    target.restart()
+    run(target, 1.6)
+    target.state = { ...target.state, hammerHeld: true }
+    target.creature = beast.createCreature({ state: 'stalk' })
+    placeCreature(target, 26)
+    run(target, 2.5)
+    return Array.from(target.creatureView.trail.geometry.attributes.position.array)
+      .map((value) => value.toFixed(6))
+  }
+  const mount = () => new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  const one = mount()
+  const two = mount()
+  const first = walk(one)
+  const second = walk(two)
+  assert.ok(first.length > 0, 'the determinism walk laid no marks at all')
+  assert.equal(one.seed, two.seed, 'the two worlds are not the same seed, so nothing else is comparable')
+  assert.deepEqual(first, second, 'the same walk produced two different trails, so a mark is not reproducible')
+  // ...and the marks are not all at the origin, or "identical" is a claim about a buffer
+  // of zeroes. `placeCreature` walks it 26 m out and the trail follows it down the road,
+  // so the marks have to SPAN metres for the comparison to be about a trail.
+  const laid = one.creatureTrail.dropped
+  const spread2 = trailMarks(one.creatureView)
+  assert.ok(laid > 3, `the determinism walk laid ${laid} marks, which is too few to be a trail`)
+  const xs = spread2.map((mark) => mark.x)
+  assert.ok(Math.max(...xs) - Math.min(...xs) > 1, `the ${spread2.length} marks span ${(Math.max(...xs) - Math.min(...xs)).toFixed(2)} m, which is a single spot`)
+  one.dispose()
+  two.dispose()
+  console.log(`\n  pass-10 rig: scale ${spread.toFixed(4)} over 4 s, shoulders ${swaySpread.toFixed(4)} rad, elbow lag ${lagSeconds.toFixed(3)} s and ${bentMost.toFixed(2)} rad, chase swings ${chaseSwing.toFixed(3)} rad against a telegraph's ${telegraphSwing.toFixed(3)}, ${laid} marks reproduced exactly across two fresh worlds`)
+})
+
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down
   // with it and leaves a WebGL context alive behind the next mount, so the frame
@@ -6341,6 +6747,11 @@ check('dispose() tears the whole world down without throwing', () => {
   assert.equal(view.root.parent, null, 'and removed itself from the scene')
   assert.equal(game.streetView.pools.length, 0, 'the instanced pools are released')
   assert.equal(game.streetView.textures.length, 0, 'and so are the procedural textures')
+  // PASS 10: the trail is a SIBLING of the figure, so removing the figure does not
+  // remove it, and §15's teardown is the only thing in the repository that would notice.
+  assert.equal(game.creatureView.trail.parent, null, 'the trail was left on the scene after dispose')
+  assert.equal(game.creatureView._geometries.includes(game.creatureView.trailGeometry), false, 'and its geometry was not released')
+  assert.equal(game.creatureView._materials.includes(game.creatureView.trailMaterial), false, 'and its material was not')
   // and it is idempotent, because `dispose` may legitimately be called twice on
   // the way out of a hot reload
   game.dispose()
