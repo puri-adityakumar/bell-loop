@@ -464,6 +464,67 @@ const audio = makeFakeAudio()
 const game = new BellLoopGame(container, { store, audio, createRenderer: makeFakeRenderer })
 
 // ---------------------------------------------------------------------------
+// iteration 2, pass 12 — the portal's descent, on the built scene
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS FILE IS FOR, AND WHY IT IS NOT A COPY OF verify.mjs
+// -----------------------------------------------------------
+// `verify.mjs` proves the NUMBERS: the ramp is C1, the ring clears the pupil, the
+// collapse eases in, the lens is zero on the hole. All four are claims about a pure
+// function, and a pure function is not a scene graph. This file proves the four
+// things a pure function cannot:
+//
+//   1. THE NEAR FIELD IS REACHED. `portalNearness` returns a number for any
+//      distance handed to it, and this file has to put a real camera at a real
+//      portal and find that the swirl in the BUILT scene turns faster than it does
+//      from across the street. Without it, a `setViewer` nobody calls, a fold that
+//      is wrong, or a facing dot that is always negative are all invisible to
+//      every check in the other file.
+//   2. THE DEBRIS IS IN THE FRAME. Pass 10's review found a trail in no frame and
+//      no gate able to see that, and pass 11 answered it with a projection. This is
+//      the same discipline for a ring: the matrices are read back out of the built
+//      `InstancedMesh` and projected through the real camera.
+//   3. THE COLLAPSE IS TIMED, AND §5.3 STILL HOLDS ON THE FRAME IT STARTS. The
+//      pass-3 check reads a shut portal's materials; this one reads them on the
+//      exact frame `setPortalShut` returns, which is the frame the whole argument
+//      is about.
+//   4. THE BALANCE SIMULATION IS UNMOVED. The strongest statement this pass can
+//      make about its own timing is that the 0.8 s collapse changes nothing a
+//      player can act on, and the only way to say that is to run the real
+//      three-portal sequence and compare the state with and without it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stand the player `back` metres from a portal, facing it, and run one frame.
+ *
+ * The same arithmetic `capture.js`'s `goto` op does, written out here rather than
+ * shared: `capture.js` is the page's step list and this is a harness fixture, the
+ * two have been edited by different passes for different reasons, and a shared
+ * helper would be a second thing to change.
+ */
+function standAtPortal(portal, back) {
+  const drawn = game.streetView.worldOf(portal.position)
+  const facing = portal.facing
+  game.player.teleport(drawn.x - facing.x * back, drawn.z - facing.z * back, Math.atan2(-facing.x, -facing.z))
+  game.update(DT)
+  return drawn
+}
+
+// The view's own idle swirl table, read out of the source. A first version of the
+// near-field check below asserted "the swirl does not turn at 30 m at all", which
+// is not what nearness 0 means: nearness 0 means the multiplier is 1, so the
+// swirl turns at exactly the table's rate. Asserting zero would have passed only if
+// the whole swirl had stopped. The table is read from the source rather than
+// restated here for the reason every other section in this repository reads a
+// constant out of a file: two places to change one number is one place too many.
+const STREET_VIEW_TEXT = readFileSync(new URL('./src/game/streetView.js', import.meta.url), 'utf8')
+const IDLE_SWIRL_RATES = [
+  .../const PORTAL_SWIRL_RATES = Object\.freeze\(\[([^\]]+)\]\)/.exec(STREET_VIEW_TEXT)[1].matchAll(/-?[\d.]+/g),
+].map(Number)
+
+// PASS12_WORLD
+
+// ---------------------------------------------------------------------------
 // the run
 // ---------------------------------------------------------------------------
 
@@ -3344,8 +3405,30 @@ check('a camera on the §16.5.5 stand-off sees the hole, and not through it', ()
     const from = target.clone().add(new THREE.Vector3(portal.facing.x, 0, portal.facing.z).multiplyScalar(4.5))
     const ray = new THREE.Raycaster(from, target.clone().sub(from).normalize(), 0, 4.6)
     const hits = ray.intersectObject(portal.root, true)
-    assert.ok(hits.length > 0, `${where}: there is nothing at all between a camera on the stand-off and the gate`)
-    const first = hits[0].object
+    // **ONLY HITS THAT WOULD ACTUALLY BE DRAWN COUNT, and pass 12 is why.** The
+    // gate gained a collapse group — a second aperture, two meshes — which is
+    // `visible = false` until a shutdown arms it, and three.js's `Raycaster` does
+    // not skip invisible objects: it raycasts them anyway. So a 0.72 m disc at the
+    // gate plane became the first hit of a camera standing at 4.5 m, and this
+    // check reported that "the shell is in front of its own opening" — which is
+    // both false and, worse, indistinguishable from the real bug it was written to
+    // catch. The shed lintel comment records that exact failure happening once
+    // already.
+    //
+    // The filter walks the whole ancestor chain, not just the hit object: a mesh
+    // under a hidden GROUP is not drawn either, and the collapse's two meshes are
+    // both in that situation. Before pass 12 every child of `root` was visible, so
+    // this changes no existing verdict — it only stops the new ones from being
+    // measured, which is the definition of a correct fix rather than a convenient
+    // one.
+    const drawn = hits.filter((hit) => {
+      for (let node = hit.object; node; node = node.parent) {
+        if (node.visible === false) return false
+      }
+      return true
+    })
+    assert.ok(drawn.length > 0, `${where}: there is nothing at all between a camera on the stand-off and the gate`)
+    const first = drawn[0].object
     assert.ok(
       [portal.disc, portal.rim, ...portal.swirl].includes(first),
       `${where}: the first thing a camera sees is ${first.name || first.type}, not the gate — the shell is in front of its own opening`,
@@ -3353,8 +3436,8 @@ check('a camera on the §16.5.5 stand-off sees the hole, and not through it', ()
     // ...and it stops at the opening rather than at the far side of the
     // structure: the gate plane is 4.5 m out and the lip is 2.8 cm of tube on it
     assert.ok(
-      4.4 < hits[0].distance && hits[0].distance < 4.55,
-      `${where}: the camera is stopped ${hits[0].distance.toFixed(2)} m out, which is not the gate plane at 4.50 m`,
+      4.4 < drawn[0].distance && drawn[0].distance < 4.55,
+      `${where}: the camera is stopped ${drawn[0].distance.toFixed(2)} m out, which is not the gate plane at 4.50 m`,
     )
     // The three openings are three different sizes, which is §5.1's list being
     // worth having — and each one is bounded by something real. The shed's hole
@@ -7450,6 +7533,567 @@ check('pass-11 review: the lamp record is a measurement on every frame, includin
 })
 
 
+
+check('pass-12: the near field reaches the built swirl, is continuous, and closes when you turn away', () => {
+  game.restart()
+  run(game, 0.5)
+  const street = game.streetView
+  const portal = street.portals[0]
+
+  // 1. AT RANGE the swirl turns at the table's own rate. 30 m is outside
+  //    `PORTAL_NEAR_METRES` (8), so nearness is 0 and the multiplier is 1. The
+  //    check reads the BUILT rotation and compares against the table read out of the
+  //    source, so a retune of the table has to move both and a retune of the near
+  //    field cannot hide here.
+  standAtPortal(portal, 30)
+  const far = portal.swirl.map((layer) => layer.rotation.z)
+  run(game, 0.5)
+  const farDelta = portal.swirl.map((layer, i) => layer.rotation.z - far[i])
+  for (const [i, delta] of farDelta.entries()) {
+    const expected = IDLE_SWIRL_RATES[i] * 0.5
+    assert.ok(
+      Math.abs(delta - expected) < 1e-9,
+      `${portal.id}'s layer ${i} turned ${delta.toFixed(6)} rad in 0.5 s from 30 m, against the table's ${expected.toFixed(6)} — the near field is reaching across the map, or is not off at all`,
+    )
+  }
+
+  // 2. AT THE DOOR, facing it, the swirl turns faster — measurably, and still under
+  //    the pass-3 ceiling, which is the constraint that forced `PORTAL_NEAR_SPIN`
+  //    down from 2.2 to 1.6.
+  standAtPortal(portal, 2.2)
+  const near0 = portal.swirl.map((layer) => layer.rotation.z)
+  run(game, 0.5)
+  const nearDelta = portal.swirl.map((layer, i) => layer.rotation.z - near0[i])
+  for (const [i, delta] of nearDelta.entries()) {
+    assert.ok(
+      Math.abs(delta) > Math.abs(farDelta[i]) * 1.2,
+      `${portal.id}'s layer ${i} turned ${delta.toFixed(5)} rad at the door against ${farDelta[i].toFixed(5)} at 30 m — the near field is not reaching the built scene`,
+    )
+    assert.ok(
+      Math.abs(delta) / 0.5 < 0.35,
+      `${portal.id}'s layer ${i} turns at ${(Math.abs(delta) / 0.5).toFixed(3)} rad/s at the door, over the 0.35 ceiling pass 3 wrote`,
+    )
+  }
+
+  // 3. **AND IT IS CONTINUOUS IN THE PLAYER'S POSITION — which is the check this
+  //    pass exists to have, because the first version of the near field was
+  //    `rotation.z = t * rate` and that is a DISCONTINUITY of `t * d(rate)`.**
+  //    Teleporting the player across the 8 m boundary used to move the arms by
+  //    eighteen radians on a single frame, which is the effect teleporting rather
+  //    than accelerating. The bound below is the one that distinguishes them: over
+  //    one frame the angle can move by at most `maxRate * dt`, whatever the player
+  //    did, and a product form breaks that by orders of magnitude at any `t` worth
+  //    the name. It is asserted on a LARGE jump on purpose — the failure mode is
+  //    invisible on a small one, and a check that only walks one metre cannot tell
+  //    a ramp from a cliff.
+  const before = portal.swirl.map((layer) => layer.rotation.z)
+  standAtPortal(portal, 30)
+  const step = portal.swirl.map((layer, i) => Math.abs(layer.rotation.z - before[i]))
+  for (const [i, jumped] of step.entries()) {
+    const ceiling = Math.max(...IDLE_SWIRL_RATES.map(Math.abs)) * rules.PORTAL_NEAR_SPIN * DT
+    assert.ok(
+      jumped <= ceiling + 1e-9,
+      `${portal.id}'s layer ${i} jumped ${jumped.toFixed(4)} rad in one frame when the player crossed the near field; one frame can move it at most ${ceiling.toFixed(4)} — the rate is being multiplied by the clock instead of integrated`,
+    )
+  }
+
+  // 4. AND IT GOES AWAY WHEN THE PLAYER TURNS AROUND, at the same distance. This is
+  //    the facing gate, and it is the half a distance-only check cannot see: the
+  //    two cases differ in one number and nothing else, so a bearing wired to the
+  //    wrong vector — or to a stale one — shows up here and nowhere else.
+  standAtPortal(portal, 2.2)
+  run(game, 0.2)
+  game.player.yaw += Math.PI
+  // TWO frames, not one, and the reason is worth writing down: `world.update`
+  // hands the view the camera as it stood when the frame STARTED, so the turn
+  // reaches the near field one frame late by construction. One frame of settling is
+  // the integration's own quantisation; the difference it makes is `0.6 * DT`, and
+  // the assertion below has a tolerance for exactly that and no more.
+  game.update(DT)
+  game.update(DT)
+  const away0 = portal.swirl.map((layer) => layer.rotation.z)
+  run(game, 0.5)
+  const awayDelta = portal.swirl.map((layer, i) => layer.rotation.z - away0[i])
+  for (const [i, delta] of awayDelta.entries()) {
+    // the settled rate must be back to the table, to within one frame of the
+    // largest step the near field could have contributed on the settling frame
+    const tolerance = Math.abs(IDLE_SWIRL_RATES[i] * rules.PORTAL_NEAR_SPIN * DT)
+    assert.ok(
+      Math.abs(delta - farDelta[i]) <= tolerance,
+      `${portal.id}'s layer ${i} turned ${delta.toFixed(6)} rad in 0.5 s with the player 2.2 m away and their back to it, against the table's ${farDelta[i].toFixed(6)} — the facing gate is not closing`,
+    )
+  }
+
+  // 5. AND IT IS REPRODUCIBLE FROM A FRESH RUN, which is the claim an integral has
+  //    to be judged on and the one a naive version of this check gets wrong. An
+  //    integral's absolute value depends on the whole history that produced it, so
+  //    standing at the same door twice inside one run and comparing the ANGLES is
+  //    meaningless — the second stand-off is reached with a different accumulated
+  //    time behind it, and the first version of this check compared them and
+  //    reported the difference as though it were a failure. What is reproducible is
+  //    the whole trajectory, and that means restarting.
+  //
+  //    This is exactly the property §16.5 needs: `capture.js` restarts, steps a
+  //    fixed sequence at a fixed `SIM_DT`, and photographs the result, so two runs
+  //    of the same script have to land on the same rotation. A version that kept a
+  //    frame COUNT would pass 1, 2, 3 and 4 and fail this, which is the whole
+  //    reason the check is here rather than folded into the one above.
+  const script = () => {
+    game.restart()
+    run(game, 0.5)
+    const p = game.streetView.portals[0]
+    standAtPortal(p, 2.2)
+    run(game, 0.5)
+    return p.swirl.map((layer) => layer.rotation.z)
+  }
+  const once = script()
+  const twice = script()
+  for (const [i, value] of twice.entries()) {
+    assert.equal(value, once[i], `${portal.id}'s layer ${i} is at ${value} on a second identical run and ${once[i]} on the first — the swirl is not reproducible`)
+  }
+})
+
+check('pass-12: the debris ring is in the built frame, and every rock is outside the hole', () => {
+  game.restart()
+  run(game, 0.5)
+  const street = game.streetView
+  const portal = street.portals[0]
+  // The §16.5.6 stand-off, which is the closest a capture gets and so the frame
+  // where a rock is biggest and the pupil is nearest.
+  standAtPortal(portal, 2.2)
+  run(game, 0.6)
+  game.scene.updateMatrixWorld(true)
+
+  // 1. THE RING IS BUILT AND DRAWN, at the documented count and no more. Read off
+  //    the mesh rather than off `rules`, so a count that was set to zero fails here
+  //    instead of quietly drawing nothing.
+  assert.ok(portal.debris.isInstancedMesh, `${portal.id}'s debris is not an InstancedMesh`)
+  assert.ok(portal.debris.count > 0, `${portal.id}'s ring has a count of ${portal.debris.count} — it is built and draws nothing`)
+  assert.ok(portal.debris.count <= rules.PORTAL_DEBRIS_MAX, `${portal.id} draws ${portal.debris.count} rocks, over the ${rules.PORTAL_DEBRIS_MAX} cap`)
+  assert.equal(portal.debris.parent, portal.gate, `${portal.id}'s ring is not in its own gate, so it is not in the world`)
+
+  // 2. **AND EVERY ROCK IS PROJECTED INSIDE THE FRAME.** This is pass 10's finding
+  //    answered for a ring: a feature that exists, is pure, is deterministic and is
+  //    in no picture is a feature nobody will ever look at. The matrices come out of
+  //    the built `instanceMatrix` and go through the real camera, so a wrong pose
+  //    cannot pass by being correct in the pure module.
+  //
+  //    THE PUPIL HALF IS IN THE GATE'S OWN FRAME, and that is a correction rather
+  //    than a convenience. The first version compared each rock's WORLD position
+  //    with the gate's WORLD position, which is the same measurement with a 448 m
+  //    period folded into it — the gate sits at its own lot and the rocks sit on the
+  //    gate, so the two are coincident only after the fold, which is the same class
+  //    of bug pass 11's review found four times in `_walkCreature`. The inverse of
+  //    the gate's world matrix puts both in one frame, where "the centre" means it.
+  const camera = game.camera
+  camera.updateProjectionMatrix()
+  camera.updateMatrixWorld(true)
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert()
+  const coreRadius = 0.72 * portal.gateScale
+  const positions = []
+  let inside = 0
+  for (let i = 0; i < portal.debris.count; i += 1) {
+    const matrix = new THREE.Matrix4()
+    portal.debris.getMatrixAt(i, matrix)
+    const local = new THREE.Vector3().setFromMatrixPosition(matrix)
+    positions.push(local.clone())
+    const radius = Math.hypot(local.x, local.y)
+    assert.ok(
+      radius > coreRadius,
+      `rock ${i} of ${portal.id} is at ${radius.toFixed(3)} m of the gate's centre on a ${coreRadius.toFixed(3)} m hole — it is inside the pupil`,
+    )
+    // ...and the flake is a REGULAR TETRAHEDRON, because the squash is on the orbit
+    // and not on the mesh. A uniform scale is what keeps it one.
+    //
+    // THE TOLERANCE IS RELATIVE, and it has to be: `InstancedMesh.instanceMatrix`
+    // is a `Float32Array`, so a 0.0384 scale comes back with about seven
+    // significant digits and an absolute epsilon of 1e-9 compares two numbers that
+    // are visibly identical and are not. `max * 1e-5` is the right shape for a
+    // float32 — relative to the magnitude being compared, not to zero.
+    const scale = new THREE.Vector3().setFromMatrixScale(matrix)
+    const spread = Math.max(scale.x, scale.y, scale.z) * 1e-5
+    assert.ok(
+      Math.abs(scale.x - scale.y) <= spread && Math.abs(scale.y - scale.z) <= spread,
+      `rock ${i} of ${portal.id} is scaled (${scale.x.toFixed(6)}, ${scale.y.toFixed(6)}, ${scale.z.toFixed(6)}) — a squashed tetra is a different solid`,
+    )
+    const projected = local.clone().applyMatrix4(portal.gate.matrixWorld).project(camera)
+    if (Math.abs(projected.x) <= 1 && Math.abs(projected.y) <= 1 && projected.z < 1) inside += 1
+  }
+  assert.ok(
+    inside >= portal.debris.count * 0.8,
+    `only ${inside} of ${portal.debris.count} rocks on ${portal.id} project inside the 1280x720 frame at the §16.5.6 stand-off — the ring is in the scene and not in the picture`,
+  )
+  // 3. AND THE ROCKS ARE DARK ENOUGH TO STAY OUT OF THE EYE FINDER, measured on the
+  //    built material rather than on the constant the pure module exports — the
+  //    constant and the material are two places the same colour lives, and only one
+  //    of them is what gets drawn.
+  assert.equal(portal.debris.material.color.getHex(), rules.PORTAL_DEBRIS_COLOUR, `${portal.id}'s rocks are not the colour the pure module's eye-span argument was written about`)
+  assert.ok(
+    materialLuma(portal.debris.material) < 128,
+    `${portal.id}'s rocks are ${materialLuma(portal.debris.material).toFixed(0)} luma as a swatch — bright enough for the eye finder to consider`,
+  )
+  // ...and it is a LIT material, which is the one thing `_glow` cannot be, because
+  // the brief asks for rocks that "catch the rim light" and an unlit material
+  // catches nothing.
+  assert.notEqual(portal.debris.material.type, 'MeshBasicMaterial', `${portal.id}'s rocks are unlit, so they cannot catch the portal's own light`)
+  // and the light they catch is really there: the portal's own point light, inside
+  // the same root, which is the whole reason the ring is in the gate rather than out
+  // in the world where the gate's transform would not reach it
+  assert.equal(portal.light.parent, portal.root, `${portal.id}'s ring has no light to catch`)
+  assert.ok(portal.light.intensity > 0, `${portal.id}'s light is out, so the rocks catch nothing`)
+
+  // 4. AND THE RING TURNS, because a static ring of fourteen flakes is a necklace.
+  //    Two samples a quarter of a second apart must differ, and each rock's distance
+  //    from the gate's centre must be a CONSTANT — which is what proves a rock moved
+  //    along its orbit rather than grew away from it.
+  run(game, 0.25)
+  let moved = 0
+  for (let i = 0; i < portal.debris.count; i += 1) {
+    const matrix = new THREE.Matrix4()
+    portal.debris.getMatrixAt(i, matrix)
+    const now = new THREE.Vector3().setFromMatrixPosition(matrix)
+    const before = Math.hypot(positions[i].x, positions[i].y)
+    const after = Math.hypot(now.x, now.y)
+    assert.ok(
+      Math.abs(after - before) < 1e-6,
+      `rock ${i} of ${portal.id} changed radius, from ${before.toFixed(6)} to ${after.toFixed(6)} — it left its orbit rather than turning on it`,
+    )
+    if (now.distanceTo(positions[i]) > 1e-6) moved += 1
+  }
+  assert.ok(moved > portal.debris.count * 0.5, `only ${moved} of ${portal.debris.count} rocks on ${portal.id} moved in a quarter of a second`)
+
+  // 5. AND §5.3 PUTS THE RING OUT WITH THE HOLE, because a ring of lit flakes
+  //    orbiting a dead portal is neither cold nor inert.
+  assert.equal(street.setPortalShut(portal.id, true), true)
+  assert.equal(portal.debris.visible, false, `${portal.id}'s ring is still orbiting a shut hole`)
+  assert.equal(portal.lens.visible, false, `${portal.id}'s lens is still there over a shut hole`)
+})
+
+check('pass-12: the collapse runs for 0.8 s, and §5.3 holds on the frame it starts', () => {
+  game.restart()
+  run(game, 0.5)
+  const street = game.streetView
+  const portal = street.portals[0]
+  standAtPortal(portal, 2.2)
+  run(game, 0.3)
+
+  // 1. **§5.3, ON THE EXACT FRAME.** The hold completes and `setPortalShut`
+  //    returns; the live gate has to be dead on THAT frame and not one frame
+  //    later. This is the assertion the whole "a second aperture over a dead one"
+  //    design exists to satisfy, and it is the first thing in the repository to
+  //    read the materials on the frame rather than a frame later.
+  assert.equal(street.setPortalShut(portal.id, true), true)
+  assert.equal(portal.rim.material, street._materials.portalDead, `${portal.id}'s lip is still lit on the frame it shut`)
+  assert.equal(portal.disc.material, street._materials.portalCoreDead, `${portal.id}'s hole is still live on the frame it shut`)
+  assert.ok(portal.swirl.every((layer) => layer.visible === false), `${portal.id}'s swirl is still turning on the frame it shut`)
+  assert.equal(portal.light.intensity, 0, `${portal.id}'s light is still on on the frame it shut`)
+  // ...and the collapse is armed, visible, and at FULL SIZE on that same frame — the
+  // aperture has not started closing, so what the player sees in the first frame of
+  // the aftermath is a full-size bright hole and not a half-open one.
+  assert.ok(portal.collapse.visible, `${portal.id}'s collapse is not showing on the frame it armed`)
+  assert.ok(Math.abs(portal.collapse.scale.x - 1) < 1e-6, `${portal.id}'s collapse opens at ${portal.collapse.scale.x.toFixed(4)} rather than at full size`)
+  assert.equal(portal.collapseAt, street._time, `${portal.id}'s collapse clock was not stamped from the view's own clock`)
+  // ...and it is a SEPARATE aperture, not the live one: the group is not the gate,
+  // and the disc behind it is the dead material while the group's own core is the
+  // LIVE colour, which is the whole "a hole closing over a hole" read.
+  assert.notEqual(portal.collapse, portal.gate, `${portal.id}'s collapse IS the live gate, so §5.3 is a lie for 0.8 s`)
+  //
+  // AND THE COLOUR IS COMPARED TO THE MATERIALS RATHER THAN TO A LITERAL. A first
+  // version wrote `0x04100f` here and it failed with `331022 !== 266255`: three.js
+  // holds a `Color` in LINEAR components and `getHex()` encodes them back to sRGB,
+  // so a hand-typed palette hex is the wrong side of a conversion. Comparing the
+  // collapse's own core to the two materials it is supposed to be between is both
+  // correct in the renderer's colour space and a stronger claim, because it says
+  // "the LIVE one, not the DEAD one" rather than "a number I remembered".
+  const liveCore = street._materials.portalCore.color.getHex()
+  const deadCore = street._materials.portalCoreDead.color.getHex()
+  assert.notEqual(liveCore, deadCore, 'the two core materials are the same colour, so this check cannot distinguish them')
+  assert.equal(portal.collapseCore.material.color.getHex(), liveCore, `${portal.id}'s collapse does not start from the live core colour`)
+  assert.notEqual(portal.collapseCore.material.color.getHex(), deadCore, `${portal.id}'s collapse starts from the DEAD core colour, so nothing is seen to close`)
+
+  // 2. IT IS TIMED, and 0.8 s is the number the pass claims. Sampled at the end of
+  //    the collapse rather than at the middle, so a too-short animation cannot pass
+  //    by being caught at a moment it happens to look right.
+  const before = portal.collapse.scale.x
+  run(game, rules.PORTAL_COLLAPSE.seconds * 0.4)
+  const mid = portal.collapse.scale.x
+  assert.ok(mid < before, `${portal.id}'s collapse did not close in its first 40%`)
+  assert.ok(mid > 0.9, `${portal.id}'s collapse is at ${mid.toFixed(3)} after 40% of its own duration — the ease is not holding`)
+  run(game, rules.PORTAL_COLLAPSE.seconds * 0.6)
+  assert.equal(portal.collapse.visible, false, `${portal.id}'s collapse is still on screen after its own duration`)
+  assert.equal(portal.collapse.scale.x, 0, `${portal.id}'s collapse is scaled to ${portal.collapse.scale.x} at the end`)
+
+  // 3. AND IT DOES NOT COME BACK, which is the difference between an animation and
+  //    a mode. A second and a half later the group is still hidden and still at
+  //    zero — a collapse keyed on `shut` rather than on `collapseAt` would be
+  //    re-scaling a dead hole for ever, and that is the mutation this guards.
+  run(game, 1.5)
+  assert.equal(portal.collapse.visible, false, `${portal.id}'s collapse came back a second and a half after it ended`)
+  assert.equal(portal.collapse.scale.x, 0)
+
+  // 4. AND THE LIVE GATE NEVER MOVED THROUGH ANY OF IT, which is §5.3's silence
+  //    stated as a measurement rather than as a material.
+  const dead = portal.swirl.map((layer) => layer.rotation.z)
+  run(game, 1.0)
+  for (const [i, layer] of portal.swirl.entries()) {
+    assert.equal(layer.rotation.z, dead[i], `${portal.id}'s layer ${i} turned after the hole was shut`)
+  }
+
+  // 5. AND A RE-SHUT RESTARTS IT, so the collapse is not a one-shot a second
+  //    shutdown cannot re-arm. The un-shut branch has to clear `collapseAt` as well
+  //    as `visible`, and a `collapseAt` left stamped is a hole that collapses again
+  //    every frame for ever.
+  assert.equal(street.setPortalShut(portal.id, false), true)
+  assert.equal(portal.collapseAt, null, `${portal.id}'s collapse clock survived an un-shut`)
+  assert.equal(portal.collapse.visible, false)
+  assert.ok(portal.swirl.every((layer) => layer.visible === true), `${portal.id}'s swirl did not come back with the hole`)
+  run(game, 0.5)
+  assert.equal(portal.collapse.visible, false, `${portal.id}'s collapse re-armed without a shutdown`)
+  assert.equal(street.setPortalShut(portal.id, true), true)
+  run(game, rules.PORTAL_COLLAPSE.seconds + 0.2)
+  assert.equal(portal.collapse.visible, false, `${portal.id}'s second collapse did not finish`)
+
+  // 6. AND THE FLASH IS LIT FOR EXACTLY ITS WINDOW, measured on the built
+  //    material's opacity rather than on the pure function. A flash that never goes
+  //    out is a strobe, and §14.3's reduced-motion rule exists because of exactly
+  //    that; a flash that is never on is a feature nothing can see.
+  const opacities = []
+  assert.equal(street.setPortalShut(portal.id, false), true)
+  assert.equal(street.setPortalShut(portal.id, true), true)
+  const steps = Math.ceil((rules.PORTAL_COLLAPSE.seconds * 2) / DT)
+  for (let i = 0; i < steps; i += 1) {
+    game.update(DT)
+    opacities.push(portal.collapseFlash.material.opacity)
+  }
+  const litFrames = opacities.filter((value) => value > 0).length * DT
+  assert.ok(litFrames > 0, 'the flash was never lit — the collapse has a flash envelope and no flash')
+  assert.ok(
+    litFrames <= rules.PORTAL_COLLAPSE.flashWidth * 2 + DT,
+    `the flash was lit for ${litFrames.toFixed(3)} s of a ${(rules.PORTAL_COLLAPSE.flashWidth * 2).toFixed(2)} s window`,
+  )
+  assert.equal(opacities[opacities.length - 1], 0, 'the flash is still lit after the collapse ended')
+  assert.ok(Math.max(...opacities) <= 1, 'the flash opacity is above 1, which is not an opacity')
+})
+
+check('pass-12: the lens darkens the background near the rim and nothing else', () => {
+  game.restart()
+  run(game, 0.5)
+  const street = game.streetView
+  const portal = street.portals[0]
+
+  // 1. IT IS BUILT AS AN OVERLAY, normal-blended, unfogged, and never writing depth
+  //    — a quad that wrote depth would occlude the shell behind it and the
+  //    "background" it is darkening would become the lens.
+  assert.equal(portal.lens.geometry.type, 'CircleGeometry')
+  assert.ok(
+    portal.lens.geometry.parameters.radius > 0.72,
+    `${portal.id}'s lens is ${portal.lens.geometry.parameters.radius} m across on a 0.72 m hole — it is not larger than the disc it lenses`,
+  )
+  assert.notEqual(portal.lens.material.blending, THREE.AdditiveBlending, `${portal.id}'s lens is additive, and an additive material can only ADD light to the pixel the pupil gate measures`)
+  assert.equal(portal.lens.material.transparent, true)
+  assert.equal(portal.lens.material.depthWrite, false, `${portal.id}'s lens writes depth, so it occludes the shell it is supposed to darken`)
+  assert.equal(portal.lens.material.fog, false, `${portal.id}'s lens fogs, so the darkening is a function of distance rather than of radius`)
+  assert.equal(portal.lens.parent, portal.gate, `${portal.id}'s lens is not in its own gate`)
+  // ...and BEHIND the hole and its swirl. Behind is the load-bearing half: at z = 0
+  // the lens was a larger, nearer solid target than the disc and became the first
+  // hit of §16.1's stand-off raycast, which reported that a shell was in front of
+  // its own opening. `PORTAL_LENS_DEPTH`'s docblock has the numbers.
+  assert.ok(portal.lens.position.z < portal.disc.position.z, `${portal.id}'s lens is in front of its own hole, where a geometry test can see it`)
+  for (const [i, layer] of portal.swirl.entries()) {
+    assert.ok(portal.lens.position.z < layer.position.z, `${portal.id}'s lens is in front of swirl layer ${i}, so a normal-blended quad stands between the eye and the brightest thing in the aperture`)
+  }
+
+  // 2. **THE ALPHA RAMP, READ OFF THE BUILT TEXTURE.** The pure function's tests
+  //    prove the profile; this proves the profile is what the renderer samples. The
+  //    canvas here is a real one — the stub implements `createImageData`,
+  //    `putImageData` and `getImageData` for exactly this reason — so the bytes
+  //    below are the bytes three.js will read back at run time. `getImageData` on
+  //    the SOURCE canvas is the only way to see them, because a `CanvasTexture`
+  //    holds a GPU copy and nothing in this harness has a GPU.
+  // THE BYTES COME OFF `canvas.pixels`, NOT OFF `getImageData`, and that is not a
+  // preference. This harness's 2D stub implements `createImageData`,
+  // `putImageData` and `getImageData`, and `getImageData` returns a FRESH ZEROED
+  // buffer — a surface, not an implementation, per the stub's own header. Only
+  // `putImageData` keeps what it was given, and it keeps it on `canvas.pixels`.
+  //
+  // So a first version that read through `getImageData` got 9216 zeros and every
+  // alpha assertion below passed for the wrong reason — including the one at the
+  // centre, which is the whole pupil claim. A green gate over a buffer of zeroes is
+  // worse than a red one: it reports that the lens is zero on the hole, which is
+  // true, and says nothing about whether it is zero for the right reason.
+  const image = portal.lens.material.map.image
+  const context = image.getContext('2d')
+  const written = context.canvas.pixels
+  assert.ok(written && written.data, 'the lens canvas retained nothing — `putImageData` did not keep its image, so nothing below can be measured')
+  assert.equal(written.width, image.width, 'the retained lens buffer is a different size from the canvas')
+  const pixels = written.data
+  const half = (image.width - 1) / 2
+  const alphaAt = (x, y) => pixels[(y * image.width + x) * 4 + 3]
+  assert.equal(alphaAt(Math.round(half), Math.round(half)), 0, `the built lens texture has an alpha of ${alphaAt(Math.round(half), Math.round(half))} at its own centre — the profile is not zero on the hole`)
+  // THE WHOLE DISC, not just the middle. This is the assertion that the
+  // zero-for-every-radius-at-or-inside-1.0 claim survived being rasterised, and it
+  // is the one a test sampling two points cannot make: a profile that is 0 at the
+  // centre and 0.3 at three quarters of the radius passes every point sample and
+  // fails here on the first texel that crosses.
+  //
+  // AND THIS SWEEP USES THE TEXTURE'S OWN MAPPING, which is a claim in itself. The
+  // texel at offset `d` from the centre is at core-ratio `d * outer / half`, because
+  // `CircleGeometry`'s UVs put the quad's rim at the edge of the texture square. A
+  // first version of this sweep divided by `half` instead — the mapping the texture
+  // BUILDER used before it was corrected — and therefore tested a disc 1.34x too
+  // large, reporting a violation at ratio 0.992 for a texel that is at 1.329 and is
+  // correctly transparent. A check that re-derives the geometry under test is a
+  // second copy of it, and the two copies have to be written from the same sentence.
+  const scale = rules.PORTAL_LENS.outer / half
+  let insideDisc = 0
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const ratio = Math.hypot(x - half, y - half) * scale
+      if (ratio <= 1) {
+        insideDisc += 1
+        assert.equal(alphaAt(x, y), 0, `the built lens has alpha where it must have none, at ${ratio.toFixed(3)} of the radius`)
+      }
+    }
+  }
+  assert.ok(insideDisc > 1000, `only ${insideDisc} texels of the lens texture are inside the disc, so the sweep above barely sampled anything`)
+  // ...and it DEEPENS toward the rim and vanishes at its own edge, both on the
+  // built bytes: the same profile the pure function returns, read through a
+  // rasteriser, which is the only version of the claim that a retune cannot make
+  // true in one place and false in the other.
+  const mid = Math.round(half)
+  // THE RAMP IS THE RIGHT HALF OF THE ROW, and that is not a convenience. The
+  // profile is symmetric, so a full row has its peak twice, and `indexOf` returns
+  // the FIRST one — on the left, at a signed ratio of -1.11, which a check written
+  // against a positive crest rejects for the right number at the wrong place. The
+  // first version of this line scanned the whole row and reported the crest as
+  // "-1.114 of the radius".
+  const ramp = []
+  for (let x = mid; x < image.width; x += 1) ramp.push(alphaAt(x, mid))
+  const peak = Math.max(...ramp)
+  assert.ok(peak > 0, 'the built lens texture is entirely transparent — the overlay darkens nothing')
+  assert.ok(peak <= Math.ceil(rules.PORTAL_LENS.peak * 255), `the built lens peaks at ${(peak / 255).toFixed(3)} alpha against a declared ceiling of ${rules.PORTAL_LENS.peak}`)
+  // `ramp` now starts at `mid`, so its index is an offset FROM the centre and not
+  // a texel index. The two were conflated in a version that reported -0.240.
+  const deepest = ramp.indexOf(peak)
+  const ratioAtPeak = deepest * scale
+  assert.ok(
+    Math.abs(ratioAtPeak - rules.PORTAL_LENS.crest) < 0.06,
+    `the built lens is deepest at ${ratioAtPeak.toFixed(3)} of the radius rather than at its declared crest of ${rules.PORTAL_LENS.crest}`,
+  )
+  // the outermost texel ring is the overlay's own edge, and it has to be clear
+  assert.ok(alphaAt(image.width - 1, mid) === 0, 'the built lens has an edge of its own — a decal, not a haze')
+  // and the profile RISES monotonically to the crest, sampled on the built bytes,
+  // because a lens that deepens and then shallows before its crest is a lens with a
+  // second ring in it and nothing in the pure gate would have said so
+  for (let x = mid; x < mid + deepest - 1; x += 1) {
+    assert.ok(alphaAt(x + 1, mid) >= alphaAt(x, mid), `the built lens does not deepen monotonically at ${((x - half) * scale).toFixed(3)} of the radius`)
+  }
+
+  // 3. AND IT IS ONE TEXTURE FOR ALL THREE PORTALS, which is the cheap version of
+  //    the claim: a per-portal canvas is three 96x96 uploads for a profile that is
+  //    a pure function of the radius.
+  for (const other of street.portals) {
+    assert.equal(other.lens.material, portal.lens.material, `${other.id} built its own lens texture`)
+  }
+  // ...and it is RELEASED with the rest, because §15's teardown is a definition of
+  // done and a canvas left in `textures` is a 36 kB leak per run.
+  assert.ok(street.textures.includes(portal.lens.material.map), `${portal.id}'s lens texture is not in the teardown list`)
+})
+
+// PASS12_REST
+
+check('pass-12: the collapse does not change a single gameplay-visible second', () => {
+  // THE BALANCE SIMULATION'S HALF OF THE ARGUMENT. `verify.mjs` proves the two
+  // windows do not overlap arithmetically; this proves the OUTCOME is identical with
+  // the collapse running and with it not, by driving the real three-portal sequence
+  // twice and comparing every number the game publishes.
+  //
+  // THE OBVIOUS VERSION OF THIS CHECK IS VACUOUS, and it is worth saying why because
+  // it is the version one writes first. "Shut three portals, wait 2 s, assert
+  // nothing moved" would pass for a collapse that moved everything, because the
+  // collapse by design moves NOTHING in `world.state` — it only writes to the scene
+  // graph. So the claim being made is not "the state is unchanged" (true by
+  // construction) but "the whole simulation is bit-identical with the collapse
+  // running", and that is only answerable by running the same script twice.
+  //
+  // THE CONTROL RUNS THE SAME SCRIPT WITH NO COLLAPSE ANYWHERE, which means never
+  // calling `setPortalShut` — §5.2's rule applied to the state directly, exactly as
+  // the balance harness's own `placePortals` does. Two separate `BellLoopGame`
+  // instances, because the shared one carries this file's accumulated state and two
+  // runs of the same script through one instance is the thing pass 11's review
+  // already recorded as "a measurement that read as its own opposite".
+  const script = (world) => {
+    world.start()
+    for (const portal of world.streetView.portals) {
+      const drawn = world.streetView.worldOf(portal.position)
+      // stand off on the structure's own `facing`, which is what `capture.js` does
+      world.player.teleport(drawn.x - portal.facing.x * 2.2, drawn.z - portal.facing.z * 2.2, 0)
+      run(world, 0.4)
+      if (!world.streetView.nearestPortal(world.player.pos)) continue
+      // §5.2's own verb, driven through the same two paths a player drives it
+      world.player.keys.add('KeyE')
+      run(world, 1.4)
+      world.player.keys.delete('KeyE')
+      run(world, 0.1)
+    }
+    // ...and then past §10.1, so the finale, the dusk ramp and the creature's own
+    // response to a quiet street are all inside the comparison
+    run(world, 4.0)
+    return {
+      phase: world.phase,
+      portals: { ...world.state.portals },
+      progress: { ...world.state.progress },
+      dusk: Number(world.state.dusk.toFixed(9)),
+      finale: world.state.finale,
+      creature: world.creature.state,
+      awareness: Number(world.creatureAwareness.toFixed(9)),
+      banishes: world.state.banishCount,
+      portalsShut: rules.portalsShut(world.state.portals),
+      held: world.state.hammerHeld,
+      animTime: Number(world.animTime.toFixed(9)),
+    }
+  }
+  const withCollapse = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  const without = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  try {
+    const a = script(withCollapse)
+    // ...and the same script with the view's collapse never armed. The verb is
+    // applied to the state directly, which is what a portal does when §5.2 latches
+    // and is the one thing this pass added no code path to.
+    const b = script(without)
+    for (const key of Object.keys(b)) {
+      assert.deepEqual(
+        a[key],
+        b[key],
+        `the 0.8 s collapse moved "${key}" — it is supposed to be pure aftermath with no gameplay consequence`,
+      )
+    }
+    // AND THE SEQUENCE REALLY DID SHUT SOMETHING, or the comparison above is between
+    // two runs that never reached the state the collapse is about. A balance check
+    // that passes because nothing happened is the failure this line exists to stop.
+    assert.ok(a.portalsShut > 0, 'the three-portal sequence shut no portals, so the collapse was never compared against anything')
+    // ...and the collapse really did run, for the same reason: a comparison in which
+    // the animation never armed is a comparison of two identical runs.
+    assert.ok(
+      withCollapse.streetView.portals.some((portal) => portal.collapseAt !== null || portal.shut),
+      'no collapse was armed on the world the check is comparing, so the comparison proves nothing',
+    )
+  } finally {
+    withCollapse.dispose()
+    without.dispose()
+  }
+})
+
+// PASS 12 IS PLACED HERE, IMMEDIATELY BEFORE THE PASS-11 FOOTFALL CHECK, and the
+// placement is load-bearing rather than alphabetical. That check ends by calling
+// `game.dispose()` and does not restore the world, and `dispose()` empties
+// `streetView.textures` and releases every pool — so any check placed after it is
+// running against a torn-down scene. The first version of this block sat after it
+// and every assertion still passed, because the objects survive `dispose()` as
+// objects; only the one assertion that reads the teardown list failed, and it
+// failed for the right reason. Four checks that are green against a disposed world
+// are four checks that are measuring a memory leak, which is not what they claim.
+// ---------------------------------------------------------------------------
 
 check('pass-11: a footfall puff is in the frame, and the cap holds in the built world', () => {
   // THE PASS-10 REVIEW'S FINDING, turned against this pass. Pass 10 shipped a trail

@@ -1070,6 +1070,24 @@ export class LongQuietGame {
     }
     this.animTime += dt
     this.phase = this.store.get().phase ?? this.phase
+    // ITERATION 2, PASS 12. The street view is handed where the eye is BEFORE it is
+    // updated, because `update` is where the portal's near field is read. The CAMERA
+    // and not the player, and that is the choice: `player.pos` is the body and
+    // `camera.position` is the eye, and the difference is the head bob, the sway and
+    // the chase shake — so a hole answered the body would answer it a frame early and
+    // a third of a metre low during a chase. Reading the camera also covers the title
+    // screen, where `_updateStart` poses the camera directly and the player has not
+    // been handed the controls at all.
+    //
+    // IT IS ONE FRAME BEHIND THE RENDER, and the number is worth writing down so
+    // nobody has to reason about it again. The eye moves this frame AFTER this line
+    // (`_updatePlaying` runs the switch below), so the view is answering the pose the
+    // last frame was drawn from. At the game's 3.4 m/s walk that is 0.057 m per
+    // frame against a `PORTAL_NEAR_METRES` of 8 and a ramp that is C1 at both ends —
+    // seven thousandths of the ramp, and less than the bob it is riding on top of.
+    // Moving the call to the end of `update()` would make it exact and would cost a
+    // second reader of the camera, which is the more expensive of the two mistakes.
+    this.streetView.setViewer(this.camera.position.x, this.camera.position.z, this.camera.rotation.y)
     this.streetView.update(dt)
     // ITERATION 2, PASS 9. The sky rides with the camera, so it is updated AFTER
     // the street and BEFORE anything reads the camera's new position for the
@@ -2576,6 +2594,20 @@ export class LongQuietGame {
     this._creaturePresent = false
     this.portalNoiseElapsed = Object.fromEntries(hood.PORTAL_IDS.map((id) => [id, 0]))
     for (const portal of this.streetView.portals) this.streetView.setPortalShut(portal.id, false)
+    // PASS 12. The swirl's angle is an INTEGRAL now, not a product of the view
+    // clock, so it is run state in a way it was not before: two capture views of
+    // the same portal, separated by a wipe, would otherwise be photographed at
+    // different rotations and §16.5's "the same frame twice" would hold only for a
+    // session that happened to run the views in the same order.
+    //
+    // It goes NEXT TO the `setPortalShut` loop rather than at the top of the method
+    // because that loop is the one that re-arms every aperture, and the motion
+    // reset is the same kind of work: putting the view back to how a fresh run
+    // finds it. `setPortalShut(id, false)` also clears `collapseAt` and hides the
+    // collapse, so this line is about the two things that method does not own —
+    // the swirl's accumulated angle and the debris matrices, which are rewritten
+    // at the current clock so the ring does not teleport to a new phase.
+    this.streetView.resetMotion()
     this.streetView.setHammerTaken(false)
     // §10.3 in reverse. `wipeRun` cleared the flag; this is the one line in the
     // codebase that puts the car back to the dark thing it was in Act I, and it

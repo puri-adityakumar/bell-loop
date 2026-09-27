@@ -2063,6 +2063,13 @@ const CREATURE_VIEW_SOURCE = readFileSync(new URL('./src/game/creatureView.js', 
 // the pass-10 table has one row of each kind — the seeded mark's shape lives in the
 // pure module, the buffer that draws it lives in the view.
 const CREATURE_SOURCE = readFileSync(new URL('./src/game/creature.js', import.meta.url), 'utf8')
+// PASS 12. The pure module this pass's numbers live in, read as text for the
+// mutation harness. The claims themselves import `rules` directly — a contract
+// about a number is a contract about the module, not about a copy of the number —
+// so this is used ONLY by the mutation list, which has to know what the real text
+// says in order to break it. Pass 11's mutation list has the same third argument
+// for the same reason.
+const RULES_SOURCE = readFileSync(new URL('./src/game/rules.js', import.meta.url), 'utf8')
 
 test('the view layer is drawn from the pure modules and never from v1', () => {
   // §15.1's split, asserted rather than described: `streetView.js` may reach for
@@ -7326,27 +7333,68 @@ test('the swirl turns on the world clock, slowly, against itself', () => {
   assert.equal(rates.length, radii.length, 'a layer with no rate is a decal')
   assert.equal(depths.length, radii.length, 'a layer with no depth is behind the hole or in front of the lip')
   // driven by the view's own clock and not by a frame count: `update(dt)` is
-  // handed a delta and keeps a `t`, so a rotation written from `t * rate` is the
-  // same rotation whatever the frame rate is, and one written from a per-frame
-  // increment is a different animation on every machine.
+  // handed a delta and keeps a `t`, so a rotation written as an INTEGRAL of a rate
+  // is frame-rate independent and one written as a per-frame increment is not.
+  //
+  // **THE FORM CHANGED TWICE IN PASS 12 and the gate changed with it both times,
+  // which is the only correct response and worth saying why.**
+  //
+  // Pass 3 wrote `rotation.z = t * PORTAL_SWIRL_RATES[layer]` and forbade `+=`. Pass
+  // 12 made the rate a function of how near the player is, and the product form is
+  // then a DISCONTINUITY: `t * rate` jumps by `t * d(rate)` whenever the rate
+  // changes, so crossing the 8 m boundary at 143 s teleports the arms eighteen
+  // radians. The world check found it in one run. The integral form is the same
+  // animation when the rate is constant — which is all pass 3's comment was ever
+  // arguing — and continuous when it is not.
+  //
+  // SO WHAT IS FORBIDDEN NOW, and the answer is narrower and more specific than
+  // what was here before. Forbidden is an increment that does not carry `dt`:
+  // `+= rate` or `+= 0.21` is a frame COUNT, which is frame-rate dependence in the
+  // sense pass 3 meant. Permitted is `+= rate * dt`, a rectangle rule on an
+  // integral that converges to the right answer at any step size. The old gate
+  // could not tell those two apart, and the reason it could not is that the
+  // difference only matters once something else makes the rate vary.
   assert.match(
     code,
-    /portal\.swirl\[layer\]\.rotation\.z = t \* PORTAL_SWIRL_RATES\[layer\]/,
-    'the swirl is not turned from the view clock, so its rate is a frame rate',
+    /const rate = rules\.portalSwirlRate\(PORTAL_SWIRL_RATES\[layer\], near\)/,
+    'the swirl is not taking its rate from the pure module, so the near field cannot be applied to it',
+  )
+  assert.match(
+    code,
+    /portal\.swirl\[layer\]\.rotation\.z \+= rate \* dt/,
+    'the swirl is not integrating a rate against dt, so it is a frame count rather than an animation',
+  )
+  assert.doesNotMatch(
+    code,
+    /portal\.swirl\[[^\]]*\]\.rotation\.z \+= (?!rate \* dt)/,
+    'the swirl is incremented by something that is not `rate * dt` — a frame count, and a different animation on every machine',
+  )
+  assert.doesNotMatch(
+    code,
+    /portal\.swirl\[[^\]]*\]\.rotation\.z = t \* /,
+    "the swirl is a product of the view clock and a rate that now VARIES with the player, which is a discontinuity of `t * d(rate)` every time the player moves",
   )
   // and the loop that turns it is *inside* the `if (portal.shut) continue`, so a
   // dead portal is inert rather than merely dark. The tick is located first
   // because `nearestPortal` opens a loop over the same array with the same
   // header, and a search that found that one first would be measuring §5.2.
+  //
+  // PASS 12 ADDED A SECOND PORTAL LOOP TO THE TICK — the collapse, which runs
+  // for the portals that ARE shut. So "the first loop" is no longer the live one,
+  // and the gate now finds the loop that actually turns the swirl and requires
+  // THAT one to be the guarded one. Searching for the first loop would have
+  // silently started measuring the collapse, which is the failure mode pass 11's
+  // review recorded as "a claim scoped to one function silently testing the
+  // empty string, which fails every predicate and so looks like a broken source".
   const tick = /update\(dt\) \{([\s\S]*?)\n  \}\n/.exec(code)
   assert.ok(tick, 'the view update tick is gone')
-  const loop = /for \(const portal of this\.portals\) \{([\s\S]*?)\n    \}\n/.exec(tick[1])
-  assert.ok(loop, 'the portal loop in the update tick is gone')
-  const body = loop[1]
-  assert.match(body, /if \(portal\.shut\) continue/, 'a shut portal is no longer skipped in the update')
-  assert.match(body, /rotation\.z/, 'and the swirl is not turned there at all')
+  const loops = [...tick[1].matchAll(/for \(const portal of this\.portals\) \{([\s\S]*?)\n    \}\n/g)].map((entry) => entry[1])
+  const spinning = loops.filter((body) => body.includes('rotation.z += rate * dt'))
+  assert.equal(spinning.length, 1, `${spinning.length} portal loops in the update turn the swirl; the live one has to be identifiable`)
+  const body = spinning[0]
+  assert.match(body, /if \(portal\.shut\) continue/, 'the loop that turns the swirl no longer skips a shut portal')
   assert.ok(
-    body.indexOf('if (portal.shut) continue') < body.indexOf('rotation.z'),
+    body.indexOf('if (portal.shut) continue') < body.indexOf('rotation.z += rate * dt'),
     'the swirl turns in a portal that has been shut',
   )
   // inside the hole, or it draws an edge the hole does not have
@@ -7610,9 +7658,24 @@ function buildingClaims(source) {
   // on a world axis at all.
   const windowsAt = code.indexOf('  _addFacadeWindows(')
   const windows = windowsAt >= 0 && entranceAt >= windowsAt ? code.slice(windowsAt, entranceAt) : ''
+  // **A BARE IDENTIFIER, AND THE LOOKBEHIND IS THE WHOLE OF THE FIX.** Pass 12 put
+  // `portal.swirl[layer].rotation.z += rate * dt` into the tail of this file, and
+  // `\b[xyz]\s*[+\-*/]=` matches the `z` of `rotation.z` because a full stop is a
+  // word boundary. So the pass-5 façade gate went red on a swirl integration and
+  // reported "a façade method is doing world-axis arithmetic", which is not a thing
+  // that happened.
+  //
+  // `(?<![.\w])` is the correct narrowing rather than a convenient one: the claim
+  // has always been about the LOCAL axis variables `x`, `y` and `z` that a façade
+  // method would be doing world-space arithmetic with, and a member expression
+  // ending in one of those letters is a property of some object, not an axis. The
+  // mutation below proves the narrowed pattern still catches the real thing, and
+  // it is a bare `z =` on a façade method — the exact shape the sub-frame exists
+  // to prevent.
+  const AXIS_ARITHMETIC = /(?<![.\w])[xyz]\s*[+\-*/]=/
   claim(
     'façade placement contains no x/z trigonometry',
-    !/\b[xyz]\s*[+\-*/]=/.test(windows) && !/\b[xyz]\s*[+\-*/]=/.test(entrance),
+    !AXIS_ARITHMETIC.test(windows) && !AXIS_ARITHMETIC.test(entrance),
     'a façade method is doing world-axis arithmetic, so the sub-frame is not the only owner of it',
   )
   claim('the sub-frame exists', /function facadeFrame\(/.test(code), 'facadeFrame is gone')
@@ -7681,6 +7744,18 @@ test('every claim above can actually fail, and a mutation names the one it break
     ['the pane goes flush with the wall', 'the glass has no reveal', 'entry.wall, u, y, -WINDOW.depth / 2', 'entry.wall, u, y, WINDOW.depth / 2', 'the window pane is set INTO the wall'],
     ['the reveal goes flush with the wall', 'the door is a panel again', 'wall, u, DOOR_LEAF_H / 2, -DOOR_RECESS / 2', 'wall, u, DOOR_LEAF_H / 2, DOOR_RECESS / 2', 'the door reveal is set INTO the wall'],
     ['the frontage is merged again', 'hedge and fence share a pool', "this.pools.frontageHedge = this._streetPool(names, 'frontageHedge'", "this.pools.frontage = this._streetPool(names, 'frontageHedge'", 'the frontage pool is split'],
+    // PASS 12 ADDED THIS ROW, and it is here because of what it cost to learn. The
+    // claim "façade placement contains no x/z trigonometry" was a bare
+    // `\b[xyz]\s*[+\-*/]=`, and a full stop is a word boundary, so pass 12's
+    // `portal.swirl[layer].rotation.z += rate * dt` — three thousand lines away from
+    // any façade — turned a pass-5 gate red with a message about world-axis
+    // arithmetic that never happened. The pattern is now a bare identifier with a
+    // `(?<![.\w])` lookbehind, and this row is the proof that the narrowed pattern
+    // still catches the thing it was written for: a façade method doing world-axis
+    // arithmetic on a local `x`, `y` or `z`. Without it, "narrowed" and "deleted"
+    // look identical from the gate's output.
+    ['a façade method doing its own world-axis arithmetic', 'the sub-frame is supposed to be the only owner of "which way does this wall points", and a bare `z =` in a façade method is exactly the second owner this claim exists to forbid',
+      '  _addFacadeWindows(rng, faces) {', '  _addFacadeWindows(rng, faces) {\n    let z = faces[0][1]; z += 0', 'façade placement contains no x/z trigonometry'],
   ]
   for (const [label, why, from, to, expected] of rows) {
     assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches the file, so it is not testing anything`)
@@ -12144,6 +12219,974 @@ test('every presence claim can actually fail, and a mutation names the one it br
   assert.ok(mutations.length >= 20, `only ${mutations.length} mutations, which is fewer than this pass needs`)
   console.log(`\n  pass-11 mutations: ${mutations.length} mutations, every one caught`)
 })
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 12 — the portal's descent
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS PASS IS, AND WHY IT IS FOUR CLAIMS AND NOT ONE
+// --------------------------------------------------------
+// A swirl that turns at the same rate from 70 m as from the hold distance, a
+// doorway with nothing in it but a hole, a hole that blinks out in one frame, and
+// a black disc that gives the eye nothing to grip against the wall around it.
+// Four separate complaints, and four fixes that could each have shipped alone.
+// They are one pass because they are all the same complaint — the portal is a
+// painted disc rather than a place.
+//
+// THE ORDER OF THE SECTION, and it is the order of the exposure:
+//   1. the near field, the only one of the four that changes what a LIVE portal
+//      looks like at distance, and so the one that can move a committed PNG's
+//      swirl contrast;
+//   2. the debris ring, for the same reason, and because it is the only new
+//      GEOMETRY in the aperture and geometry is what the pupil gate can see;
+//   3. the collapse, the only one that draws anything BRIGHT, and the only one
+//      that is not on screen in a committed capture;
+//   4. the lens, the only one that touches the background.
+//
+// AND THEN the four regression guards the pass is most exposed to — pupil, swirl,
+// eye finder, capture floor — restated as measurements against the shipped
+// gallery rather than as prose, because "it is only near the rim" is a sentence
+// and the pupil gate is a number.
+// ---------------------------------------------------------------------------
+
+section('Portal descent (iteration 2, pass 12)')
+
+/** The view's own `PORTAL_CORE_RADIUS`, read out of the source. */
+const PORTAL_CORE = (() => {
+  const found = /const PORTAL_CORE_RADIUS = ([\d.]+)/.exec(stripProse(STREET_VIEW_SOURCE))
+  assert.ok(found, 'streetView.js no longer has a PORTAL_CORE_RADIUS, so the pupil has no radius')
+  return Number(found[1])
+})()
+
+test('the near field is a distance ramp inside a facing gate, and both gates are hard', () => {
+  // 1. THE RAMP'S SHAPE, and the reason it is a smoothstep rather than a line. A
+  //    linear `1 - d/8` arrives at 1 with slope -1/8, a step in velocity as you
+  //    cross 8 m: the arms jump from their idle rate to their near rate in one
+  //    frame. C1 means zero slope at both ends, and C1 is asserted by sampling the
+  //    derivative rather than by pattern-matching the polynomial, because the
+  //    smoothstep's virtue IS the shape of its derivative.
+  const slope = (d) => Math.abs((rules.portalNearness(d - 0.01, 1) - rules.portalNearness(d + 0.01, 1)) / 0.02)
+  assert.ok(Math.abs(slope(0.01)) < 0.01, `the near field arrives at the gate with a slope of ${slope(0.01).toFixed(5)}`)
+  assert.ok(
+    Math.abs(slope(rules.PORTAL_NEAR_METRES - 0.01)) < 0.01,
+    `and leaves at ${rules.PORTAL_NEAR_METRES} m with a slope of ${slope(rules.PORTAL_NEAR_METRES - 0.01).toFixed(5)}`,
+  )
+  // 2. MONOTONE, because a hole that answers you MORE the further off you stand is
+  //    not a near field. Sampled, not symbolic, for the same reason.
+  for (let d = 0; d < rules.PORTAL_NEAR_METRES; d += 0.1) {
+    assert.ok(
+      rules.portalNearness(d, 1) >= rules.portalNearness(d + 0.1, 1),
+      `the near field rises with distance at ${d.toFixed(1)} m`,
+    )
+  }
+  // 3. THE HARD CUT AT THE RADIUS. A soft tail would mean the hole reacts to the
+  //    player from across the map, and the first version had a cosine to 20 m.
+  assert.equal(rules.portalNearness(rules.PORTAL_NEAR_METRES, 1), 0, 'the near field is still on at its own radius')
+  assert.equal(rules.portalNearness(rules.PORTAL_NEAR_METRES * 10, 1), 0)
+  assert.equal(rules.portalNearness(1e6, 1), 0)
+  // 4. THE FACING GATE IS A GATE AND NOT A WEIGHT. The docblock's claim is about
+  //    the ORDER — close first, facing second — and the order is observable from
+  //    outside: a player 20 m away staring at the portal and a player 2 m away
+  //    staring away both read 0, for different reasons.
+  assert.equal(rules.portalNearness(20, 1), 0, 'a portal across the street is answering the player')
+  assert.equal(rules.portalNearness(2, -1), 0, 'a portal behind the player is answering the player')
+  // the gate is `facing < THRESHOLD`, so the threshold itself is the first value
+  // that is ALLOWED — 60 degrees is "still unambiguously in front of you", and
+  // one degree further is not. Asserted as the two sides of the comparison
+  // rather than as a value, because which side the boundary sits on is a design
+  // decision and a gate that hard-codes it would fail a retune that is an
+  // improvement.
+  assert.equal(rules.portalNearness(2, rules.PORTAL_NEAR_FACING - 1e-9), 0, 'the facing gate is not closed just below its own threshold')
+  assert.ok(rules.portalNearness(2, rules.PORTAL_NEAR_FACING) > 0, 'the facing gate is closed at its own threshold')
+  assert.ok(rules.portalNearness(2, 1) > 0, 'standing at it and looking at it does nothing, which is the feature')
+  // ...and it is a MONOTONE function of facing, so a gaze crossing the edge of a
+  // portal ramps it rather than snapping it.
+  for (let f = rules.PORTAL_NEAR_FACING; f <= 1; f += 0.05) {
+    assert.ok(
+      rules.portalNearness(2, f) >= rules.portalNearness(2, f - 0.05),
+      `the near field rises as the gaze turns away, at a dot of ${f.toFixed(2)}`,
+    )
+  }
+  // 5. NULL-SAFE ON BOTH ARGUMENTS, and in the SAFE direction. This is called from
+  //    a render loop with values off a camera and a projection; a predicate that
+  //    throws on NaN takes the frame down, and one that returns NaN takes the
+  //    swirl rate with it.
+  assert.equal(rules.portalNearness(NaN, 1), 0)
+  assert.equal(rules.portalNearness(2, NaN), 0)
+  assert.equal(rules.portalNearness(Infinity, 1), 0)
+  assert.equal(rules.portalNearness(NaN, NaN), 0)
+  // a negative distance is not "very close", it is a caller that has lost the fold
+  assert.equal(rules.portalNearness(-1, 1), 0, 'a negative distance has a near field')
+  // 6. AND THE OUTPUT IS A FRACTION, because `portalSwirlRate` multiplies by it
+  //    and an out-of-range value is a multiplier outside `[1, SPIN]`.
+  for (let d = 0; d <= 12; d += 0.05) {
+    const near = rules.portalNearness(d, 1)
+    assert.ok(near >= 0 && near <= 1, `nearness is ${near} at ${d} m`)
+  }
+})
+
+test('the near field is a multiplier on the swirl, and it cannot make the swirl machinery', () => {
+  const rates = [
+    .../const PORTAL_SWIRL_RATES = Object\.freeze\(\[([^\]]+)\]\)/.exec(stripProse(STREET_VIEW_SOURCE))[1].matchAll(/-?[\d.]+/g),
+  ].map(Number)
+  assert.equal(rates.length, 2)
+  // 1. THE PASS-3 CEILING HAS TO HOLD AT THE NUMBER THE NEAR FIELD PRODUCES. The
+  //    docblock's argument is about the idle table; the claim is about the fastest
+  //    the arms ever turn, which is that table times `PORTAL_NEAR_SPIN` at zero
+  //    distance. §16.5.5's `portal-located` stands at 4.5 m — inside the radius —
+  //    so the committed PNG is drawn at the near rate, and the gate that reads it
+  //    has to hold there rather than only on the table.
+  for (const rate of rates) {
+    assert.ok(Math.abs(rate) < 0.35, `an idle rate of ${rate} is machinery before the pass touches it`)
+    const near = rules.portalNearness(0, 1)
+    const spun = rules.portalSwirlRate(rate, near)
+    assert.ok(
+      Math.abs(spun) < 0.35,
+      `standing at the gate a layer turns at ${spun.toFixed(3)} rad/s — a full turn every ${(2 / Math.abs(spun)).toFixed(1)} s, which is the pass-3 ceiling broken`,
+    )
+    // and the sign survives, which is the structural half of the pass-3 claim: the
+    // two layers turn OPPOSITE ways, and a multiplier that dropped a sign would
+    // turn them the same way at the one moment the player is close enough to see it
+    assert.equal(Math.sign(rules.portalSwirlRate(rate, near)), Math.sign(rate), 'the near field flipped a swirl layer')
+    // and it is a MULTIPLIER, so nearness 0 is exactly the table's own rate
+    assert.equal(rules.portalSwirlRate(rate, 0), rate, 'a hole at distance is not turning at the rate pass 3 pinned')
+  }
+  assert.notEqual(Math.sign(rates[0]), Math.sign(rates[1]), 'the two layers agree, so the table itself is wrong')
+  // 2. MONOTONE IN NEARNESS AND BOUNDED BY SPIN — the two properties that make it
+  //    a ramp rather than a switch. Sampled, because the shape is the claim.
+  for (const rate of rates) {
+    let previous = -Infinity
+    for (let n = 0; n <= 1.0001; n += 0.02) {
+      const value = Math.abs(rules.portalSwirlRate(rate, n))
+      assert.ok(value >= previous - 1e-12, `a layer's rate fell at nearness ${n.toFixed(2)}`)
+      assert.ok(
+        value <= Math.abs(rate) * rules.PORTAL_NEAR_SPIN + 1e-12,
+        `a layer's rate ran past PORTAL_NEAR_SPIN at nearness ${n.toFixed(2)}`,
+      )
+      previous = value
+    }
+  }
+  // 3. AND IT CLAMPS, the second lock. `portalNearness` cannot emit 1.5, but a
+  //    caller that computes nearness its own way can, and an unclamped multiplier
+  //    would put the arms at 4.3 rad/s — a hole that reads as a turbine.
+  assert.equal(rules.portalSwirlRate(rates[0], 5), rules.portalSwirlRate(rates[0], 1))
+  assert.equal(rules.portalSwirlRate(rates[0], -5), rules.portalSwirlRate(rates[0], 0))
+  // 4. NULL-SAFE, for the reason the nearness predicate is: a bad rate is a dead
+  //    layer, and a dead layer is not a spinning one.
+  assert.equal(rules.portalSwirlRate(NaN, 1), 0)
+  assert.equal(rules.portalSwirlRate(0.21, NaN), 0)
+  assert.equal(rules.portalSwirlRate(Infinity, 1), 0)
+})
+
+test('the debris ring is fourteen hashed rocks outside the pupil, and it is reproducible', () => {
+  // 1. DETERMINISM, and this is the whole reason `hash32` is imported and
+  //    `Math.random` is not. Pass 11's review finding 4 was about an effect on a
+  //    clock the capture harness could not re-take, and a random orbit is the
+  //    extreme case: not one frame, but every frame.
+  const a = rules.portalDebrisRing(8, 0)
+  const b = rules.portalDebrisRing(8, 0)
+  assert.deepEqual(a, b, 'the same seed and portal drew a different ring twice')
+  // ...a function of BOTH arguments: two portals in one run must not wear the same
+  // ring, or the ring is wallpaper, and a different run must not wear it either.
+  assert.notDeepEqual(rules.portalDebrisRing(8, 0), rules.portalDebrisRing(8, 1), 'two portals share a ring')
+  assert.notDeepEqual(rules.portalDebrisRing(8, 0), rules.portalDebrisRing(9, 0), 'the ring does not depend on the seed')
+  // 2. THE COUNT, read from the module rather than restated, and against the
+  //    ceiling the docblock's eye-span argument is written against.
+  assert.equal(a.length, rules.PORTAL_DEBRIS_COUNT, 'the ring is not the documented number of rocks')
+  assert.ok(
+    rules.PORTAL_DEBRIS_COUNT <= rules.PORTAL_DEBRIS_MAX,
+    `${rules.PORTAL_DEBRIS_COUNT} rocks is over the ${rules.PORTAL_DEBRIS_MAX} the eye-span argument allows`,
+  )
+  assert.ok(rules.PORTAL_DEBRIS_COUNT >= 8, 'a ring of fewer than eight is a bracelet, not debris')
+  // 3. **THE PUPIL ARGUMENT, MEASURED.** This is the load-bearing geometric claim
+  //    of the debris feature, and it is a comparison between two modules that
+  //    cannot import each other: `PORTAL_DEBRIS_RING` is in `rules.js` and
+  //    `PORTAL_CORE_RADIUS` is in `streetView.js`, so the second is read out of the
+  //    first's neighbour's source. A rock crossing the centre of the aperture is a
+  //    5-11 px speck sitting exactly where the pass-3 gate says there must be
+  //    nothing but the hole's own near-black.
+  const [inner, outer] = rules.PORTAL_DEBRIS_RING
+  assert.ok(
+    inner > PORTAL_CORE,
+    `a rock on its innermost orbit is at ${inner} m and the hole is ${PORTAL_CORE} m, so a rock can cross the pupil`,
+  )
+  // ...and the margin is not accidental tightness. The docblock claims 8% and the
+  // gate holds it to a centimetre, because a 1 cm margin is a rounding difference
+  // between two files rather than a design decision.
+  assert.ok(
+    inner - PORTAL_CORE > 0.05,
+    `the inner orbit clears the hole by ${((inner - PORTAL_CORE) * 100).toFixed(1)} cm, which is inside the error of the two files disagreeing`,
+  )
+  // 4. EVERY ROCK IS INSIDE THE RING, and concentric with the hole.
+  for (const rock of a) {
+    assert.ok(rock.radius >= inner && rock.radius <= outer, `a rock is orbiting at ${rock.radius} m, outside the ring`)
+    assert.ok(rock.size >= rules.PORTAL_DEBRIS_SIZE[0] && rock.size <= rules.PORTAL_DEBRIS_SIZE[1], `a rock is ${rock.size} m, outside the size range`)
+    assert.ok(rock.phase >= 0 && rock.phase < Math.PI * 2, `a rock is at phase ${rock.phase}, which is not a phase`)
+    assert.ok(Number.isFinite(rock.rate) && rock.rate !== 0, 'a rock is not turning')
+  }
+  // 4b. **AND THE NEAREST ANY ROCK EVER COMES TO THE CENTRE IS OUTSIDE THE HOLE.**
+  //     This is the check that was MISSING, and its absence is how a real defect
+  //     shipped: the assertion above compares `rock.radius` with the core radius,
+  //     and `rock.radius` is the orbit's MAJOR axis. If the orbit is squashed — and
+  //     it was, by 0.62, for reasons that all turned out to be about the doorway
+  //     rather than about the pupil — then the nearest a rock comes to the centre is
+  //     `radius * FLATTEN`, which at 0.78 and 0.62 is 0.48 m on a 0.72 m hole. The
+  //     feature sat a third of the way into the pupil and this gate was green the
+  //     whole time. `verify-world.mjs` found it on its first run, by reading the
+  //     built instance matrices; this is the pure half of that finding.
+  //
+  //     The fix is to sweep the ORBIT and not the parameter. A parameter check
+  //     cannot see this class of error, because the parameter and the geometry it
+  //     produces are different numbers and only one of them is drawn.
+  for (const rock of a) {
+    const orbit = (Math.PI * 2) / Math.abs(rock.rate)
+    let nearest = Infinity
+    for (let t = 0; t < orbit; t += orbit / 180) {
+      const pose = rules.portalDebrisPose(rock, t)
+      nearest = Math.min(nearest, Math.hypot(pose.x, pose.y))
+    }
+    assert.ok(
+      nearest > PORTAL_CORE,
+      `a rock orbiting at ${rock.radius} m comes within ${nearest.toFixed(3)} m of the gate's centre on a ${PORTAL_CORE} m hole — the orbit's MINOR axis, not its radius, is what reaches the pupil`,
+    )
+  }
+  // ...and the margin is the same 5 cm the radius check demands, because the two
+  // are now the same claim and a gate that checked one and not the other is exactly
+  // how the first one was green over a broken feature.
+  const closest = Math.min(...a.map((rock) => rock.radius * rules.PORTAL_DEBRIS_FLATTEN))
+  assert.ok(closest - PORTAL_CORE > 0.05, `the ring's nearest approach is ${((closest - PORTAL_CORE) * 100).toFixed(1)} cm outside the hole`)
+  // 5. THE RATES ARE SLOWER THAN THE SWIRL, which is the docblock's "the debris is
+  //    the quiet layer" turned into a number. The comparison is against the
+  //    FASTEST the swirl ever turns — the idle table times `PORTAL_NEAR_SPIN` —
+  //    and NOT against the idle 0.21, because the first version of this check
+  //    used 0.21 and passed at a 0.34 fast end while the near field was spinning
+  //    the swirl at 0.46. The quiet layer has to be quieter than the loudest
+  //    version of the thing it is quiet against, or the two swap roles.
+  const rates = [
+    .../const PORTAL_SWIRL_RATES = Object\.freeze\(\[([^\]]+)\]\)/.exec(stripProse(STREET_VIEW_SOURCE))[1].matchAll(/-?[\d.]+/g),
+  ].map((entry) => Math.abs(Number(entry)))
+  const loudestSwirl = Math.max(...rates) * rules.PORTAL_NEAR_SPIN
+  const fastestRock = Math.max(...a.map((rock) => Math.abs(rock.rate)))
+  assert.ok(fastestRock < loudestSwirl, `a rock turns at ${fastestRock.toFixed(3)} and the swirl's fastest near-field rate is ${loudestSwirl.toFixed(3)}: the debris is not the quiet layer`)
+  assert.ok(fastestRock < 0.35, `a rock turns at ${fastestRock.toFixed(3)} rad/s, which is the pass-3 swirl ceiling`)
+  // 6. **THE RING IS TWO-DIRECTIONAL**, which is what the separate sign draw exists
+  //    for. A belt where every rock turns the same way is a clock face, and the
+  //    sign is a SEPARATE hash draw precisely so the rock that drew a low rate is
+  //    not also the rock that went the other way.
+  const signs = new Set(a.map((rock) => Math.sign(rock.rate)))
+  assert.equal(signs.size, 2, 'the ring turns one way, and one way is a clock face')
+  // and the correlation the separate draw prevents: no radius band is one-signed
+  const mid = (inner + outer) / 2
+  for (const [half, label] of [[a.filter((rock) => rock.radius < mid), 'inner'], [a.filter((rock) => rock.radius >= mid), 'outer']]) {
+    assert.ok(
+      half.length >= 3 && new Set(half.map((rock) => Math.sign(rock.rate))).size === 2,
+      `every rock on the ${label} half of the ring turns the same way, so the sign IS correlated with the radius`,
+    )
+  }
+  // 7. AND IT IS SPREAD, not clustered. Fourteen rocks from one hash coordinate can
+  //    land in one band and read as a clump, so the radii must occupy both halves
+  //    and at least three fifths. A distribution claim, so it is sampled.
+  const fifths = new Set(a.map((rock) => Math.floor(((rock.radius - inner) / (outer - inner)) * 5)))
+  assert.ok(fifths.size >= 3, `the ring's rocks occupy ${fifths.size} fifths of the band, so the ring is a clump`)
+  assert.equal(new Set(a.map((rock) => rock.phase)).size, a.length, 'two rocks share a phase, so they are welded together')
+  // 8. AND ACROSS EVERY SEED AND EVERY PORTAL, because a property that holds for
+  //    seed 8 portal 0 and not for seed 3 portal 2 is a coincidence.
+  for (let seed = 1; seed <= 8; seed += 1) {
+    for (let index = 0; index < 3; index += 1) {
+      const ring = rules.portalDebrisRing(seed, index)
+      assert.equal(ring.length, rules.PORTAL_DEBRIS_COUNT, `seed ${seed} portal ${index} drew the wrong count`)
+      assert.ok(ring.every((rock) => rock.radius > PORTAL_CORE), `seed ${seed} portal ${index} put a rock inside the hole`)
+      assert.equal(new Set(ring.map((rock) => Math.sign(rock.rate))).size, 2, `seed ${seed} portal ${index} drew a one-way ring`)
+    }
+  }
+})
+
+test('a rock is a function of time, and the pose it reaches is on its own orbit', () => {
+  const rock = rules.portalDebrisRing(8, 0)[0]
+  // 1. THE CLOCK, NOT A FRAME COUNT. `update(dt)` is handed a delta, so a pose
+  //    written from an accumulator is a different picture on every machine.
+  assert.deepEqual(
+    rules.portalDebrisPose(rock, 12.5),
+    rules.portalDebrisPose(rock, 12.5),
+    'the same time drew a different pose',
+  )
+  // 2. AND THE POSE IS ON THE ORBIT, which is what the flatten is written for: the
+  //    ellipse is `radius x radius*FLATTEN`, so every sample satisfies
+  //    `hypot(x/r, y/(r*flatten)) === 1`. A rock off its ellipse is a bob or a
+  //    mistake, and there is no bob in this design.
+  for (let t = 0; t < 90; t += 1.7) {
+    const pose = rules.portalDebrisPose(rock, t)
+    const on = Math.hypot(pose.x / rock.radius, pose.y / (rock.radius * rules.PORTAL_DEBRIS_FLATTEN))
+    assert.ok(Math.abs(on - 1) < 1e-9, `at ${t} s a rock is at ${on.toFixed(6)} of its own orbit`)
+  }
+  // 3. THE FLATTEN IS ON THE ORBIT AND NOT ON THE MESH, so a flake stays a REGULAR
+  //    tetrahedron. Measured as the ellipse's SEMI-AXES over a full revolution —
+  //    the first version of this check compared `|y|` to `|x|` at ONE time, which
+  //    is not a property of the ellipse at all: at some phases on a squashed
+  //    orbit `y` is larger than `x` and at others it is smaller, and the check
+  //    passed or failed on where the sample happened to land. The semi-axes are
+  //    the max of each coordinate over a full period, and the ratio between them
+  //    is what "squashed" means.
+  const period = (Math.PI * 2) / Math.abs(rock.rate)
+  let maxX = 0
+  let maxY = 0
+  for (let t = 0; t < period; t += period / 360) {
+    const p = rules.portalDebrisPose(rock, t)
+    maxX = Math.max(maxX, Math.abs(p.x))
+    maxY = Math.max(maxY, Math.abs(p.y))
+  }
+  assert.ok(Math.abs(maxX - rock.radius) < 1e-4, `the orbit is ${maxX.toFixed(4)} m wide rather than the rock's ${rock.radius.toFixed(4)} m`)
+  assert.ok(
+    Math.abs(maxY - rock.radius * rules.PORTAL_DEBRIS_FLATTEN) < 1e-4,
+    `the orbit is ${maxY.toFixed(4)} m tall rather than ${(rock.radius * rules.PORTAL_DEBRIS_FLATTEN).toFixed(4)} m`,
+  )
+  // `<=`, not `<`, and the reason is the whole history of this number. The orbit
+  // USED to be squashed (`PORTAL_DEBRIS_FLATTEN` 0.62) and this assertion was the
+  // one that said so; a squashed ellipse centred on a LARGER circle is inside that
+  // circle at the top and the bottom, which put a third of a rock inside the pupil.
+  // The value is 1 now, so the two axes are equal, and `<` would fail on a ring that
+  // is exactly right. The assertion is kept in the non-strict form because it is
+  // about the ring not being TALLER than it is wide, and a retune that made it
+  // taller should fail here.
+  assert.ok(maxY <= maxX, 'the orbit is taller than it is wide, so the doorway crop argument is inverted')
+  const pose = rules.portalDebrisPose(rock, 3.3)
+  assert.equal(pose.size, rock.size, 'the pose retunes the rock rather than applying its size')
+  // The squash is 1, and asserting a RANGE rather than the value is the deliberate
+  // choice: a retune that squashes the ring again has to clear the 4b sweep above
+  // first, and that sweep is the check that matters. What is asserted here is only
+  // that the value is a usable number, because a gate that pinned `=== 1` would
+  // fail a future ring that is squashed CORRECTLY and say nothing useful when it
+  // failed.
+  assert.ok(rules.PORTAL_DEBRIS_FLATTEN > 0 && rules.PORTAL_DEBRIS_FLATTEN <= 1, `the ring's flatten is ${rules.PORTAL_DEBRIS_FLATTEN}, which is not a usable fraction`)
+  // 4. THE SPIN IS ITS OWN AXIS AND NOT A SECOND CLOCK: `angle * 3`, so a flake is
+  //    never tidily aligned with its own orbit. The testable part is that its
+  //    period is not the orbit's, so the flake does not return to its starting
+  //    attitude at the moment it returns to its starting position.
+  assert.ok(Math.abs(period / 3 - period) > 1e-9, 'the flake spins once per orbit, so it is a hand on a clock face')
+  // 5. NULL-SAFE TIME, for the reason the rest of the section is null-safe.
+  assert.deepEqual(rules.portalDebrisPose(rock, NaN), rules.portalDebrisPose(rock, 0))
+  assert.deepEqual(rules.portalDebrisPose(rock, -5), rules.portalDebrisPose(rock, 0), 'a rock in the future is elsewhere on its orbit')
+  // 6. AND THE TABLE IS NOT MUTATED BY A POSE, because the view reads the same
+  //    table every frame and a pose that wrote back into it would slowly walk every
+  //    rock to phase 0 over a run.
+  const before = { ...rock }
+  for (let t = 0; t < 200; t += 1) rules.portalDebrisPose(rock, t)
+  assert.deepEqual(rock, before, 'posing a rock wrote back into the table')
+})
+
+test('the collapse is 0.8 s of aftermath, and it cannot start before the hold is over', () => {
+  // 1. THE DURATION, and it is the brief's "~0.8 s" read as a number rather than a
+  //    suggestion. Exactly 0 at exactly 0.8 s, and 0 after.
+  assert.equal(rules.PORTAL_COLLAPSE.seconds, 0.8, 'the collapse is not 0.8 s')
+  assert.equal(rules.portalCollapse(0.8).scale, 0, 'the aperture is still open at the end of the collapse')
+  assert.equal(rules.portalCollapse(5).scale, 0, 'the aperture reopens after the collapse')
+  assert.equal(rules.portalCollapse(1e6).scale, 0)
+  // 2. MONOTONE AND BOUNDED, because a collapse that overshoots or bounces is a
+  //    different animation.
+  let previous = Infinity
+  for (let t = 0; t <= 0.8; t += 0.01) {
+    const frame = rules.portalCollapse(t)
+    assert.ok(frame.scale >= 0 && frame.scale <= 1, `the aperture is scaled to ${frame.scale} at ${t.toFixed(2)} s`)
+    assert.ok(frame.scale <= previous + 1e-12, `the aperture grew at ${t.toFixed(2)} s`)
+    assert.ok(frame.u >= 0 && frame.u <= 1, `u is ${frame.u} at ${t.toFixed(2)} s`)
+    previous = frame.scale
+  }
+  // 3. THE EASE IS A HOLD AND THEN A SNAP, and the shape is the claim rather than
+  //    the formula. `1 - u^4` has a zero derivative at `u = 0` and a slope of -4
+  //    at `u = 1`, so the aperture hangs and then goes. The two numbers that
+  //    matter are the one at the FLASH — the flash has to be lighting something
+  //    that is still recognisably a hole — and the one at three quarters, which is
+  //    where a reader can tell "closing" from "shutting".
+  assert.ok(rules.portalCollapse(0.27).scale > 0.9, `at the flash the aperture is already ${(100 * (1 - rules.portalCollapse(0.27).scale)).toFixed(1)}% closed — the flash has nothing to interrupt`)
+  assert.ok(rules.portalCollapse(0.16).scale > 0.99, 'the aperture is closing through the flash')
+  assert.ok(rules.portalCollapse(0.4).scale > 0.9, 'the aperture is more than a tenth shut at the halfway mark, which is a zoom rather than a hold')
+  assert.ok(rules.portalCollapse(0.6).scale < 0.75, 'the aperture is still three quarters open at three quarters of the way through, which is a hold with no snap')
+  // ...and the slope at t=0 is zero to floating point, which is the C1 the quartic
+  // buys and the thing a `u^3` or a `(1-u)^3` both fail. The tolerance is 1e-12
+  // and not `assert.equal`: `1 - 0.125 ** 4` is 0.9999999999999998 in binary, and
+  // a gate that demanded the exact double would be a gate about the FPU.
+  assert.ok(Math.abs(rules.portalCollapse(0.0001).scale - 1) < 1e-12, 'the collapse starts with a velocity step')
+  // 4. THE FLASH IS A SYMMETRIC BELL, and the symmetry is why §14.3's
+  //    reduced-motion rule is not engaged by it: a one-sided flash is a switch and a
+  //    switch is a strobe. Asserted as the profile's own mirror symmetry, which is
+  //    the property rather than a restatement of the formula.
+  const centre = rules.PORTAL_COLLAPSE.flash
+  const width = rules.PORTAL_COLLAPSE.flashWidth
+  for (const offset of [0.01, 0.03, 0.05, 0.07, 0.089]) {
+    assert.ok(
+      Math.abs(rules.portalCollapse(centre + offset).flash - rules.portalCollapse(centre - offset).flash) < 1e-12,
+      `the flash is ${rules.portalCollapse(centre + offset).flash.toFixed(4)} after its centre and ${rules.portalCollapse(centre - offset).flash.toFixed(4)} before it`,
+    )
+  }
+  // 5. IT IS EXACTLY 0 OUTSIDE ITS WIDTH, which is what makes the end of it a fade
+  //    rather than a cut, and 0 at the very edge is what makes the fade C1.
+  assert.equal(rules.portalCollapse(0).flash, 0, 'the flash is already lit on frame 0')
+  assert.equal(rules.portalCollapse(centre + width).flash, 0, 'the flash has a step at its outer edge')
+  assert.equal(rules.portalCollapse(centre - width).flash, 0)
+  assert.equal(rules.portalCollapse(0.16 - 0.09).flash, 0)
+  // and the peak IS the gain, once, in the middle
+  assert.equal(rules.portalCollapse(centre).flash, rules.PORTAL_COLLAPSE.flashGain)
+  assert.ok(rules.PORTAL_COLLAPSE.flashGain > 1, 'the flash is not brighter than the thing it flashes')
+  // 6. THE SPIN RAMPS 1 -> 7 ON u^2, so the acceleration itself accelerates and the
+  //    aperture is still at its live rate on frame 0.
+  assert.equal(rules.portalCollapse(0).spin, 1, 'the collapse starts at a spin the live hole was not turning at')
+  assert.equal(rules.portalCollapse(0.8).spin, rules.PORTAL_COLLAPSE.spin)
+  assert.ok(rules.PORTAL_COLLAPSE.spin > 3, 'the spin-up is not fast enough to read as machinery')
+  for (let t = 0; t <= 0.8; t += 0.01) {
+    assert.ok(
+      rules.portalCollapse(t).spin >= rules.portalCollapse(Math.max(0, t - 0.01)).spin - 1e-12,
+      `the spin dipped at ${t.toFixed(2)} s`,
+    )
+  }
+  // 7. **THE TIMING CLAIM THE PASS EXISTS NOT TO VIOLATE.** §5.2's hold is 1.2 s and
+  //    the collapse starts after it, so the 0.8 s is strictly AFTER every
+  //    gameplay-visible event it could disturb. The simulation version of this is
+  //    in verify-world.mjs, because that is the harness that can run one; this is
+  //    the arithmetic underneath it.
+  assert.ok(
+    rules.PORTAL_COLLAPSE.seconds + 0.2 < rules.PORTAL_SHUT_SECONDS,
+    `the collapse (${rules.PORTAL_COLLAPSE.seconds} s) ends only ${(rules.PORTAL_SHUT_SECONDS - rules.PORTAL_COLLAPSE.seconds).toFixed(2)} s before the hold would have finished, so the two windows overlap`,
+  )
+  // 8. NULL-SAFE AND CLAMPED, for the same reason as everything else here.
+  assert.deepEqual(rules.portalCollapse(NaN), rules.portalCollapse(0))
+  assert.deepEqual(rules.portalCollapse(-3), rules.portalCollapse(0), 'a collapse from the future is not a collapse')
+})
+
+test('the lens is a dark radial gradient on the annulus, and it is exactly zero on the hole', () => {
+  // THIS IS THE PUPIL GATE'S ONLY REASON TO EXIST FOR THE LENS, and it is written
+  // as a property of `portalLensAlpha` rather than as a measurement of a frame,
+  // because the property is what makes the measurement pass. The measurement of
+  // `portal-located.png` is in the regression guards below, on the real PNG.
+  //
+  // 1. **EXACTLY ZERO ACROSS THE WHOLE DISC**, and "exactly" is the word. The
+  //    pass-3 pupil gate reads the luma at the centre of the rim's bounding box
+  //    and requires it at or under 20; the swirl gate reads the band the two swirl
+  //    layers occupy. The disc is 1.0 of the core radius and the swirl's outer
+  //    layer is at 0.66 m on a 0.72 m hole, i.e. 0.917 — so "zero for every radius
+  //    at or inside 1.0" is zero over the pupil AND over both swirl layers, in one
+  //    assertion, with no dependence on where the swirl happens to sit.
+  //
+  //    The sweep is to 1.0 INCLUSIVE and the boundary is asserted from both sides,
+  //    because the first version of this function ran its ramp from 0.55 and the
+  //    only way that passed was a test that sampled 0.0 and 0.3 and stopped. A gate
+  //    that samples two points on a radial profile is a gate about two points.
+  assert.equal(rules.portalLensAlpha(0), 0, 'the lens darkens the pupil')
+  assert.equal(rules.portalLensAlpha(0.0001), 0)
+  assert.equal(rules.portalLensAlpha(NaN), 0)
+  for (let r = 0; r <= 1.0; r += 0.001) {
+    assert.equal(rules.portalLensAlpha(r), 0, `the lens darkens the hole at ${r.toFixed(3)} of the radius`)
+  }
+  assert.equal(rules.portalLensAlpha(1), 0, 'the lens darkens the lip itself')
+  // and the outer swirl layer is inside that swept range, read out of the view's
+  // own table so the sweep cannot quietly stop short of it
+  const swirlRadii = [
+    .../const PORTAL_SWIRL_RADII = Object\.freeze\(\[([^\]]+)\]\)/.exec(stripProse(STREET_VIEW_SOURCE))[1].matchAll(/[\d.]+/g),
+  ].map(Number)
+  for (const radius of swirlRadii) {
+    assert.equal(rules.portalLensAlpha(radius / PORTAL_CORE), 0, `the lens darkens the swirl layer at ${radius} m`)
+  }
+  // 2. **ZERO AT ITS OWN OUTER EDGE**, so the overlay has no rim of its own. A disc
+  //    that stops at a visible circle is a decal, and the claim here is haze.
+  assert.equal(rules.portalLensAlpha(rules.PORTAL_LENS.outer), 0, 'the lens has an edge of its own')
+  assert.equal(rules.portalLensAlpha(rules.PORTAL_LENS.outer + 1), 0)
+  assert.equal(rules.portalLensAlpha(1e6), 0)
+  // 3. AND C1 AT BOTH ENDS, sampled rather than asserted symbolically — a corner in
+  //    a radial profile is a ring in the frame that switches on.
+  const slope = (r) => Math.abs((rules.portalLensAlpha(r + 0.002) - rules.portalLensAlpha(r - 0.002)) / 0.004)
+  assert.ok(slope(1.002) < 0.5, `the lens arrives at its inner edge with a slope of ${slope(1.002).toFixed(4)}`)
+  assert.ok(
+    slope(rules.PORTAL_LENS.outer - 0.002) < 0.5,
+    `and leaves at its outer edge with a slope of ${slope(rules.PORTAL_LENS.outer - 0.002).toFixed(4)}`,
+  )
+  // 4. **IT DEEPENS TOWARD THE RIM**, which is the brief's own words: the alpha
+  //    rises monotonically from the lip to a crest just outside it, and the crest
+  //    is `PORTAL_LENS.crest` — outside the disc, so the deepening is on
+  //    BACKGROUND and the lip itself is not dimmed.
+  assert.ok(rules.PORTAL_LENS.crest > 1, 'the lens crests inside the disc, so it darkens the hole')
+  assert.ok(rules.PORTAL_LENS.crest < rules.PORTAL_LENS.outer, 'the lens crests past its own edge, so the edge is a cliff')
+  let peakValue = -1
+  for (let r = 1; r < rules.PORTAL_LENS.outer; r += 0.0005) {
+    const value = rules.portalLensAlpha(r)
+    assert.ok(value >= 0 && value <= rules.PORTAL_LENS.peak, `the lens alpha is ${value} at ${r.toFixed(4)}`)
+    if (value > peakValue) peakValue = value
+  }
+  // ...and it rises monotonically all the way there, with no dip in between. The
+  // upper bound is the crest MINUS a step, because at the crest the profile turns
+  // around — a loop that ran to the crest inclusive would compare the crest
+  // against the first sample past it and call the turn a non-monotonicity.
+  for (let r = 1.0; r < rules.PORTAL_LENS.crest - 0.001; r += 0.0005) {
+    assert.ok(
+      rules.portalLensAlpha(r) <= rules.portalLensAlpha(r + 0.0005) + 1e-12,
+      `the lens does not deepen monotonically at ${r.toFixed(4)} of the radius`,
+    )
+  }
+  // 5. **AND IT REACHES EXACTLY ITS DECLARED PEAK.** The peak is a CEILING and the
+  //    profile reaches it, so this is an equality: a retune that lowered `peak`
+  //    without moving the profile would be a gate that never noticed.
+  assert.equal(rules.portalLensAlpha(rules.PORTAL_LENS.crest), rules.PORTAL_LENS.peak, 'the lens is not exactly its own declared peak at its own crest')
+  assert.ok(rules.PORTAL_LENS.peak > 0.2, 'the lens is too faint to be a lens')
+  assert.ok(rules.PORTAL_LENS.peak < 0.5, 'the lens is dark enough to read as a hole rather than as haze')
+  // 6. AND THE GEOMETRY MATCHES THE CLAIM: "just larger than the disc", so `outer`
+  //    is above 1 — at 1.0 it would be a second disc exactly on the first — and
+  //    below 1.6, because at 1.6 it is a visible dark halo, which is the pass-3
+  //    "reads as a HALO" failure all over again.
+  assert.ok(rules.PORTAL_LENS.outer > 1, 'the lens is not larger than the disc it lenses')
+  assert.ok(rules.PORTAL_LENS.outer < 1.6, 'the lens is a halo, which is the failure pass 3 was built to remove')
+  // 7. AND EVERY VALUE IS INSIDE ITS BOUND over the whole sampled domain, because
+  //    the function is called once per texel by the texture builder, so a single
+  //    out-of-range sample is a clamped byte and a visible ring.
+  for (let r = 0; r < 1.6; r += 0.001) {
+    const value = rules.portalLensAlpha(r)
+    assert.ok(value >= 0 && value <= rules.PORTAL_LENS.peak, `the lens alpha is ${value} at ${r.toFixed(3)}`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// the pass's source contracts, and their mutations
+// ---------------------------------------------------------------------------
+
+/**
+ * `portalDescentClaims` — pass 12's source contracts, as predicates over a source.
+ *
+ * The pass-11 shape exactly, and the reason it is that shape is §15.1: this file
+ * may not import `streetView.js` because it imports Three.js, so every claim about
+ * the view is a claim about its TEXT. Passes 1/2/3 accepted that and wrote prose;
+ * passes 9/10/11 moved the numbers into the pure module and made these contracts
+ * about the wiring rather than about the arithmetic, which is the only kind that
+ * survives a retune. This is pass 12's version of that.
+ *
+ * Every NUMBER in these claims is read from the live `rules` module or out of the
+ * view's own source, never restated. A contract that writes `0.35` next to a
+ * module that owns `0.35` is a contract that stays green the day one of them moves.
+ *
+ * The `rules` THIRD ARGUMENT exists only so the mutation list can break a number
+ * in `rules.js` and see the claim that depends on it go red. Two of the eleven
+ * mutations are in that file rather than in the view, and a function that read
+ * `rules.js` off disk instead of taking it would have reported them as "no claim
+ * broke" and told the reader the pass was untested.
+ */
+function portalDescentClaims(view, world, rulesSource = RULES_SOURCE) {
+  const code = stripProse(view)
+  const worldCode = stripProse(world)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+  const buildPortals = methodBody(code, '_buildPortals')
+  const setShut = methodBody(code, 'setPortalShut')
+  const setViewer = methodBody(code, 'setViewer')
+  const near = methodBody(code, '_portalNear')
+  const facing = methodBody(code, '_portalFacing')
+  const writeDebris = methodBody(code, '_writeDebris')
+  const collapseOne = methodBody(code, '_collapsePortal')
+  const makeLens = methodBody(code, 'makeLensTexture')
+  const tick = methodBody(code, 'update')
+  // Declared here rather than beside claim 10, its first use, because claim 1 reads
+  // it too. A `const` read above its own declaration is a ReferenceError, and a
+  // ReferenceError inside a claims function is a claim that fails for a reason that
+  // has nothing to do with the claim.
+  const rulesCode = stripProse(rulesSource)
+
+  // 1. THE NEAR FIELD IS ASKED FOR IN THE VIEW AND DECIDED IN THE PURE MODULE. This
+  //    is the pass-9/10/11 architecture applied to the portal: a `Math.min(8, ...)`
+  //    in the view is a second definition of a moment the pure harness tests, and
+  //    the pure harness is the only thing here that can prove a ramp is C1.
+  claim(
+    'the near field is asked of the pure module, by both helpers, and applied as a rate multiplier',
+    /const near = rules\.portalNearness\(this\._portalNear\(portal\), this\._portalFacing\(portal\)\)/.test(tick)
+      && /const rate = rules\.portalSwirlRate\(PORTAL_SWIRL_RATES\[layer\], near\)/.test(tick)
+      && /if \(!viewer\) return Infinity/.test(near)
+      && /if \(!viewer\) return -1/.test(facing)
+      && /!Number\.isFinite\(distance\) \|\| !Number\.isFinite\(facing\)\) return 0/.test(rulesCode),
+    'a nearness computed in the view is a second definition of a moment this file can test, and a null viewer that is not short-circuited is a `Math.hypot` of undefined, which is a NaN that silently holds the swirl at its own rate for the rest of the run',
+  )
+  // 2. **THE FOLD IS THE FOLD, IN BOTH HELPERS.** `worldOf` and not
+  //    `portal.position`, and the two are asserted separately because a version that
+  //    folded the distance but not the bearing produces a near field that is right
+  //    about how far and wrong about which way — the worst of the two failures,
+  //    because it still looks plausible.
+  claim(
+    'distance and bearing are both measured in the folded frame',
+    /const world = this\.worldOf\(portal\.position\)/.test(near)
+      && /const world = this\.worldOf\(portal\.position\)/.test(facing)
+      && /Math\.hypot\(world\.x - viewer\.x, world\.z - viewer\.z\)/.test(near)
+      && /const length = Math\.hypot\(dx, dz\)/.test(facing)
+      && /if \(length < 1e-6\) return -1/.test(facing)
+      && !/portal\.position\.x - viewer/.test(code),
+    'an unfolded distance is 448 m out on the far side of a seam, and a bearing with no zero-length guard is a NaN that silently stops the swirl at its own rate for ever',
+  )
+  // 3. **THE NEAR FIELD IS INTEGRATED, NOT MULTIPLIED INTO THE CLOCK.** This is
+  //    pass 3's claim restated for pass 12's form, and the negative half is the
+  //    half that matters. The bug this pass actually shipped and then fixed was
+  //    `rotation.z = t * rate` with a rate that VARIES: `t * d(rate)` is a
+  //    discontinuity, and at 143 s crossing the 8 m boundary moved the arms eighteen
+  //    radians. So the gate now forbids the product form explicitly as well as
+  //    forbidding an increment that omits `dt` — the two are the two ways this can
+  //    be wrong, and the old gate could only see one of them because the other did
+  //    not exist yet.
+  claim(
+    'the swirl integrates a rate against dt, and never multiplies a varying one by the clock',
+    /portal\.swirl\[layer\]\.rotation\.z \+= rate \* dt/.test(tick)
+      && !/portal\.swirl\[[^\]]*\]\.rotation\.z \+= (?!rate \* dt)/.test(code)
+      && !/portal\.swirl\[[^\]]*\]\.rotation\.z = t \* /.test(code),
+    'a product of the clock and a rate that varies with the player is a discontinuity of `t * d(rate)` — eighteen radians of teleport when you cross 8 m at the two-minute mark — and an increment without `dt` is a frame count rather than an animation',
+  )
+  // 4. THE DEBRIS IS ONE INSTANCED MESH PER PORTAL, sized by the cap and drawn by
+  //    the count. The `capacity`/`count` PAIR is the part that is easy to get
+  //    wrong, and the first version of this pass set them to the same number —
+  //    which is a mesh that cannot grow without a rebuild and a cap that has
+  //    stopped meaning anything, because a cap equal to the count constrains
+  //    nothing.
+  claim(
+    'the debris is one instanced mesh per portal, sized by the cap and drawn by the count',
+    /new THREE\.InstancedMesh\(\s*new THREE\.TetrahedronGeometry\(1, PORTAL_FLAKE_DETAIL\),\s*this\._materials\.portalDebris,\s*PORTAL_DEBRIS_CAPACITY,\s*\)/s.test(buildPortals)
+      && /debris\.count = rules\.PORTAL_DEBRIS_COUNT/.test(buildPortals)
+      && /debris\.frustumCulled = false/.test(buildPortals)
+      && /debris\.instanceMatrix\.setUsage\(THREE\.DynamicDrawUsage\)/.test(buildPortals)
+      && /portal\.debris\.instanceMatrix\.needsUpdate = true/.test(writeDebris)
+      && /portal\.debris\.setMatrixAt\(i, dummy\.matrix\)/.test(writeDebris)
+      && /const PORTAL_DEBRIS_CAPACITY = rules\.PORTAL_DEBRIS_MAX/.test(code)
+      && rules.PORTAL_DEBRIS_COUNT < rules.PORTAL_DEBRIS_MAX,
+    'fourteen Meshes is fourteen draw calls for fourteen specks, an InstancedMesh with no needsUpdate renders every flake at the first one\'s matrix, and a frustum-culled pool built from a geometry whose instances are all at the origin vanishes the moment the camera looks at the doorway from an angle',
+  )
+  // 5. **THE POSE IS THE PURE ONE, ON THE GATE'S OWN AXES, AND NEVER ON THE
+  //    MESH.** A flake billboarded to the camera is the thing AESTHETIC-NOTES §6
+  //    rules out, and it is also a second way for the pupil argument to be true in
+  //    one direction and false in another.
+  claim(
+    'a rock is posed by the pure module, unrotated to face the camera, from one shared scratch object',
+    /const pose = rules\.portalDebrisPose\(portal\.rocks\[i\], t\)/.test(writeDebris)
+      && /dummy\.position\.set\(pose\.x, pose\.y, 0\)/.test(writeDebris)
+      && /dummy\.rotation\.set\(0, 0, pose\.angle\)/.test(writeDebris)
+      && /dummy\.scale\.setScalar\(pose\.size\)/.test(writeDebris)
+      && /if \(!portal\.debris\.visible\) return/.test(writeDebris)
+      && /this\._debrisMatrix = new THREE\.Object3D\(\)/.test(code)
+      && !/new THREE\.Object3D\(\)/.test(writeDebris)
+      && !/applyQuaternion|camera\.quaternion/.test(writeDebris),
+    'a pose written in the view is a second definition of an orbit the pure harness tests, a billboard is a flake whose shape changes with the bearing, a per-rock `new THREE.Object3D()` is 42 allocations a frame, and composing matrices for a hidden mesh is 42 matrix composes a frame for the rest of the run',
+  )
+  // 6. **THE LENS NORMAL-BLENDS A NEAR-BLACK OVER THE PURE PROFILE.** Three claims in
+  //    one, because each of the three is a separate way to brighten the pupil: an
+  //    ADDITIVE material can only add light, a profile written in the view is a
+  //    profile nothing can prove is zero at the centre, and a hand-typed texture is
+  //    a texture whose centre is whatever the author typed.
+  claim(
+    'the lens is a normal-blended near-black over the pure profile, and it is never drawn over the rim',
+    /portalLens: this\._glow\(0x000000, \{/.test(code)
+      && !/portalLens: this\._glow\(0x000000, \{[\s\S]{0,240}?AdditiveBlending/.test(code)
+      && /map: lens,/.test(code)
+      && /depthWrite: false/.test(code)
+      && /rules\.portalLensAlpha\(ratio\)/.test(makeLens)
+      && /new THREE\.CircleGeometry\(PORTAL_CORE_RADIUS \* rules\.PORTAL_LENS\.outer, PORTAL_LENS_SEGMENTS\)/.test(buildPortals)
+      && /const PORTAL_LENS_RENDER_ORDER = 0\b/.test(code)
+      && /lens\.renderOrder = PORTAL_LENS_RENDER_ORDER/.test(buildPortals),
+    'an additive lens can only ADD light, so it can brighten the exact pixel the pass-3 pupil gate measures; a profile written in the view is a profile nothing can prove is zero at the centre; and a lens lifted above renderOrder 0 is one `renderOrder = 3` on some other feature away from being painted over the lip, which is the only thing marking where the hole is',
+  )
+  // 7. **THE COLLAPSE IS A SECOND APERTURE, NOT THE LIVE GATE.** §5.3 says a shut
+  //    portal is dark INSTANTLY and for ever, so the live gate has to be dead on
+  //    the frame the hold completes — and a collapse that animated the live gate
+  //    would be a lit hole for 0.8 s, which is the rule being a lie for exactly as
+  //    long as a player is closest to it.
+  //
+  //    The two COUNTS are the load-bearing part. Three portals write
+  //    `portal.collapse.visible` in two places — the arm in `setPortalShut` and the
+  //    kill in `_collapsePortal` — and the build's `collapse.visible = false` is a
+  //    third, on a local rather than on the record. A fourth is a second door.
+  claim(
+    'the collapse is a second aperture over a dead one, and setPortalShut is the only door to it',
+    /const collapse = new THREE\.Group\(\)/.test(buildPortals)
+      && /collapse\.visible = false/.test(buildPortals)
+      && /gate\.add\(collapse\)/.test(buildPortals)
+      && /portal\.collapse\.visible = shut/.test(setShut)
+      && /portal\.collapseAt = shut \? this\._time : null/.test(setShut)
+      // THREE writes, and all three are accounted for rather than merely counted:
+      // the arm in `setPortalShut`, the kill in `_collapsePortal`, and the wipe in
+      // `resetMotion`. The assertion is that the count is exactly those three AND
+      // that each is where it is claimed to be, because "three" on its own is a
+      // number and a fourth door would be a fourth line. `resetMotion` is pass 12's
+      // own addition and the reason the count moved from two.
+      && (code.match(/portal\.collapse\.visible = /g) ?? []).length === 3
+      && /portal\.collapse\.visible = false/.test(methodBody(code, 'resetMotion')),
+    'a collapse that animated the live gate would put a lit hole over a lit one for 0.8 s and §5.3 would be a lie for exactly as long as the player is standing at the door; and a third line that unhides the collapse is a second way for a dead portal to start turning',
+  )
+  // 8. **AND THE COLLAPSE RUNS IN A LOOP THAT IS NOT THE LIVE ONE.** The live loop
+  //    opens with `if (portal.shut) continue`, which is §5.3's inertness, so the
+  //    collapse cannot live inside it without either moving that `continue` — which
+  //    is the pass-3 gate's own assertion — or running for a live portal. Two loops
+  //    is the honest shape, and the second one is keyed on `collapseAt === null`
+  //    rather than on `shut`, because a portal that finished collapsing thirty
+  //    seconds ago is still shut and must not be animated.
+  claim(
+    'the collapse is a separate loop, keyed on collapseAt rather than on shut',
+    /for \(const portal of this\.portals\) \{\s*if \(portal\.collapseAt === null\) continue\s*this\._collapsePortal\(portal, t\)\s*\}/s.test(tick)
+      && /const elapsed = t - portal\.collapseAt/.test(collapseOne)
+      && /rules\.portalCollapse\(elapsed\)/.test(collapseOne)
+      && /if \(collapse\.scale === 0\) portal\.collapse\.visible = false/.test(collapseOne)
+      // a group scaled to zero is still drawn as a degenerate triangle at the
+      // origin, which for a portal standing in a doorway is a flicker on the road
+      && /portal\.collapse\.scale\.setScalar\(collapse\.scale\)/.test(collapseOne)
+      // ...and the spin is a product of elapsed, never an accumulator, for the
+      // reason the swirl is: a rate written onto a clock is frame-rate independent
+      && /portal\.collapse\.rotation\.z = elapsed \* collapse\.spin \* PORTAL_COLLAPSE_TWIST/.test(collapseOne),
+    'a collapse loop inside the `if (portal.shut) continue` loop is a loop that either runs for a live portal or moves that continue, and keying it on `shut` instead of `collapseAt` re-runs the 0.8 s for ever on a portal that shut half a minute ago; a zero-scaled group left visible is a degenerate triangle drawn at the world origin',
+  )
+  // 9. **THE WORLD HANDS THE VIEW AN EYE, ONCE A FRAME, FROM THE CAMERA.** Three
+  //    claims: that the wiring exists at all (without it `this.viewer` is null for
+  //    ever, the near field is 0 everywhere, and that is a feature which is
+  //    completely absent with every check in this file green); that it is the
+  //    CAMERA and not the player, because the camera carries the bob, the sway and
+  //    the shake; and that it is the camera's YAW, which is what `setViewer` turns
+  //    into the forward vector the bearing is dotted with.
+  claim(
+    'the world hands the view the eye once a frame, from the camera, before the view ticks',
+    /this\.streetView\.setViewer\(this\.camera\.position\.x, this\.camera\.position\.z, this\.camera\.rotation\.y\)/.test(worldCode)
+      && /this\.viewer\.dx = -Math\.sin\(yaw\)/.test(setViewer)
+      && /this\.viewer\.dz = -Math\.cos\(yaw\)/.test(setViewer)
+      && worldCode.indexOf('this.streetView.setViewer(') < worldCode.indexOf('this.streetView.update(dt)'),
+    'a `setViewer` nobody calls leaves the near field permanently at zero, and a near field permanently at zero is a feature no gate in the repository can see; and a view handed `player.pos` answers the BODY, which is a frame early and a third of a metre low through a chase shake',
+  )
+  // 10. AND NOTHING IN THE PASS IS UNSEEDED OR WALL-CLOCKED. D10 is the rule and
+  //     §16.5 needs each of fourteen frames re-takeable, and this pass added
+  //     geometry and an animation to the aperture — the two things most likely to
+  //     arrive with a `Math.random` in them.
+  //
+  //     The whole-file negative runs over the STRIPPED source, which is the
+  //     pass-11 lesson restated: an unstripped search for `Math.random` cannot
+  //     tell this pass's own prose describing the choice from the bug it
+  //     describes, and pass 11's version of this claim fired on pass 11's own
+  //     comment before it was fixed.
+  claim(
+    'nothing in the pass is unseeded, wall-clocked, or read from a second clock',
+    !/Math\.random/.test(code + worldCode + rulesCode)
+      && !/Date\.now|performance\.now|new Date/.test(code + worldCode + rulesCode)
+      && /hash32\(seed \+ salt \* 2654435761, index \* 31 \+ i, salt \* 7 \+ 3\)/.test(rulesCode)
+      && /rocks: rules\.portalDebrisRing\(this\.seed, index\)/.test(buildPortals),
+    'D10 is the rule and §16.5 needs each of fourteen frames reproducible twice, so a random orbit is not one un-reproducible frame but every frame of the run',
+  )
+  return claims
+}
+
+test('the descent claims are the source contracts, and every one holds', () => {
+  const claims = portalDescentClaims(STREET_VIEW_SOURCE, WORLD_SOURCE)
+  const broken = claims.filter((entry) => !entry.ok)
+  assert.deepEqual(broken, [], `${broken.map((entry) => `${entry.name} — ${entry.why}`).join(' | ')}`)
+  assert.ok(claims.length >= 10, `the descent section has ${claims.length} claims, fewer than the 10 it needs`)
+  console.log(`\n  pass-12 claims: ${claims.length} source contracts, every one holding`)
+})
+
+test('every descent claim can actually fail, and a mutation names the one it breaks', () => {
+  // TWELVE MUTATIONS, and the choice of which properties to break is the point:
+  // each one is a way this pass could have shipped a feature that exists, is pure,
+  // is deterministic, and is invisible. Pass 10 shipped a trail in no frame with no
+  // gate able to see that; pass 11 answered it with a check that projects a puff
+  // into the frame and mutates. This is the same discipline applied to four
+  // features at once.
+  const mutations = [
+    ['the near field never asked for', 'the whole feature is absent and every number in rules.js is dead code, which is a green gate over a hole',
+      'the near field is asked of the pure module, by both helpers, and applied as a rate multiplier',
+      'view', 'const near = rules.portalNearness(this._portalNear(portal), this._portalFacing(portal))', 'const near = 0'],
+    ['the near field\'s DISTANCE measured unfolded', 'the third structure gets no near field at all and the two that do look fine, so a screenshot review finds nothing to report',
+      'distance and bearing are both measured in the folded frame',
+      // TWO-LINE anchors, and the reason is pass 11's `lampDreadSeed` finding
+      // verbatim: `const world = this.worldOf(portal.position)` appears THREE times
+      // in this file, and the first is `nearestPortal`'s — §5.2's reach test. A
+      // one-line `replace` therefore mutated the hold verb's stand-off and reported
+      // "no claim broke", which is a mutation that proves nothing and looks like a
+      // pass. The `return` and the `const dx` lines are what make each unique.
+      'view', 'const world = this.worldOf(portal.position)\n    return Math.hypot(world.x - viewer.x, world.z - viewer.z)',
+      'const world = portal.position\n    return Math.hypot(world.x - viewer.x, world.z - viewer.z)'],
+    ['the near field\'s BEARING measured unfolded', 'distance right and bearing wrong is the worst of the two failures, because it still looks plausible: the swirl answers you when you are 3 m away and at an angle that has nothing to do with where you are facing',
+      'distance and bearing are both measured in the folded frame',
+      'view', 'const world = this.worldOf(portal.position)\n    const dx = world.x - viewer.x',
+      'const world = portal.position\n    const dx = world.x - viewer.x'],
+    ['the near field written as a product of the clock', '`t * rate` with a rate that VARIES is a discontinuity of `t * d(rate)`: crossing 8 m at the two-minute mark teleports the arms eighteen radians instead of speeding them up. This is the bug this pass shipped and this world check found',
+      'the swirl integrates a rate against dt, and never multiplies a varying one by the clock',
+      'view', 'portal.swirl[layer].rotation.z += rate * dt', 'portal.swirl[layer].rotation.z = t * rate'],
+    ['the swirl advanced by a frame COUNT', 'frame-rate dependence in the sense pass 3 meant, and the reason its gate forbade `+=` in the first place — it just could not tell this from a dt-scaled integral until the rate started varying',
+      'the swirl integrates a rate against dt, and never multiplies a varying one by the clock',
+      'view', 'portal.swirl[layer].rotation.z += rate * dt', 'portal.swirl[layer].rotation.z += rate'],
+    ['the debris count set to nothing', 'the mesh is built, named, stored on the portal and measured by every geometry check, and draws no flakes — the pass-3 `gate.add(disc)` mutation, wearing a ring',
+      'the debris is one instanced mesh per portal, sized by the cap and drawn by the count',
+      'view', 'debris.count = rules.PORTAL_DEBRIS_COUNT', 'debris.count = 0'],
+    ['the instance matrices never uploaded', "every one of the fourteen flakes renders at the first flake's matrix, so the ring is a single tetrahedron orbiting the hole",
+      'the debris is one instanced mesh per portal, sized by the cap and drawn by the count',
+      'view', 'portal.debris.instanceMatrix.needsUpdate = true', 'portal.debris.instanceMatrix.needsUpdate = false'],
+    ['a billboarded flake', "the flake turns to face the camera, so the ring's silhouette changes with the bearing — and a billboarded bright quad is exactly what the eye finder looks for",
+      'a rock is posed by the pure module, unrotated to face the camera, from one shared scratch object',
+      'view', 'dummy.rotation.set(0, 0, pose.angle)', 'dummy.rotation.set(0, 0, pose.angle); dummy.quaternion.copy(this.camera.quaternion)'],
+    ['an additive lens', 'an additive material can only ADD light, so this is the one change in the pass that could brighten the exact pixel the pass-3 pupil gate measures — and nothing in the pure module can see it happen',
+      'the lens is a normal-blended near-black over the pure profile, and it is never drawn over the rim',
+      'view', 'portalLens: this._glow(0x000000, {', 'portalLens: this._glow(0x000000, { blending: THREE.AdditiveBlending,'],
+    ['the lens profile reimplemented in the view', 'a second definition of a radial profile, and the only gate that can prove the centre is zero is the one on the pure function',
+      'the lens is a normal-blended near-black over the pure profile, and it is never drawn over the rim',
+      'view', 'rules.portalLensAlpha(ratio)', 'Math.max(0, 0.34 * (1 - ratio))'],
+    ['the collapse hung on the street root instead of the gate', 'the collapse is at the world origin rather than in the doorway — the pass-3 "a floating hoop instead of a hole in a shell" failure, in a new costume, and it is the ONLY mutation here that changes where a thing is drawn rather than how it is drawn',
+      'the collapse is a second aperture over a dead one, and setPortalShut is the only door to it',
+      'view', 'gate.add(collapse)', 'this.group.add(collapse)'],
+    ['the collapse keyed on `shut`', 'a portal that shut half a minute ago is still shut, so its 0.8 s collapse re-runs for ever and a dead hole keeps spinning',
+      'the collapse is a separate loop, keyed on collapseAt rather than on shut',
+      'view', 'if (portal.collapseAt === null) continue', 'if (!portal.shut) continue'],
+    ['`setViewer` wired to the body, with the yaw dropped', 'the near field answers the BODY — a frame early and a third of a metre low through a chase shake — and a view handed a yaw instead of a forward vector is a rotation somebody has to do by hand on the way in',
+      'the world hands the view the eye once a frame, from the camera, before the view ticks',
+      'world', 'this.streetView.setViewer(this.camera.position.x, this.camera.position.z, this.camera.rotation.y)',
+      'this.streetView.setViewer(this.player.pos.x, this.player.pos.z, 0)'],
+    ['an unseeded orbit', 'a random orbit is not one un-reproducible frame, it is every frame of the run, and §16.5 needs each of fourteen captured twice',
+      'nothing in the pass is unseeded, wall-clocked, or read from a second clock',
+      'rules', 'const pick = (salt) => (hash32(seed + salt * 2654435761, index * 31 + i, salt * 7 + 3) >>> 8) / 0x00ffffff',
+      'const pick = (salt) => Math.random()'],
+  ]
+  // The three sources, addressed by the tag each mutation carries. This is the same
+  // third-argument arrangement pass 11 uses for `creature.js`, and it is why two of
+  // the twelve are tagged `rules`: an unseeded orbit is a change in the PURE module,
+  // and a claims function that only ever read the view could not see it happen.
+  const sources = { view: STREET_VIEW_SOURCE, world: WORLD_SOURCE, rules: RULES_SOURCE }
+  for (const [label, why, claimName, file, from, to] of mutations) {
+    assert.ok(sources[file].includes(from), `"${label}" mutated text that is not in ${file}.js: ${from}`)
+    const broken = portalDescentClaims(
+      file === 'view' ? STREET_VIEW_SOURCE.replace(from, to) : STREET_VIEW_SOURCE,
+      file === 'world' ? WORLD_SOURCE.replace(from, to) : WORLD_SOURCE,
+      file === 'rules' ? RULES_SOURCE.replace(from, to) : RULES_SOURCE,
+    ).filter((entry) => !entry.ok)
+    assert.ok(
+      broken.some((entry) => entry.name === claimName),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${claimName}" — ${why}`,
+    )
+  }
+  assert.ok(mutations.length >= 12, `only ${mutations.length} mutations, which is fewer than this pass needs`)
+  console.log(`\n  pass-12 mutations: ${mutations.length} mutations, every one caught`)
+})
+
+test('pass 12 moved the frame without moving the four gates that measure it', () => {
+  // THE FOUR REGRESSION GUARDS, AND WHY THEY ARE HERE RATHER THAN IN THE
+  // SECTIONS THAT OWN THEM.
+  // ---------------------------------------------------------------
+  // Pass 12 added GEOMETRY to an aperture that four existing gates measure: the
+  // pupil (`swirlContrast().pupil <= 20`), the swirl's spread and its dark gaps,
+  // the eye-finder's brightness/span/area, and §16.5's lit floor. All four already
+  // have sections of their own, three with mutation harnesses, and all four run
+  // under `npm run check`.
+  //
+  // So this is deliberately NOT a fifth copy of them. It is ONE measurement that
+  // reads the same committed PNGs and reports all four numbers together, because
+  // what a fidelity pass has to demonstrate is that its features moved the frame
+  // and did not move the gates — and four gates being green separately does not
+  // tell a reader WHICH frame they moved. The margins printed at the end are the
+  // number worth reviewing: a pass that ate a third of a gate's margin is a pass
+  // that needs a reviewer, and a pass that ate none is a pass that changed nothing
+  // a human would notice.
+  const report = new URL('./benchmark/captures.json', import.meta.url)
+  assert.equal(existsSync(report), true, 'benchmark/captures.json is missing — run npm run capture')
+  const parsed = JSON.parse(readFileSync(report, 'utf8'))
+  // `entry.luma` is an OBJECT — `{lit, litPct, mean, max}` — not the number the
+  // harness printed, and `entry.minLit` is the floor. A first version of this test
+  // read `entry.luma` as a scalar and got `NaN < floor`, which is `false` for every
+  // frame at once, and then read `minLit` off `captureView()` where it does not
+  // live. Both halves are written out below because both were tried and both were
+  // wrong, and a reader who repeats either of them gets a confusing error rather
+  // than an obvious one.
+  // 1. THE PUPIL, in every frame the swirl finder resolves a portal in. This is the
+  //    gate the whole pass was written to survive: the debris is geometry IN the
+  //    aperture and the lens is a dark quad in FRONT of it, and a rock on the
+  //    pupil or a lens profile not quite zero at the centre would show up here and
+  //    nowhere else.
+  //
+  //    `portal-shutdown` is the interesting one: it stands at 2.2 m, inside both
+  //    `PORTAL_NEAR_METRES` and `streetView.portalRange`, so it is the most
+  //    near-field-saturated frame in the gallery.
+  const pupilReadings = []
+  const swirlReadings = []
+  for (const id of ['portal-located', 'portal-shutdown']) {
+    const measured = swirlContrast(readFileSync(new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)))
+    assert.equal(measured.found, true, `${id}.png resolves no portal, so the pupil cannot be read from it`)
+    assert.ok(
+      measured.pupil <= 20,
+      `pass 12 put light in the hole: ${id}.png's pupil is ${measured.pupil} against a ceiling of 20 — ${describeSwirlContrast(measured)}`,
+    )
+    // ...and the swirl's STRUCTURE on the same two frames, because the near field
+    // changed the rate a live portal turns at and the rate is what the spiral's
+    // contrast is a function of. `band.sd` is the spread inside the band and
+    // `band.p10` is the dark gap that keeps it from being a painted disc.
+    assert.ok(measured.band.sd >= 28, `${id}.png has lost its swirl structure (sd ${measured.band.sd}) — ${describeSwirlContrast(measured)}`)
+    assert.ok(measured.band.p10 <= 32, `${id}.png has no dark gaps left in the swirl (p10 ${measured.band.p10}) — ${describeSwirlContrast(measured)}`)
+    pupilReadings.push({ id, pupil: measured.pupil })
+    swirlReadings.push({ id, sd: measured.band.sd, p10: measured.band.p10 })
+  }
+  // 2. NO FALSE EYE. The debris is dark by construction and the lens is
+  //    normal-blended, so neither can manufacture a finder hit on its own — but
+  //    the eye finder is the one gate a BRIGHT new object mid-frame can trip, and
+  //    the portal frames are in the gallery too. So the finder runs on the three
+  //    creature frames for pass 2's claim (every creature still resolves an eye)
+  //    and on the two portal frames for pass 12's claim (the ring and the lens are
+  //    not one).
+  const eyes = []
+  for (const id of ['creature-stalking', 'creature-chasing', 'banish']) {
+    const measured = creatureContrast(readFileSync(new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)))
+    const eye = measured.eye
+    // The span is the BOUNDING BOX, derived here rather than read off the eye,
+    // because `png-luma.mjs` reports the box and pass 2's section derives the
+    // span from it. A second reader of a field that does not exist reads
+    // `undefined`, and `undefined <= 14` is false — so a typo in a field name
+    // fails the gate, which is the right direction, but it fails with a number
+    // that means nothing. Deriving it here is one subtraction and a legible error.
+    const spanX = eye.maxX - eye.minX
+    const spanY = eye.maxY - eye.minY
+    assert.ok(eye.mean >= EYE_MIN, `${id}.png resolves an eye at ${eye.mean.toFixed(1)}, under the ${EYE_MIN} floor`)
+    assert.ok(eye.n >= EYE_MIN_AREA, `${id}.png resolves a ${eye.n} px eye, under the ${EYE_MIN_AREA} px area floor`)
+    assert.ok(spanX <= EYE_MAX_SPAN && spanY <= EYE_MAX_SPAN, `${id}.png resolves a ${spanX}x${spanY} px eye against a ${EYE_MAX_SPAN} px ceiling`)
+    eyes.push({ id, mean: eye.mean })
+  }
+  // The two portal frames, asserted the other way round. `creatureContrast` does
+  // not return an `eye` object at all when it finds nothing — it returns
+  // `{found: false, reason}`, and there is no `eye` key to read. So the claim is
+  // `found === false` and NOT `eye.n === 0`: the first version of this line read
+  // `.eye.n` off a frame with no eye in it and threw a TypeError, which is a
+  // failure that looks like a broken harness rather than a broken frame.
+  for (const id of ['portal-located', 'portal-shutdown']) {
+    const measured = creatureContrast(readFileSync(new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)))
+    assert.equal(
+      measured.found,
+      false,
+      `${id}.png now resolves an eye (${measured.eye?.n} px at ${measured.eye?.mean.toFixed(1)} luma) — a 14-rock ring and a lensing overlay have become a creature`,
+    )
+  }
+  // 3. AND THE LIT FLOOR, on all fourteen, against the number the capture module
+  //    owns. The lens is the only element this pass added that can take light OUT
+  //    of a frame, and it takes it off the shell wall behind a portal — which is
+  //    `portal-located`'s background, so that is the one frame whose floor could
+  //    move. `title` carries its own lower floor and is checked against that.
+  // ...and the floor comes off the REPORT rather than off the view definition,
+  // which is the right way round and not an accident of where the fields happen to
+  // live. `capture.captureView(id)` returns `{id, label, viewport, steps}` — there
+  // is no `minLit` on it, because a floor is a property of what was MEASURED
+  // (the PNG on disk, at 1280x720, in this run) and not of what was ASKED FOR
+  // (a list of steps). The report carries `minLit` because that is where the
+  // harness resolved the view's declared floor against the frame it got. Reading
+  // it from the report means a view that declares a floor and a run that measured
+  // against a different one cannot disagree without this test noticing.
+  const litReadings = []
+  for (const id of capture.CAPTURE_IDS) {
+    const entry = parsed.captures.find((row) => row.id === id)
+    assert.ok(entry, `${id} is not in the capture report`)
+    const lit = entry.luma.lit
+    const floor = entry.minLit
+    assert.ok(
+      Number.isFinite(floor),
+      `${id}.png has no floor on its own report row, so "is it lit enough" has nothing to answer against`,
+    )
+    assert.ok(lit >= floor, `${id}.png is ${(lit * 100).toFixed(2)}% lit against its own ${(floor * 100).toFixed(2)}% floor — a darker frame than the pass before it`)
+    litReadings.push({ id, lit, floor, margin: lit / floor })
+  }
+  const tightest = litReadings.reduce((a, b) => (a.margin < b.margin ? a : b))
+  const worstPupil = pupilReadings.reduce((a, b) => (a.pupil > b.pupil ? a : b))
+  const tightestEye = eyes.reduce((a, b) => (a.mean < b.mean ? a : b))
+  const tightestSwirl = swirlReadings.reduce((a, b) => (a.sd < b.sd ? a : b))
+  console.log(
+    `\n  pass-12 regression margins — pupil ${worstPupil.pupil}/20 (${worstPupil.id}), ` +
+      `swirl sd ${tightestSwirl.sd}/28 (${tightestSwirl.id}), ` +
+      `eye ${tightestEye.mean}/${EYE_MIN} (${tightestEye.id}), ` +
+      `lit ${(tightest.lit * 100).toFixed(2)}%/${(tightest.floor * 100).toFixed(2)}% (${tightest.id})`,
+  )
+})
+
+// PASS12_SECTION
 
 // ---------------------------------------------------------------------------
 // report

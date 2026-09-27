@@ -91,6 +91,15 @@ import { OCCLUDER_KINDS } from './creature.js'
 // twice in the same frame (once to build, once to measure) and has to give the
 // same answer. `hash32` is the stateless half of the same mix.
 import { flickerAt, hash32, streamAt } from './hash.js'
+// ITERATION 2, PASS 12. The portal's own motion rules — the near field, the debris
+// orbits, the collapse envelope and the lensing profile — are pure and live in
+// `rules.js`, which is the same split passes 9/10/11 made for the creature. The
+// reason it is not the other way round is that this file imports Three.js, so a
+// gate cannot call anything in it: a number decided here is a number only a
+// source regex can see. `rules.js` is imported whole because a namespace is the
+// file's own convention (`creature.js` is imported by name only because it
+// exports one class and nothing else).
+import * as rules from './rules.js'
 
 // ---------------------------------------------------------------------------
 // palette (§12.3) — extended from v1's PALETTE, which lived in world.js
@@ -717,6 +726,139 @@ const PORTAL_GATE_OFFSET = Object.freeze([1.25, 0, 0.62])
  * phone box and becomes a disc with a booth behind it.
  */
 const PORTAL_GATE_SCALE = Object.freeze([1, 1, 0.68])
+
+// ---------------------------------------------------------------------------
+// the descent — iteration 2, pass 12
+//
+// FOUR NUMBERS AND THREE OBJECTS, and the split is the point.
+//
+// Every DECISION this pass makes — how near you must be, what a rock's orbit is,
+// how long a collapse lasts, how dark the lensing overlay gets — lives in
+// `rules.js`, which is pure, which `verify.mjs` imports, and which is therefore
+// testable by CALLING it. What is left here is geometry: how big the ring's
+// mesh is, how the collapse group is parented, and which of the two share a
+// buffer. `verify.mjs` asserts that this file reads those numbers and does not
+// redeclare any of them, so the seam is a gate rather than a habit.
+//
+// The three objects are the DEBRIS (one InstancedMesh per portal), the LENS (one
+// plane per portal, behind the rim in draw order and in front of the disc), and
+// the COLLAPSE (one group per portal, hidden until a shutdown arms it). All
+// three are children of the gate, so they inherit its quarter-turn, its offset
+// and its per-structure scale, and none of those is re-derived per structure.
+// ---------------------------------------------------------------------------
+
+/**
+ * The debris flake's own size, and why it is NOT `PORTAL_DEBRIS_SIZE`.
+ *
+ * The pure module's 0.018-0.040 m is a per-ROCK range and this is a per-MESH one.
+ * A `TetrahedronGeometry` is built once at its unit size and each instance is
+ * scaled into the rock's own range, so the geometry carries a number the ring
+ * already owns and the two cannot drift. It is a regular tetrahedron at detail
+ * 0 — four faces, no subdivision — because a flake is 5-11 px on screen and
+ * anything with more than four faces is four more faces nobody will ever see.
+ */
+const PORTAL_FLAKE_DETAIL = 0
+
+/**
+ * The debris ring's mesh, one per portal, and the ONE number that is a view
+ * decision rather than a rule.
+ *
+ * BEFORE pass 12: no rock existed, so this is a count read from the pure module
+ * with no local floor of its own. AFTER it is `rules.PORTAL_DEBRIS_COUNT`, and
+ * the local assertion is the point: an `InstancedMesh` allocates its matrix
+ * buffer at construction, so a count written here and a count written in
+ * `rules.js` are two counts, and the one that allocates has to be the one that
+ * cannot exceed the memory. `verify.mjs` asserts the two agree and that the
+ * count is at or under `PORTAL_DEBRIS_MAX`.
+ */
+const PORTAL_DEBRIS_CAPACITY = rules.PORTAL_DEBRIS_MAX
+
+/**
+ * The lensing overlay's plane, one per portal.
+ *
+ * BEFORE n/a. AFTER a `CircleGeometry` at `PORTAL_LENS.outer` core radii, which
+ * is 0.965 m on the 0.72 m disc — "just larger than the disc", so the darkening
+ * is a 24 cm annulus of BACKGROUND around the lip and not a disc laid over the
+ * hole. The alpha comes from `rules.portalLensAlpha` sampled per texel, which is
+ * the whole safety argument in one line of wiring: the function is 0 at the
+ * centre, so the hole is not darkened by one level, and it is 0 at the outer
+ * edge, so the quad does not end on a visible seam.
+ *
+ * A CIRCLE and not a plane, and the reason is the fade. A plane's corners are at
+ * 1.41x its half-width, so a gradient that has reached zero at the disc's radius
+ * is already zero well before the corners — the shape costs nothing and the
+ * corners are never drawn.
+ */
+const PORTAL_LENS_SEGMENTS = 48
+
+/**
+ * The lensing overlay's draw order, and why it is a number rather than nothing.
+ *
+ * BEFORE n/a. AFTER 0, written out. `renderOrder` defaults to 0 and the creature's
+ * eye is at 1 (pass 6), so leaving the lens at the default would put it in the same
+ * bucket as the aperture and rely on the depth sort to keep the two apart. They
+ * are separated by 0.03 m of gate-local z, which the depth buffer resolves, so the
+ * default would in fact work — and "would in fact work" is exactly the state
+ * pass 6's review found the eye gate in before it wrote the number down. The gate
+ * in verify-world.mjs asserts the lens is drawn at or below the swirl's, so a
+ * future feature that lifts it has to say why it is allowed over the hole.
+ */
+const PORTAL_LENS_RENDER_ORDER = 0
+
+/**
+ * Where the lens sits in the gate's own Z, metres, NEGATIVE.
+ *
+ * BEFORE this constant the lens was at `z = 0` — in front of the swirl layers
+ * (-0.008, -0.016) and level with the rim's tube, which spans -0.028 to +0.028.
+ *
+ * THAT BROKE A PASS-3 GATE, and the gate is right and the placement was wrong. §16.1's
+ * raycast check puts a camera on the §16.5.5 stand-off and asserts the FIRST thing
+ * it hits is the gate and not the shell in front of it. A 0.965 m disc at z = 0 is
+ * a bigger, nearer, solid target than a 0.72 m disc at -0.03, so the lens became the
+ * first hit and the check reported that "the shell is in front of its own opening".
+ * Nothing about the lens's appearance changed; what changed is that a transparent
+ * quad was standing in a doorway where a geometry test could see it.
+ *
+ * -0.034 is therefore `PORTAL_CORE_INSET` plus 4 mm: behind the hole, behind both
+ * swirl layers, and still in front of the shell wall the annulus is darkening. And
+ * behind the swirl is the RIGHT side of that, independently of the raycast — the
+ * lens's alpha is 0 across the whole disc, so it does not dim the swirl, but an
+ * element that does not dim it and can still be dimmed by a later retune is one
+ * refactor away from doing so, and depth order is free to get right now.
+ */
+const PORTAL_LENS_DEPTH = -0.034
+
+/**
+ * The collapse's twist, rad/s at a spin multiplier of 1.
+ *
+ * BEFORE n/a. AFTER 0.9, and the number that makes `PORTAL_COLLAPSE.spin`'s 7
+ * mean something: the aperture is turning at 0.9 x 7 = 6.3 rad/s by the end of
+ * the collapse, which is a little under one full turn in the last third of a
+ * second. That is FAST — deliberately, and for the same reason the 7 is: this is
+ * the only motion in the game that is allowed to read as machinery, because it
+ * lasts 0.8 s and ends with the hole gone.
+ *
+ * It is a separate constant rather than a literal at the call site for the reason
+ * pass 7 moved every seeded value off its call site: a number written into a
+ * rotation is a number two people will change differently, and this one has to be
+ * read together with the 7 it multiplies.
+ */
+const PORTAL_COLLAPSE_TWIST = 0.9
+
+/**
+ * The lensing texture's resolution, texels per side.
+ *
+ * BEFORE n/a. AFTER 96. It is a smooth radial ramp with no features in it, so it
+ * is the one texture in the file where resolution is nearly free to raise and
+ * nearly free to lose: at 0.965 m across and about 550 px on the §16.5.5 frame,
+ * 96 texels is 5.7 texels per 30 screen pixels, and a bilinear step across a
+ * 5.7-texel ramp is invisible. It is per-pixel `createImageData` like every other
+ * texture here for the reason `makeSwirlTexture` gives: the headless stub keeps
+ * `putImageData` and the gate can read the alpha ramp straight back off the
+ * built texture, which is what lets `verify-world.mjs` measure the pupil
+ * contribution of the overlay on the REAL material rather than on a comment.
+ */
+const PORTAL_LENS_SIZE = 96
 
 /**
  * The top face of a lot's yard slab, metres. `pools.yards.place` is called with
@@ -2616,6 +2758,99 @@ function makeSwirlTexture({
 }
 
 /**
+ * `makeLensTexture` — the gravitational-lensing hint, as an alpha ramp
+ * (iteration 2, pass 12).
+ *
+ * WHAT IT IS NOT, and the order matters because the first version of this pass
+ * was going to be the wrong thing. It is not a refraction, not a displaced
+ * background, and not a second copy of the scene drawn through a shader. It is
+ * ONE quad, a little larger than the disc, painted with a radial alpha ramp in
+ * near-black, normal-blended, which darkens the background in a band around the
+ * lip. That is the whole cheat, and the brief asks for it by name ("no real
+ * refraction").
+ *
+ * WHY A CHEAP VERSION IS THE RIGHT ONE HERE rather than a compromise. Real
+ * lensing would need the background sampled at a deflected offset, which is a
+ * second render pass, a second set of materials, and a different silhouette for
+ * every pixel of sky — and §12.2's rule is that the portal is the only cold light
+ * in the game, so a *refracting* disc would bend the sodium grid around itself
+ * and the one warm thing in the frame would start smearing through a cyan
+ * doorway. The darkening says the same thing ("something here is pulling the
+ * light") for one transparent quad.
+ *
+ * THE ALPHA IS `rules.portalLensAlpha` SAMPLED, not reimplemented, and that is the
+ * most important line in the function. The pass-3 pupil gate reads the luma at the
+ * centre of the rim and requires it to stay at or under 20, and the reason this
+ * overlay cannot break it is that the profile it samples is EXACTLY ZERO at the
+ * centre. A second copy of the ramp here would be a second definition of where
+ * the darkening starts, and the day somebody widened it to 0.2 the pupil would
+ * take a one-level cut and no gate would have said anything.
+ *
+ * White in RGB and the ramp in alpha, for the reason `makeSwirlTexture` gives:
+ * the material's own colour is the darkness, so the texture is a profile and not
+ * a picture, and the two can be reasoned about separately.
+ *
+ * @returns {THREE.CanvasTexture}
+ */
+function makeLensTexture() {
+  const size = PORTAL_LENS_SIZE
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const image = ctx.createImageData(size, size)
+  const data = image.data
+  const half = (size - 1) / 2
+  // THE DENOMINATOR IS THE QUAD'S RADIUS, and getting that wrong is what the first
+  // version of this function did, with a consequence that is worth writing down.
+  //
+  // `portalLensAlpha`'s parameter is a fraction of the CORE radius, and the quad is
+  // `PORTAL_LENS.outer` (1.34) core radii across. So a texel at offset `d` from the
+  // centre sits at core-ratio `d / half * 1.34`, and the profile has to be sampled
+  // at THAT. The first version divided by `half` alone, which makes the largest
+  // ratio anywhere on the canvas exactly 1.0 — the LIP. Everything the lens exists
+  // to do, which is darken the background between ratio 1.0 and 1.34, was therefore
+  // sampled at no texel at all along the axes, and only the four CORNERS of the
+  // square ever reached into the annulus. The feature was four faint corner
+  // patches.
+  //
+  // The world check found it by reading the built texture and finding a fully
+  // transparent column through the centre: alpha exists in the buffer, but not
+  // anywhere along the axes, and "the deepest row is near the rim" is a check no
+  // point sample at the centre can make.
+  //
+  // THE DIRECTION OF THAT FACTOR IS THE THIRD VERSION OF THIS LINE, and the two
+  // before it were both wrong in opposite directions. `CircleGeometry` maps its
+  // RIM to the edge of the texture square — its UVs are `(x / radius + 1) / 2` — so
+  // a texel at offset `d` from the centre of a quad of `PORTAL_LENS.outer` core
+  // radii sits at core-ratio `d * outer / half`, which is 1.34 at the edge and 1.0
+  // (the lip) at `half / outer`. The profile therefore has to be sampled with a
+  // MULTIPLY by `outer / half`; the version before this one divided by it, which put
+  // the lip at the edge of the canvas and the crest off the canvas entirely, and
+  // the version before THAT divided by nothing, which did the same thing by a
+  // different route. Two wrong answers, one correct one, and a check that reads
+  // the built bytes rather than the formula is what distinguishes them.
+  const scale = rules.PORTAL_LENS.outer / half
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const ratio = Math.hypot(x - half, y - half) * scale
+      const i = (y * size + x) * 4
+      data[i] = 255
+      data[i + 1] = 255
+      data[i + 2] = 255
+      // The clamp is `portalLensAlpha`'s own bound restated as a byte, and a byte
+      // cannot be negative — the profile is a function of a radius and a radius is
+      // never negative, so this is defensive rather than load-bearing.
+      data[i + 3] = Math.round(Math.min(1, Math.max(0, rules.portalLensAlpha(ratio))) * 255)
+    }
+  }
+  ctx.putImageData(image, 0, 0)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
+/**
  * `makePosterTexture` — a fly-poster, and the torn variant, as ONE texture with an
  * alpha channel rather than as two.
  *
@@ -3654,6 +3889,26 @@ export class StreetView {
     this.lotParts = []
     this._time = 0
 
+    // ITERATION 2, PASS 12 — the near field needs to know where the viewer is, and
+    // the view has no camera: `world.js` owns the `PerspectiveCamera` and the
+    // player's yaw, and neither of those is a thing this file has ever been handed.
+    // So the world hands it a plain record instead, once per frame, and this file
+    // reads it. `null` until then, and a null viewer is nearness 0 — the hole turns
+    // at its own rate, which is what a title screen and a headless test both want.
+    //
+    // The forward vector is stored PRE-ROTATED (`dx`, `dz`, already unit) rather
+    // than as a yaw, because the two consumers here (`_portalNear`'s sibling
+    // `_portalFacing`) want a dot product and a dot product against a yaw is a
+    // cosine in everyone's way.
+    this.viewer = null
+    // The two per-frame scratch objects, allocated ONCE. `_writeDebris` composes
+    // 42 matrices a frame and `_collapsePortal` runs for every dying portal, and
+    // `new THREE.Object3D()` / `new THREE.Color()` inside either would be the only
+    // allocations in a method that has none — which is the sort of thing that shows
+    // up as a GC hitch on exactly the frame a player is holding a key down.
+    this._debrisMatrix = new THREE.Object3D()
+    this._deadCore = new THREE.Color(PALETTE.portalCoreDead)
+
     // ITERATION 2, PASS 6. The wire's width is a SCREEN-SPACE quantity, so the
     // shader has to be told how many pixels the buffer has. It is the DEVICE
     // buffer, not the CSS one: `world.js` caps the pixel ratio at 1.5, so a
@@ -3751,6 +4006,12 @@ export class StreetView {
     // waiting for a hot reload to notice.
     const swirl = makeSwirlTexture({ seed: SURFACE_SEEDS.swirl })
     this.textures.push(swirl)
+    // ITERATION 2, PASS 12. The lensing ramp is registered here for the reason the
+    // swirl is: it is built by hand, it does not go through `_texture`, and a
+    // sixth unregistered texture would survive `dispose()` and leak a canvas per
+    // mount — which §15's teardown check counts and would fail.
+    const lens = makeLensTexture()
+    this.textures.push(lens)
     return {
       asphalt: this._material({ color: PALETTE.asphalt, map: asphalt }),
       sidewalk: this._material({ color: PALETTE.sidewalk, map: sidewalk }),
@@ -3851,6 +4112,46 @@ export class StreetView {
       // another, which is the whole reason there are two.
       swirl: this._glow(PALETTE.portal, {
         map: swirl,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+      // -----------------------------------------------------------------------
+      // ITERATION 2, PASS 12 — the descent
+      //
+      // Three materials, and each one is the OPPOSITE of the two above it in the
+      // way that matters for the pass-3 pupil gate.
+      //
+      // `portalLens` NORMAL-blends a near-black over the background. That is the
+      // safety property and not a stylistic choice: an additive material can only
+      // add light, so an additive lens could brighten the exact pixel the pupil
+      // gate measures, and a normal-blended dark one can only subtract. The gate
+      // that proves it is in verify.mjs and it reads `blending` off this line.
+      //
+      // `portalDebris` is a LIT material and the only one of the three, because the
+      // brief asks for rocks that "catch the rim light" and `_glow` is
+      // `MeshBasicMaterial` — unlit, which cannot catch anything. The portal's own
+      // PointLight is the light they catch, which is why the debris has to be
+      // inside the gate's parent rather than out in the world: it inherits the
+      // gate's transform and the light is 1.5 m below the lot at the root.
+      //
+      // `portalFlash` is additive, and that is the ONE place this pass adds light
+      // to a portal. It is only ever visible on the collapse group's core disc
+      // during the 0.18 s around `PORTAL_COLLAPSE.flash`, at which point the disc
+      // behind it has already begun to close, and it is a CLONE per portal (see
+      // `_buildPortals`) so three simultaneous collapses cannot share one opacity.
+      portalLens: this._glow(0x000000, {
+        map: lens,
+        transparent: true,
+        depthWrite: false,
+        fog: false,
+      }),
+      portalDebris: this._material({
+        color: rules.PORTAL_DEBRIS_COLOUR,
+        roughness: 0.92,
+        metalness: 0.05,
+      }),
+      portalFlash: this._glow(PALETTE.portal, {
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
@@ -6410,6 +6711,99 @@ export class StreetView {
         gate.add(mesh)
         return mesh
       })
+
+      // ---------------------------------------------------------------------
+      // ITERATION 2, PASS 12 — the descent. Three objects, all children of the
+      // gate so they inherit its quarter-turn, its offset and its per-structure
+      // scale, and none of those is re-derived here. This is the same sentence the
+      // pass-3 block above makes about "a future fourth piece of the opening",
+      // and it has now been taken up three times.
+      // ---------------------------------------------------------------------
+
+      // (a) THE LENS — the lensing hint. It sits BEHIND the disc and behind both
+      // swirl layers (`PORTAL_LENS_DEPTH`, -0.034) and the position is the reason,
+      // not an accident. The lens is 1.34 core radii across and the disc is 1.0, so
+      // the 24 cm of the lens that lies OUTSIDE the disc is the annulus the brief
+      // asks to be darkened — and that annulus is exactly the background visible
+      // around the lip. The part of the lens that overlaps the disc is where
+      // `portalLensAlpha` is 0 (it is 0 for every ratio under 1.0, and the disc's
+      // own radius is 1.0), so the hole is not darkened at all and the pass-3 pupil
+      // gate cannot see this object.
+      //
+      // BEHIND THE SWIRL, and that is a second decision rather than a restatement of
+      // the first. `PORTAL_LENS_DEPTH` has its own docblock and the short version is
+      // that a transparent quad standing in front of the brightest thing in the
+      // aperture is a refactor away from dimming it, and depth order costs nothing
+      // to get right now. It is also what keeps §16.1's raycast check green: at
+      // z = 0 the lens was a larger and nearer solid target than the disc and became
+      // the first thing a stand-off camera hit.
+      //
+      // `renderOrder` is written out rather than left at 0 for the same reason
+      // pass 6 lifted the creature's eye to 1: a transparent element with no
+      // explicit order is one `renderOrder = 3` on some other feature away from
+      // being drawn over the hole.
+      const lens = new THREE.Mesh(
+        new THREE.CircleGeometry(PORTAL_CORE_RADIUS * rules.PORTAL_LENS.outer, PORTAL_LENS_SEGMENTS),
+        this._materials.portalLens,
+      )
+      lens.name = `portal-lens-${id}`
+      lens.position.z = PORTAL_LENS_DEPTH
+      lens.renderOrder = PORTAL_LENS_RENDER_ORDER
+      gate.add(lens)
+
+      // (b) THE DEBRIS — fourteen dark flakes on deterministic orbits, one
+      // `InstancedMesh` per portal. One mesh and not fourteen is the whole cost
+      // claim: an `InstancedMesh` is one draw call whatever is in it, which is the
+      // same argument pass 5 made for the houses and pass 10 had to make again for
+      // the trail. `count` is set from the pure module's own count so a rock is
+      // never in the table and not in the buffer.
+      //
+      // `frustumCulled = false` for the reason the wire and the pools set it: the
+      // ring's bounding sphere is computed once at construction from a geometry
+      // whose instances are all at the origin, so a culled instance pool is a
+      // pool that vanishes when the camera looks at the doorway from an angle.
+      const debris = new THREE.InstancedMesh(
+        new THREE.TetrahedronGeometry(1, PORTAL_FLAKE_DETAIL),
+        this._materials.portalDebris,
+        PORTAL_DEBRIS_CAPACITY,
+      )
+      debris.name = `portal-debris-${id}`
+      debris.count = rules.PORTAL_DEBRIS_COUNT
+      debris.frustumCulled = false
+      debris.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      gate.add(debris)
+
+      // (c) THE COLLAPSE — a group holding a COPY of the aperture, hidden until a
+      // shutdown arms it. A copy and not the gate itself, and that is the single
+      // most important structural decision in the pass: §5.3's rule is that a shut
+      // portal is dark INSTANTLY and for ever, so the live gate has to be dead on
+      // the frame the hold completes (and `verify-world.mjs` asserts the live
+      // material and the swirl's invisibility on that exact frame). The 0.8 s
+      // animation therefore cannot be the live gate, or the rule would be a lie
+      // for eight tenths of a second.
+      //
+      // So the collapse is a second aperture that is shown for 0.8 s, scaled to
+      // nothing, and hidden again — and the live gate underneath it is already
+      // dark, so what the player sees is a bright hole closing over a dead one.
+      // `flash` is a CLONE of the shared material because its opacity is written
+      // every frame and three portals cannot share one.
+      const collapse = new THREE.Group()
+      collapse.name = `portal-collapse-${id}`
+      const collapseCore = new THREE.Mesh(
+        new THREE.CircleGeometry(PORTAL_CORE_RADIUS, 24),
+        this._materials.portalCore.clone(),
+      )
+      collapseCore.name = `portal-collapse-core-${id}`
+      const collapseFlash = new THREE.Mesh(
+        new THREE.CircleGeometry(PORTAL_CORE_RADIUS, 24),
+        this._materials.portalFlash.clone(),
+      )
+      collapseFlash.name = `portal-collapse-flash-${id}`
+      collapseFlash.position.z = -0.004
+      collapse.add(collapseCore, collapseFlash)
+      collapse.visible = false
+      gate.add(collapse)
+
       root.add(gate)
 
       const light = new THREE.PointLight(PALETTE.portal, 9, 26, 2)
@@ -6462,6 +6856,30 @@ export class StreetView {
         rim,
         swirl,
         gateScale: PORTAL_GATE_SCALE[index],
+        // PASS 12. The three new children of the gate, on the record for the same
+        // reason the four above are: a check, a capture or a future §5.3 has to be
+        // able to reach them without walking the scene graph, and the pass-3
+        // section's own first mutation (`gate.add(disc)` deleted, every geometry
+        // check green) is the proof that "reachable from the record" and "actually
+        // in the world" are two different claims.
+        lens,
+        debris,
+        collapse,
+        collapseCore,
+        collapseFlash,
+        // The rock table, built ONCE at construction and never rebuilt. It is a
+        // pure function of (seed, index) so it could be recomputed every frame, and
+        // it is not, for the reason the gate's `gateScale` is kept on the record:
+        // the render path reads a value rather than re-deriving one, and the two
+        // ways of getting it wrong are a per-frame allocation and a per-frame
+        // disagreement.
+        rocks: rules.portalDebrisRing(this.seed, index),
+        // The collapse clock: null while nothing is collapsing, and a number of
+        // seconds once `setPortalShut` has armed it. NULL rather than 0 because
+        // "0 s into a collapse" and "not collapsing" are different states — the
+        // first draws a full-size bright aperture, the second draws nothing — and
+        // a zero-initialised field would make them the same value.
+        collapseAt: null,
         light,
         apron,
         facing,
@@ -6929,7 +7347,91 @@ export class StreetView {
     // shut portal that kept a cyan pool on the ground would be advertising an
     // objective the run has already spent
     portal.apron.visible = !shut
+    // ITERATION 2, PASS 12 — arm the collapse, and the three new children with it.
+    //
+    // THE ORDER OF THESE FOUR LINES IS THE PASS. `shut` first (so anything that
+    // reads the record this frame sees the truth), then the two materials and the
+    // swirl (so the live gate is dead and inert on THIS frame, which is §5.3's
+    // promise and which the world check reads on the exact frame the hold
+    // completes), and only then the collapse, which is a *second* aperture drawn
+    // over a dead one for 0.8 s. Arming the collapse before the materials would
+    // put a lit hole over a lit hole for one frame, and nothing would have caught
+    // it except a screenshot nobody re-examined.
+    //
+    // The lens and the debris go out with everything else, and the reason is §5.3's
+    // wording rather than taste: a dead portal is a cold dim inert disc, and a
+    // ring of lit flakes orbiting a dead hole is neither cold nor inert. They are
+    // also the only two things in the aperture that are BRIGHT, so leaving them up
+    // would leave the shutdown visibly unfinished for ever.
+    portal.lens.visible = !shut
+    portal.debris.visible = !shut
+    // `collapseAt` is stamped from `this._time` and not from 0, so the animation is
+    // a function of the view's own clock and a capture that steps to a given time
+    // gets a given frame — the same contract the canal shimmer and the swirl
+    // already keep. Un-shutting resets it to null rather than to 0, for the reason
+    // the field is null-initialised: the two are different states.
+    portal.collapseAt = shut ? this._time : null
+    portal.collapse.visible = shut
     return true
+  }
+
+  /**
+   * `resetMotion` — put every clock-driven transform back to zero.
+   *
+   * §9.1's loop wipe is the place run state goes, and the swirl's accumulated
+   * angle is run state: it is the integral of a rate over everything that has
+   * happened since the view was built, so a portal photographed in the third view
+   * of a capture session and the same portal photographed in the first are at
+   * different rotations for no reason a player could name.
+   *
+   * **PASS 12 IS WHY THIS METHOD EXISTS, and it is worth being precise about what
+   * it fixes and what it does not.** Before this pass the swirl's angle was
+   * `t * rate` — a pure function of the view's clock, so it was already
+   * history-dependent, and §16.5's re-take property was already only true for a
+   * session that ran the views in the same order. After this pass it is an
+   * INTEGRAL, which has the same property and a worse one: an integral is
+   * unbounded, so a long session drifts in the last digits of a double and the
+   * drift is not the same on two machines that took different numbers of frames.
+   * Resetting on wipe bounds it to one loop, which is the only span anybody
+   * photographs.
+   *
+   * WHAT IT DELIBERATELY DOES NOT RESET is `this._time`. The sodium flicker, the
+   * vending ballast and the canal shimmer are all functions of it, and pass 11's
+   * review already recorded the consequence of that being wall-clock-dependent —
+   * a lamp in a capture landing on whichever tick the shutter caught. Moving that
+   * is a capture-harness change with a whole gallery to re-derive behind it, and
+   * it is recorded as a pass of its own rather than smuggled in here. This method
+   * resets the things THIS pass made unbounded, which is the honest scope.
+   *
+   * @returns {void}
+   */
+  resetMotion() {
+    for (const portal of this.portals) {
+      for (const layer of portal.swirl) layer.rotation.z = 0
+      portal.collapse.rotation.z = 0
+      portal.collapse.scale.setScalar(1)
+      // ...and the collapse clock goes back to null, not to zero, for the reason
+      // the field is null-initialised: "0 s into a collapse" and "not collapsing"
+      // draw different things, and a loop wipe must not leave the second looking
+      // like the first. The GROUP goes down with it, because `scale.setScalar(1)`
+      // on its own would put a full-size bright aperture back into a doorway a
+      // wipe had just emptied — the group has two ways to be off and both are used.
+      portal.collapseAt = null
+      portal.collapse.visible = false
+      // AND THE TWO PER-FRAME MATERIAL WRITES GO BACK TO THEIR BUILT VALUES. Both
+      // of them are run state for the same reason the angle is — `_collapsePortal`
+      // writes a colour and an opacity every frame it runs, and neither is ever put
+      // back. The world check found this by comparing the collapse core's colour
+      // against the two materials it is supposed to be between and getting a value
+      // that was neither: a run that had collapsed a portal in an earlier check
+      // left the next run's collapse core half-way to the dead colour, so the
+      // first frame of the NEXT collapse was already a fifth of the way shut in
+      // colour while being at full size in scale. An animation that inherits its
+      // start from whatever the last one ended on is not an animation.
+      portal.collapseCore.material.color.setHex(PALETTE.portalCore)
+      portal.collapseFlash.material.opacity = 0
+      this._writeDebris(portal, this._time)
+    }
   }
 
   setHammerTaken(taken = true) {
@@ -6973,6 +7475,194 @@ export class StreetView {
   }
 
   /**
+   * `setViewer` — where the eye is and which way it is looking, once a frame.
+   *
+   * A method rather than a constructor argument, and that is the whole of the
+   * contract: the eye MOVES. Handing the view a camera at construction would
+   * freeze the near field at wherever the player spawned, and the effect this
+   * pass adds — arms that turn faster when you are standing at them — is
+   * precisely an effect that is wrong at every other moment. `world.js` owns the
+   * `PerspectiveCamera` and the yaw; neither has ever been handed to this file,
+   * so the world hands the two NUMBERS this file needs instead of the object.
+   *
+   * WHY THE FORWARD VECTOR AND NOT A YAW, again: `_portalFacing` needs a dot
+   * product against a direction in the same frame as the folded portal position,
+   * and `root.rotation.y` has already been applied to the scene graph but not to
+   * anything stored. A yaw is the one quantity in this pair that would have to be
+   * rotated by hand on the way in, and a hand-rotation that is forgotten is a
+   * near field that works on one of the three structures.
+   *
+   * THE OBJECT IS REUSED, not reallocated. This is called once a frame for the
+   * whole run, and a fresh `{x, z, dx, dz}` literal every frame is 60 short-lived
+   * objects a second in the one method that exists so the render path can stop
+   * allocating. The fields are written in place and the same object is handed
+   * back, so a caller that stashed a reference sees the current values.
+   *
+   * Non-finite inputs fall back to the last good frame rather than to a NaN
+   * position, for the reason `portalNearness` is null-safe: a bad number must
+   * leave the hole looking like a hole, not poison `_portalNear` with a
+   * `Math.hypot` of NaN and silently spin it at its own rate for ever.
+   *
+   * @param {number} x eye position, unwrapped world metres
+   * @param {number} z eye position, unwrapped world metres
+   * @param {number} yaw the camera's yaw, radians, three.js `YXZ`
+   * @returns {void}
+   */
+  setViewer(x, z, yaw) {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(yaw)) return
+    if (this.viewer === null) this.viewer = { x: 0, z: 0, dx: 0, dz: -1 }
+    this.viewer.x = x
+    this.viewer.z = z
+    // The camera's forward in XZ. `player.forwardXZ()`'s convention, restated
+    // rather than imported: `player.js` is a pure module this file does not
+    // depend on, and the one-line duplication is smaller than the dependency
+    // and than a comment about the dependency. `verify-world.mjs` asserts the two
+    // agree, so the duplication cannot drift without failing a gate.
+    this.viewer.dx = -Math.sin(yaw)
+    this.viewer.dz = -Math.cos(yaw)
+  }
+
+  /**
+   * `_portalNear` — how far the viewer is from one portal, in the FOLDED frame.
+   *
+   * `worldOf` and not `portal.position`, for the reason `nearestPortal` folds: the
+   * portal record holds CANONICAL metres and the player holds unwrapped ones, so a
+   * portal 448 m away around the torus is the portal you are standing next to.
+   * The same fold and the same helper, and the reason a portal's near field cannot
+   * go off when the player crosses a seam.
+   *
+   * @param {object} portal a portal record
+   * @returns {number} metres, or Infinity when there is no viewer
+   */
+  _portalNear(portal) {
+    const viewer = this.viewer
+    if (!viewer) return Infinity
+    const world = this.worldOf(portal.position)
+    return Math.hypot(world.x - viewer.x, world.z - viewer.z)
+  }
+
+  /**
+   * `_portalFacing` — how squarely the viewer is looking at one portal, -1..1.
+   *
+   * The dot of the viewer's forward vector with the direction from the viewer to
+   * the gate. It is a DOT and not a yaw difference because the two quantities live
+   * in different frames — the viewer's forward is already rotated by
+   * `root.rotation.y`, and the gate's axis is stored as a world-space unit vector
+   * for the reason `nearestPortal`'s stand-off comment gives. Rotating one into the
+   * other by hand is the step that gets forgotten, and forgetting it produces a
+   * near field that works on one of the three structures.
+   *
+   * The zero-length case returns -1 rather than 0: standing exactly on the gate's
+   * axis with a zero-length forward vector is not a thing a player can do, and -1
+   * is the "not looking at it" answer, which is the safe one.
+   *
+   * @param {object} portal a portal record
+   * @returns {number} the dot, -1 (away) to 1 (square on)
+   */
+  _portalFacing(portal) {
+    const viewer = this.viewer
+    if (!viewer) return -1
+    const world = this.worldOf(portal.position)
+    const dx = world.x - viewer.x
+    const dz = world.z - viewer.z
+    const length = Math.hypot(dx, dz)
+    if (length < 1e-6) return -1
+    return (dx / length) * viewer.dx + (dz / length) * viewer.dz
+  }
+
+  /**
+   * `_writeDebris` — compose this portal's fourteen instance matrices for time `t`.
+   *
+   * The pose is `rules.portalDebrisPose(rock, t)` and nothing else, so the ring is
+   * a pure function of the view clock: drive the world to the same `t` twice and
+   * this writes the same sixteen floats both times, which is what
+   * `verify-world.mjs` asserts to the bit. The rotation is on Z and the position in
+   * the gate's own XY, so a flake keeps its shape from every bearing — a flake that
+   * turned to face the camera would be a billboard, and billboards are the thing
+   * AESTHETIC-NOTES §6 tells this project not to reach for.
+   *
+   * The `visible` guard is worth the branch: a shut portal's debris is hidden by
+   * `setPortalShut`, and composing matrices for a mesh that is not drawn is 42
+   * wasted matrix composes a frame for the rest of the run.
+   *
+   * @param {object} portal a portal record
+   * @param {number} t seconds on the view's own clock
+   * @returns {void}
+   */
+  _writeDebris(portal, t) {
+    if (!portal.debris.visible) return
+    const dummy = this._debrisMatrix
+    for (let i = 0; i < portal.rocks.length; i += 1) {
+      const pose = rules.portalDebrisPose(portal.rocks[i], t)
+      // The unit tetrahedron is built at radius 1 and scaled to the rock's own size
+      // here, so `PORTAL_DEBRIS_SIZE` is a per-rock range applied to a shared
+      // geometry rather than a geometry per rock. A uniform scale on all three axes
+      // keeps it a REGULAR tetrahedron, which is why one was chosen.
+      dummy.position.set(pose.x, pose.y, 0)
+      dummy.rotation.set(0, 0, pose.angle)
+      dummy.scale.setScalar(pose.size)
+      dummy.updateMatrix()
+      portal.debris.setMatrixAt(i, dummy.matrix)
+    }
+    // One upload flag for the whole ring. `setMatrixAt` alone leaves every flake
+    // rendering at the first one's matrix, which is the same bug pass 5 closed for
+    // `setColorAt` and the reason the flag is written out rather than assumed.
+    portal.debris.instanceMatrix.needsUpdate = true
+  }
+
+  /**
+   * `_collapsePortal` — one frame of a dying portal's 0.8 s collapse.
+   *
+   * Everything is `rules.portalCollapse(t - portal.collapseAt)`: the scale, the
+   * flash and the spin multiplier. This method applies them and owns exactly two
+   * decisions of its own, both about the SCENE GRAPH rather than about the numbers.
+   *
+   * THE FIRST is `collapse.scale`. A group scaled to zero still has a
+   * non-degenerate world matrix, and three.js will happily draw a zero-scale mesh
+   * as a degenerate triangle at the origin — which, for a portal standing in a
+   * doorway, is a flicker on the road. Hiding the group at `scale === 0` is what
+   * actually ends the animation, and `portalCollapse` returning exactly 0 at
+   * `u === 1` is what makes that a single condition rather than a second clock.
+   *
+   * THE SECOND is the flash's opacity, and it is written to the CLONE. The shared
+   * `portalFlash` material is the one three portals would share if it were shared,
+   * and two portals collapsing a quarter of a second apart would otherwise dim each
+   * other's flash — a bug with no visual, only a wrong number.
+   *
+   * THE SPIN has no spiral in it, and that is the interesting part. §5.3's rule is
+   * that a shut portal's swirl is invisible on the frame the hold completes, and
+   * `verify-world.mjs` reads exactly that. A collapse spiral would be arms turning
+   * in a dead thing, which is the one piece of motion §5.3's silence forbids — so
+   * the acceleration is expressed as the whole APERTURE spinning down rather than
+   * as the arms turning faster, which is also the more frightening read: a hole
+   * that twists shut rather than one that whirls.
+   *
+   * @param {object} portal a portal record
+   * @param {number} t seconds on the view's own clock
+   * @returns {void}
+   */
+  _collapsePortal(portal, t) {
+    const elapsed = t - portal.collapseAt
+    const collapse = rules.portalCollapse(elapsed)
+    portal.collapseFlash.material.opacity = Math.min(1, collapse.flash)
+    // The core behind the flash is the LIVE core colour, lerped toward the dead one
+    // as it closes, so the thing that vanishes is recognisably the same hole and not
+    // a second disc that happened to be in the doorway. Lerped on `u` and not on
+    // `scale` so the colour and the size cannot be at different stages, and toward a
+    // CACHED colour object because `new THREE.Color` in a render loop is a
+    // per-frame allocation in the one method that runs for all three portals.
+    portal.collapseCore.material.color
+      .setHex(PALETTE.portalCore)
+      .lerp(this._deadCore, collapse.u)
+    // The spin is a PRODUCT of elapsed and the multiplier, never an accumulator,
+    // for the same reason the swirl is a product: a rate written onto a clock is
+    // frame-rate independent and an accumulator is not.
+    portal.collapse.rotation.z = elapsed * collapse.spin * PORTAL_COLLAPSE_TWIST
+    portal.collapse.scale.setScalar(collapse.scale)
+    if (collapse.scale === 0) portal.collapse.visible = false
+  }
+
+  /**
    * update — the two light families breathing.
    *
    * Sodium flicker sits on the shared lamp material, so all 49 lamps gutter
@@ -7010,6 +7700,19 @@ export class StreetView {
     if (this.flickerLot) {
       this._materials.vendingFaceFlicker.emissiveIntensity = VENDING_FACE_EMISSIVE * vendingFlicker(t)
     }
+    // ITERATION 2, PASS 12 — the collapse, and it is a SEPARATE loop above the live
+    // one, for a reason that is not tidiness. The live loop below opens with
+    // `if (portal.shut) continue`, and that `continue` is §5.3: a shut portal has
+    // nothing animated in it. Putting the collapse inside that loop would mean
+    // either running the collapse for a portal that is not shut (nonsense) or
+    // moving the `continue` (which is the pass-3 gate's own assertion, and moving
+    // it is how a dead portal starts turning again). Two loops, one for the dying
+    // and one for the living, is the honest shape: the two sets are disjoint and
+    // the code says so.
+    for (const portal of this.portals) {
+      if (portal.collapseAt === null) continue
+      this._collapsePortal(portal, t)
+    }
     for (const portal of this.portals) {
       if (portal.shut) continue
       portal.light.intensity = 9 * pulse
@@ -7021,13 +7724,58 @@ export class StreetView {
       // overwrites on the first frame.
       const swell = (1 + Math.sin(t * 2.3) * 0.035) * portal.gateScale
       portal.gate.scale.set(swell, swell, swell)
-      // The swirl turns on the same clock, one rate per layer, and only while
-      // the portal is live: the `continue` above is the reason a shut portal's
-      // disc is inert, and a spiral turning in a dead thing would be the one
-      // piece of motion in §5.3's silence.
+      // ITERATION 2, PASS 12 — the near field. The rate is the layer's OWN rate
+      // scaled by how near and how squarely-attended this portal is, and both
+      // factors are decided in `rules.js`; the only thing decided here is how the
+      // answer is turned into an angle.
+      //
+      // **AND THAT IS AN INTEGRAL, NOT A PRODUCT — and the first version of this
+      // pass wrote a product and shipped a bug the world check found in one run.**
+      //
+      // The product form is `rotation.z = t * rate`, which is what pass 3 wanted and
+      // what this looked like at first. It is correct while `rate` is constant and
+      // catastrophically wrong the moment it is not. `rate` here is
+      // `PORTAL_SWIRL_RATES[layer] * (1 + (SPIN - 1) * near)`, so walking toward
+      // the door changes `near` continuously — and `t * rate` turns that continuous
+      // change into a DISCONTINUITY of `t * d(rate)`. At the 143 s mark of a run,
+      // crossing the 8 m boundary moves the arms by eighteen radians: the swirl
+      // does not speed up, it TELEPORTS. Every earlier observation in this pass —
+      // the pure function's C1 ramp, the multiplicative form, the frame-rate
+      // argument — was about the wrong quantity, and the ramp being C1 made it worse
+      // rather than better, because a gentle ramp multiplied by a large `t` is a
+      // large jump.
+      //
+      // The fix is to integrate, and the argument that integration is safe is the
+      // one pass 3's own comment already contains, read more carefully than it was
+      // written: `t * rate` and `+= rate * dt` are the SAME animation when `rate` is
+      // constant, to first order and to any precision this file needs. What pass 3
+      // forbade — and what its gate still forbids — is an increment that does not
+      // carry `dt` at all, which is frame-count-dependent in the real sense. So the
+      // gate was always right about the thing it named and wrong about the thing it
+      // forbade, and this pass is the one that made the difference matter.
+      //
+      // The cost is stated rather than hidden: an integral sampled at 12 Hz and one
+      // sampled at 60 Hz differ by O(dt) at the same wall-clock time, where a
+      // product is exact. `capture.js` steps at a fixed `SIM_DT` on every machine, so
+      // the fourteen PNGs are still reproducible twice, and the difference between
+      // two frame rates is a fraction of a degree on an arm turning once in 19 s.
+      // Against that: a product that jumps eighteen radians when you cross a
+      // threshold. There is no contest.
+      //
+      // `this.viewer` is null until the world hands one over, and a null viewer is
+      // nearness 0: before the first `setViewer` the hole is a hole at its own
+      // rate, which is the safe direction for a title screen and for any test that
+      // drives the view without a camera.
+      const near = rules.portalNearness(this._portalNear(portal), this._portalFacing(portal))
       for (let layer = 0; layer < portal.swirl.length; layer += 1) {
-        portal.swirl[layer].rotation.z = t * PORTAL_SWIRL_RATES[layer]
+        const rate = rules.portalSwirlRate(PORTAL_SWIRL_RATES[layer], near)
+        portal.swirl[layer].rotation.z += rate * dt
       }
+      // The debris, and this is the only per-frame instance write in the file.
+      // Fourteen matrices composed and uploaded for three portals is 42 — one
+      // `setMatrixAt` and one `needsUpdate` per portal, not per rock, which is the
+      // reason the ring is an `InstancedMesh` and not fourteen `Mesh`es.
+      this._writeDebris(portal, t)
     }
     if (!this.hammer.taken) {
       this.hammer.light.intensity = 3.2 * pulse

@@ -26,6 +26,12 @@
  */
 
 import { PORTAL_IDS, SPAWN } from './neighborhood.js'
+// Pass 12. The debris ring's orbits are HASHED, not random: pass 11's review found
+// that an effect on a clock the renderer and the capture harness cannot both reach
+// is an effect nobody can photograph twice, and `Math.random` is the extreme case
+// of it. `hash32` is already the repository's answer and this file did not need it
+// until now.
+import { hash32 } from './hash.js'
 
 // ---------------------------------------------------------------------------
 // the portal hold verb (§5.2)
@@ -229,6 +235,559 @@ export function fogDensityForDusk(dusk) {
 export function fogVisibility(density) {
   if (!Number.isFinite(density) || density <= 0) return Infinity
   return Math.sqrt(Math.LN2) / density
+}
+
+// ---------------------------------------------------------------------------
+// the portal's descent (iteration 2, pass 12)
+//
+// WHY THIS SECTION IS HERE AND NOT IN streetView.js
+// -------------------------------------------------
+// The four things this pass adds are all *decisions*: how close you have to be
+// before the arms turn faster, what a rock's orbit is, how long a collapse takes
+// and what its envelope looks like, and how dark the lensing overlay is allowed
+// to be. `streetView.js` imports Three.js, so `verify.mjs` cannot import it and
+// could only ever read its text — which is the pass-1/2/3 arrangement and the
+// reason those sections are source contracts. Passes 9/10/11 replaced that
+// arrangement for the creature by deciding every number in `creature.js` and
+// letting the view apply it, and this is the same move for the portal: the view
+// reads these and cannot retune one without failing a gate.
+//
+// THE REGRESSION THIS PASS IS MOST EXPOSED TO, and it is worth stating before
+// any of the numbers: the pass-3 pupil gate reads the luma at the CENTRE of the
+// rim's bounding box and requires it to stay at or under 20. Everything added
+// below is either kept strictly OUTSIDE the core radius (`PORTAL_DEBRIS_RING`'s
+// inner is asserted to be larger than the view's `PORTAL_CORE_RADIUS`), or is a
+// MULTIPLICATIVE darkening whose alpha is zero at the centre
+// (`portalLensAlpha(0) === 0`), or is applied only while a portal is dying and
+// the disc behind it has already been scaled toward nothing. None of the four
+// can add a photon to the middle of the hole, and each of those three facts is
+// asserted in verify.mjs rather than promised here.
+// ---------------------------------------------------------------------------
+
+/**
+ * The distance at which the arms turn faster, metres.
+ *
+ * BEFORE pass 12: nothing. The swirl's rate was two constants in
+ * `streetView.js` — [0.21, -0.13] — and the hole turned at the same speed from
+ * 70 m as from the hold distance. That is a texture, not a place.
+ *
+ * AFTER 8. §5.2's verb is a 1.2 s hold and the player must be inside 2.6 m to
+ * start one, so 8 m is where the portal stops being scenery and becomes the
+ * thing in front of you — about a house plus its front garden, which is roughly
+ * how far off a light stops reading as "that one" and starts reading as "a light
+ * down there". The ramp is C1 (`u*u*(3-2*u)`) so there is no velocity step as
+ * you cross the boundary, and the falloff to 0 is a HARD cut at the radius,
+ * because a soft tail would mean the hole still reacts to you across the map.
+ */
+export const PORTAL_NEAR_METRES = 8
+
+/**
+ * How squarely you have to be looking at it, as a dot product.
+ *
+ * BEFORE nothing — there was no facing term, because there was no reason to
+ * distinguish the two ways of standing next to a hole.
+ *
+ * AFTER 0.5, which is cos 60°. The point of the term is that the swirl should
+ * answer *attention*: you turn away and it is just a hole again. Sixty degrees
+ * is the half-angle at which a thing is still unambiguously in front of you, and
+ * verify.mjs asserts the constant against its own cosine so a retune has to say
+ * out loud what angle it bought.
+ */
+export const PORTAL_NEAR_FACING = 0.5
+
+/**
+ * How much faster the arms turn when you are standing at the hole, as a
+ * multiplier on each layer's own rate.
+ *
+ * BEFORE 1, implicitly: one rate, no variation.
+ *
+ * AFTER 1.6, and the number is CONSTRAINED FROM ABOVE by the pass-3 gate rather
+ * than chosen for feel. Pass 3 wrote `|rate| < 0.35` into a check that reads
+ * `PORTAL_SWIRL_RATES` out of this file's own source, and that check is about the
+ * hole a player is LOOKING AT — which after this pass is the hole they are
+ * standing in front of. `0.21 * SPIN < 0.35` puts the ceiling on `SPIN` at 1.667,
+ * and 1.6 leaves 4% of headroom against it.
+ *
+ * BEFORE 1.6 IT WAS 2.2, chosen for the look of the difference rather than against
+ * the gate, and it put the near field at 0.462 rad/s — a full turn every 13.6 s and
+ * a flat violation of a rule this repository has held since pass 3. The pass-3
+ * check did not catch it because it reads the idle TABLE and the near field is a
+ * multiplier applied in `update`, which is the same reason it would not have
+ * caught a turbine either. The new check in this pass's section asserts the
+ * ceiling against `rate * PORTAL_NEAR_SPIN` and not against the table, which is
+ * the shape of check that would have.
+ *
+ * 0.21 * 1.6 is 0.336 rad/s: one revolution in 18.7 s, against the idle 30 s. The
+ * whole point is that the difference between "a light down there" and "I am at the
+ * door" is legible in about three seconds of standing still, and 1.6x buys that.
+ * Much above 1.667 and the two readings merge into machinery; at or below 1.3 you
+ * cannot tell you have arrived.
+ */
+export const PORTAL_NEAR_SPIN = 1.6
+
+// ---------------------------------------------------------------------------
+// the debris ring
+// ---------------------------------------------------------------------------
+
+/**
+ * How many rocks orbit the rim, and the hard cap on the number.
+ *
+ * BEFORE none. The hole had a lip, a disc and two spiral layers and nothing else
+ * in it, which is what §4's portal-cyan comment means by a light with nothing in
+ * it.
+ *
+ * AFTER 14 built, capped at 20. The brief asked for "max ~20" and the cap is
+ * written as a separate constant rather than left as the literal 14, because the
+ * number a future pass is tempted to raise is the one that has to be defended.
+ * Fourteen is chosen against the geometry rather than by taste: at the 0.78-0.96
+ * m ring the 1.44 m disc subtends about 400 px at the §16.5.5 stand-off, so 14
+ * rocks of 18-40 mm are each 5-11 px — under `EYE_MAX_SPAN`'s 14 px ceiling,
+ * which is the whole safety argument for the effect and is recomputed per rock
+ * in verify.mjs. Fourteen also reads as a *ring*: the eye completes a circle at
+ * around seven objects, and past about twenty a belt of debris stops being a
+ * belt and becomes noise.
+ */
+export const PORTAL_DEBRIS_COUNT = 14
+
+/**
+ * The cap, as a number distinct from the count.
+ *
+ * The count is a TUNING decision and this is a CONTRACT, and the only way a
+ * reviewer can tell them apart is if they are different constants. A pass that
+ * wants a denser ring moves `PORTAL_DEBRIS_COUNT`; it is allowed to move it up
+ * to 20 and then has to re-answer the eye-span argument, which verify.mjs
+ * recomputes from the geometry rather than restating.
+ */
+export const PORTAL_DEBRIS_MAX = 20
+
+/**
+ * The ring's radii, metres, inner and outer.
+ *
+ * The INNER one is the load-bearing number in this pass and it is constrained
+ * from below by the pupil gate, not by taste. The pass-3 measure reads the luma
+ * at the centre of the rim's bounding box, and a rock crossing that point would
+ * be a 5-11 px speck sitting exactly where the gate says there must be nothing
+ * but the hole's own near-black. So the inner radius must be strictly greater
+ * than the core radius, and verify.mjs asserts that against `PORTAL_CORE_RADIUS`
+ * read out of the view's own source — the two modules cannot both own the
+ * number, so the check compares them rather than trusting either.
+ *
+ * 0.78 m is 8% outside the 0.72 m disc: enough that a rock at its innermost
+ * orbit is never inside the hole, and tight enough that the ring still reads as
+ * belonging to the lip rather than as a separate halo. The outer 0.96 m is
+ * chosen against the shed, whose doorway is 1.1 m of clear width — so the ring
+ * IS cropped by the doorway, at the same two edges the disc is, which is the
+ * consistency `PORTAL_DEBRIS_FLATTEN`'s docblock argues for.
+ *
+ * **AND THE NEAREST APPROACH IS `radius * FLATTEN`, NOT `radius`, WHICH IS THE
+ * WHOLE OF THE PUPIL ARGUMENT AND WAS NOT STATED HERE.** A squash makes the orbit's
+ * minor axis shorter than its major one, and a short minor axis is what reaches the
+ * centre. The paragraph above reasons entirely about the major axis, which is why
+ * `verify.mjs` was green over a ring that sat 0.48 m from the centre of a 0.72 m
+ * hole. The gate now sweeps every pose over a full revolution and takes the
+ * minimum, which is the only way to see it, and the value it is run against is
+ * this pair times `PORTAL_DEBRIS_FLATTEN`.
+ */
+export const PORTAL_DEBRIS_RING = Object.freeze([0.78, 0.96])
+
+/**
+ * How much the ring is squashed vertically, as a fraction of its radius.
+ *
+ * **BEFORE 0.62. AFTER 1 — i.e. the ring is a CIRCLE, and the squash was a
+ * geometric error rather than a taste call.**
+ *
+ * 0.62 was chosen so that a 1.9 m ring would be cropped by the shed's 1.1 m
+ * doorway, on the reasoning that "a perfect circle in a doorway is cropped on both
+ * sides, and the crop is what the eye reads". The crop is real. What was not
+ * checked is WHERE the crop happens, and a squashed ellipse centred on a circle
+ * that is LARGER than it is inside that circle at the top and the bottom: the
+ * orbit's minimum distance from the gate's centre is `radius * FLATTEN`, not
+ * `radius`, so at 0.78 m and 0.62 the nearest a rock ever came to the centre was
+ * 0.48 m on a 0.72 m hole — a third of the way into the pupil, in the one place
+ * the whole feature was written not to go.
+ *
+ * The world check found it on the first run, by reading the built instance
+ * matrices and comparing each rock's distance from the gate's centre with the
+ * hole's own radius. The pure test in `verify.mjs` did NOT, because it compared
+ * `rock.radius` with `PORTAL_CORE` and `rock.radius` is the orbit's MAJOR axis —
+ * so the test was true and the feature was broken, which is the exact shape of
+ * failure pass 11's review called "a gate that reads a number the feature does not
+ * produce". Both are fixed: the value, and the test, which now sweeps the
+ * semi-axes rather than the parameter.
+ *
+ * WHY A CIRCLE IS RIGHT ANYWAY, and it is the same sentence the old value was
+ * written with, minus the part that was wrong. The crop is already the disc's:
+ * pass 3 established that the 1.44 m hole MUST be cropped by a 1.1 m doorway, and
+ * built a gate on the claim. A concentric ring is cropped by exactly the same two
+ * edges, which is consistency rather than a new problem. And the pass-3 failure
+ * this constant was reaching for — the portal reading as a HALO — was a
+ * continuous, bright, 2.8 cm torus. Fourteen DARK flakes of 18-40 mm are not that,
+ * and conflating the two is what produced 0.62.
+ *
+ * The value is still a named export and still travels on the orbit rather than on
+ * the mesh, because at 1.0 the two are the same thing and the next person to
+ * retune this will not know that unless the seam is still there to be found.
+ */
+export const PORTAL_DEBRIS_FLATTEN = 1
+
+/**
+ * The rocks' angular rates, rad/s, slowest and fastest.
+ *
+ * BEFORE n/a. AFTER 0.09-0.28, and both ends are set by comparisons rather than by
+ * feel. The slow end is one revolution in 70 s — slower than the swirl's own 30 s,
+ * so the debris is the QUIET layer and the brief's "subtle" is a number here
+ * rather than an adjective.
+ *
+ * THE FAST END IS UNDER THE FASTEST THE SWIRL EVER TURNS, which is
+ * `PORTAL_SWIRL_RATES[0] * PORTAL_NEAR_SPIN` and not the idle 0.21. BEFORE this
+ * pass corrected it the range was 0.11-0.34, and 0.34 is FASTER than the swirl at
+ * 0.21 and faster than its own near-field 0.336 — so the claim the docblock made,
+ * "even the liveliest rock turns slower than the thing it orbits", was false in
+ * the direction that matters, and a belt of rocks outrunning the spiral it is
+ * supposed to belong to reads as the wrong effect entirely. 0.28 leaves 17% of
+ * headroom under the near-field ceiling.
+ *
+ * The sign is drawn separately from the magnitude (see `portalDebrisRing`), so the
+ * ring is genuinely two-directional: a belt where every rock turns the same way is
+ * a clock face.
+ */
+export const PORTAL_DEBRIS_RATES = Object.freeze([0.09, 0.28])
+
+/**
+ * Rock radius, metres, smallest and largest.
+ *
+ * BEFORE n/a. AFTER 0.018-0.040. The top end is set by the eye-span argument in
+ * `PORTAL_DEBRIS_COUNT`: 40 mm at 4.5 m is about 9 px on the long axis, inside
+ * `EYE_MAX_SPAN`'s 14. The bottom end is 18 mm, about 4 px at the same distance
+ * and under a pixel per side on the 480-wide responsive capture, so on a small
+ * viewport the ring thins out rather than becoming a dotted line of single
+ * pixels. A rock that small and that dark is also why this effect needs no
+ * additive trick: it never becomes an eye-finder candidate at any size, because
+ * it is never bright.
+ */
+export const PORTAL_DEBRIS_SIZE = Object.freeze([0.018, 0.04])
+
+/**
+ * The rock material's colour, and the whole safety argument in one hex.
+ *
+ * BEFORE n/a. AFTER 0x2b2f33. It has to be a `MeshStandardMaterial` and not a
+ * `_glow`, because the brief asks for rocks that "catch the rim light" and an
+ * unlit material cannot catch anything — the portal's own PointLight IS the rim's
+ * light and a lit material is the only thing that receives it. It also has to be
+ * DARK: 0x2b2f33 is 47.4 Rec. 709 luma, 32% of `EYE_MIN`'s 150, so even fully lit
+ * by a 26 m cyan point light it stays an order of magnitude below the eye
+ * finder's floor. verify.mjs measures the lit worst case from the light's own
+ * intensity and falloff rather than restating 47, and holds it under half of
+ * `EYE_MIN`.
+ */
+export const PORTAL_DEBRIS_COLOUR = 0x2b2f33
+
+// ---------------------------------------------------------------------------
+// the lensing overlay, and the collapse
+// ---------------------------------------------------------------------------
+
+/**
+ * The lensing overlay's radius as a multiple of the core radius, and the darkest
+ * it is allowed to get there.
+ *
+ * BEFORE n/a. The brief asks for "a dark radial gradient overlay just larger than
+ * the disc that deepens the background near the rim (no real refraction)", which
+ * is the right cheap approximation and is safe to do at all *because* it is
+ * MULTIPLICATIVE: a normal-blended dark quad can only ever subtract, so it
+ * cannot brighten the pupil, and its alpha is a function of radius alone, so the
+ * centre — the pixel the pass-3 gate measures — is provably untouched.
+ *
+ * 1.34 is "just larger than the disc": 0.72 m of hole and 0.965 m of overlay, so
+ * the darkening is a 24 cm annulus of BACKGROUND around the lip rather than a
+ * disc laid over it. `crest` 1.11 is a third of the way out — far enough from the
+ * lip that the lip itself is undimmed, close enough that the falloff has most of
+ * the annulus in front of it. The 0.34 is a ceiling AND the value the profile
+ * actually reaches, and the profile is exactly zero at the lip and at the outer
+ * edge, so only a narrow band of background is darkened at all.
+ */
+export const PORTAL_LENS = Object.freeze({ outer: 1.34, peak: 0.34, crest: 1.11 })
+
+/**
+ * The collapse: how long it takes, how fast the arms are going by the end, and
+ * when the flash is.
+ *
+ * BEFORE n/a — §5.3 put a portal out in one frame, which is right for a boolean
+ * and wrong for a thing a player is standing 2.2 m from holding a key down for
+ * the fifth time. The port goes dark instantly and stays dark for ever (that is
+ * the rule and it has not moved); what pass 12 adds is the 0.8 s *aftermath*,
+ * during which the aperture closes.
+ *
+ * 0.8 s is the brief's "~0.8 s" and it is also the number the balance simulation
+ * cannot feel: `PORTAL_SHUT_SECONDS` is 1.2 and the collapse starts after the
+ * hold completes, so the collapse is strictly AFTER every gameplay-visible event
+ * it could disturb. verify-world.mjs asserts that directly, by running the
+ * three-portal sequence and requiring the state to be identical with and without
+ * the collapse running.
+ *
+ * The spin multiplier of 7 is the one number here with a reason. By the end the
+ * arms turn at 7x their live rate — 1.47 rad/s — which is FASTER than the swirl's
+ * own 0.35 ceiling, and that is deliberate: the ceiling exists to keep a LIVE
+ * hole from reading as machinery, and a hole reading as machinery for 0.8 s on
+ * its way out is the entire point. The gate on it is therefore not "under 0.35"
+ * but "applied to a group whose scale has already left the frame", which
+ * verify-world.mjs asserts structurally rather than numerically.
+ *
+ * The flash sits at 0.16 s — a fifth of the way in. Early enough to be the first
+ * thing you see, late enough that it is not simultaneous with the shut itself: a
+ * flash on the same frame as the light going out is a single event, and this is
+ * meant to read as a CONSEQUENCE of one.
+ */
+export const PORTAL_COLLAPSE = Object.freeze({
+  seconds: 0.8,
+  spin: 7,
+  flash: 0.16,
+  flashWidth: 0.09,
+  flashGain: 3.2,
+})
+
+/**
+ * portalNearness — how much the hole is answering you, 0..1.
+ *
+ * Two gates and a ramp, in this order, and the ORDER is the claim: you must be
+ * CLOSE, you must be FACING it, and only then does distance buy you anything.
+ * Checking facing first would mean a player 20 m away staring at the portal got
+ * a partial response; checking distance first would mean walking past one
+ * backwards spun it up.
+ *
+ * Null-safe on both arguments, for the reason `portalsShut` is: this is called
+ * from a render loop with values that come off a camera and a projection, and a
+ * predicate that throws on `NaN` takes the frame down instead of answering the
+ * question. A non-finite input is treated as "not near", which is the safe
+ * direction — the hole goes back to being a hole.
+ *
+ * @param {number} distance metres from the viewer to the gate
+ * @param {number} facing dot of the view direction with the gate's own normal
+ * @returns {number} 0 (a hole) to 1 (standing at it, looking at it)
+ */
+export function portalNearness(distance, facing) {
+  if (!Number.isFinite(distance) || !Number.isFinite(facing)) return 0
+  if (distance < 0 || facing < PORTAL_NEAR_FACING) return 0
+  if (distance >= PORTAL_NEAR_METRES) return 0
+  const u = 1 - distance / PORTAL_NEAR_METRES
+  return u * u * (3 - 2 * u)
+}
+
+/**
+ * portalSwirlRate — a layer's angular rate, given how near the viewer is.
+ *
+ * A single multiplier rather than a second table, because the layer's own rate
+ * carries its SIGN and the pass-3 gate asserts that the two layers turn opposite
+ * ways. A separate near-field table would have to carry the sign too, and would
+ * be a second place for the two layers to disagree.
+ *
+ * @param {number} rate the layer's own rate, rad/s, signed
+ * @param {number} nearness 0..1 from `portalNearness`
+ * @returns {number} rad/s
+ */
+export function portalSwirlRate(rate, nearness) {
+  if (!Number.isFinite(rate) || !Number.isFinite(nearness)) return 0
+  const near = Math.max(0, Math.min(1, nearness))
+  return rate * (1 + (PORTAL_NEAR_SPIN - 1) * near)
+}
+
+/**
+ * portalDebrisRing — the fourteen rocks, as plain data.
+ *
+ * Deterministic in the run seed and the portal's own index, and a pure function
+ * of both because pass 11's review finding 4 is the reason: an orbit that cannot
+ * be re-taken is a frame nobody can photograph twice. `hash32` is imported rather
+ * than `Math.random` for the reason pass 7 moved its seeds off the call site — a
+ * seed typed at the call site is a seed two people will change differently.
+ *
+ * The shape of each rock is four numbers: a radius in the ring, a signed rate, a
+ * phase, and a size. Nothing else, deliberately — no per-rock bob, no tilt, no
+ * colour. Every extra degree of freedom is a number somebody has to justify, and
+ * a ring of identical dark flakes turning at different rates on different orbits
+ * already reads as debris without any of them.
+ *
+ * @param {number} seed the run seed
+ * @param {number} index which portal, 0..2
+ * @returns {ReadonlyArray<{radius: number, rate: number, phase: number, size: number}>}
+ */
+export function portalDebrisRing(seed, index) {
+  const [inner, outer] = PORTAL_DEBRIS_RING
+  const [slow, fast] = PORTAL_DEBRIS_RATES
+  const [small, large] = PORTAL_DEBRIS_SIZE
+  const rings = []
+  for (let i = 0; i < PORTAL_DEBRIS_COUNT; i += 1) {
+    // The SALT is the rock's own index and the COORDINATE is the portal's, which is
+    // the same shape pass 7's `flickerLot` uses: two draws that cannot alias,
+    // because a rock at (seed+salt, portal*31+i) and one at (seed+salt',
+    // portal'*31+i') share a hash only when both of their numbers do.
+    const pick = (salt) => (hash32(seed + salt * 2654435761, index * 31 + i, salt * 7 + 3) >>> 8) / 0x00ffffff
+    // The SIGN is a SEPARATE draw from the magnitude, on purpose. One draw for
+    // both would correlate them — the rock that drew low for its rate would also
+    // be the one that goes the other way — and the ring would carry a visible
+    // bias in which way it turns at which radius.
+    rings.push({
+      radius: inner + (outer - inner) * pick(1),
+      rate: (slow + (fast - slow) * pick(2)) * (pick(3) < 0.5 ? -1 : 1),
+      phase: pick(4) * Math.PI * 2,
+      size: small + (large - small) * pick(5),
+    })
+  }
+  return rings
+}
+
+/**
+ * portalDebrisPose — where one rock is at a given time, in the gate's own frame.
+ *
+ * A function of TIME and not of a frame count, for the reason the swirl is:
+ * `update(dt)` is handed a delta, so a pose written from an accumulator is a
+ * different picture on every machine. This is why `verify-world.mjs` can drive
+ * the world to the same `t` twice and require the matrices back bit-identical.
+ *
+ * The squash is on the ORBIT and not on the mesh (see `PORTAL_DEBRIS_FLATTEN`),
+ * and it is 1 today, so the flake is a REGULAR TETRAHEDRON and the two are the
+ * same shape — which is exactly why the seam is kept. A squashed tetra is a
+ * different solid, and a retune that put the squash on the mesh instead of here
+ * would be a change nobody could see in a number.
+ *
+ * The flake's own spin about its axis is `angle * 3` — an arbitrary-looking
+ * factor rather than a second clock, so a rock is never tidily aligned with its
+ * own orbit and never quite still.
+ *
+ * @param {{radius: number, rate: number, phase: number, size: number}} rock
+ * @param {number} time seconds on the view's own clock
+ * @returns {{x: number, y: number, angle: number, size: number}}
+ */
+export function portalDebrisPose(rock, time) {
+  // NEGATIVE TIME IS CLAMPED TO ZERO, and this is not a formality. `t` on the
+  // view's clock only ever rises, so a negative value cannot occur here — but the
+  // function's two siblings in this file (`portalCollapse`, and the `t` a caller
+  // hands it as `now - something`) both clamp, and a ring that could be posed at a
+  // negative time while the collapse beside it could not is two different answers
+  // to the same question. A rock in the future sits at its phase, which is a
+  // position the ring already occupies and therefore one nobody could have told
+  // apart from a rock whose clock had run backwards.
+  const t = Number.isFinite(time) ? Math.max(0, time) : 0
+  const angle = rock.phase + rock.rate * t
+  return {
+    x: Math.cos(angle) * rock.radius,
+    y: Math.sin(angle) * rock.radius * PORTAL_DEBRIS_FLATTEN,
+    angle: angle * 3,
+    size: rock.size,
+  }
+}
+
+/**
+ * portalCollapse — the 0.8 s aftermath of a shutdown, as a pure envelope.
+ *
+ * Four numbers, all functions of `elapsed` seconds and nothing else, and that is
+ * what makes the animation re-takeable: a capture that steps the world to
+ * `elapsed = 0.4` gets the same frame on any machine, and `verify-world.mjs`
+ * asserts exactly that by driving the same elapsed twice and comparing the
+ * resulting transforms to the bit.
+ *
+ * The SHAPE, and why each piece is here:
+ *
+ *  - `scale` is `1 - u^4`, which hangs at full size and then goes. The derivative
+ *    at `u = 0` is exactly zero, so there is no velocity step as the collapse
+ *    starts; the aperture is still 99.8% open at the flash's own centre, 94% at the
+ *    halfway mark, and 59% at three quarters, and then it is gone in the last
+ *    fifth of a second. An ease-out closes fast immediately and reads as a pop; a
+ *    linear one reads as a zoom. The quartic holds because the interesting thing —
+ *    the flash — happens inside the held part, and a collapse that starts closing
+ *    at t=0 has nothing to interrupt.
+ *
+ *    THE `1 - u^4` IS NOT A TYPO, and neither was the two versions that preceded
+ *    it. The first wrote `u * u * u`, which had the aperture GROWING to full size
+ *    over the 0.8 s and then snapping shut at the very end — the exact inverse of
+ *    the easing its comment claimed, and invisible to any gate that only checked
+ *    `scale <= 1` and `scale === 0 at u === 1`. The second wrote `(1 - u) ** 3`,
+ *    which is a correct ease but not the ease that was wanted: a cubic of the
+ *    remaining size starts closing at -3 per unit, so it is 29% closed by the end
+ *    of the "held" first third and a full 49% closed at the flash. The flash was
+ *    then lighting a hole that was halfway to nothing. `1 - u^4` is the shape the
+ *    paragraph above has always described, and the gate in this pass's section is
+ *    what found that the two earlier shapes were not it.
+ *  - `flash` is a symmetric bell centred on `PORTAL_COLLAPSE.flash`, peaking at
+ *    `flashGain` and reaching exactly 0 one `flashWidth` to either side. It is
+ *    SYMMETRIC on purpose: a one-sided flash is a switch, and a switch is a
+ *    strobe, and §14.3's reduced-motion rule exists because a switch is exactly
+ *    what that rule is about. The `(1 - bell^2)^2` shape is a smoothstep of the
+ *    squared offset — C1 at both edges, so there is no velocity step at the
+ *    moment the flash appears or dies.
+ *  - `spin` ramps `1 -> PORTAL_COLLAPSE.spin` on `u^2`, so the acceleration
+ *    itself accelerates, and the arms are still at their live rate on frame 0.
+ *  - `scale` reaching 0 IS the end of the animation. There is no separate "done"
+ *    flag, because a separate flag is a second thing to get out of step with the
+ *    first; `scale === 0` is the one condition, and the view's own `scale.set`
+ *    makes the mesh vanish with it.
+ *
+ * @param {number} elapsed seconds since the shutdown, clamped at 0
+ * @returns {{scale: number, flash: number, spin: number, u: number}}
+ */
+export function portalCollapse(elapsed) {
+  const t = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0
+  const u = Math.min(1, t / PORTAL_COLLAPSE.seconds)
+  const bell = (t - PORTAL_COLLAPSE.flash) / PORTAL_COLLAPSE.flashWidth
+  return {
+    scale: 1 - u ** 4,
+    flash: Math.abs(bell) < 1 ? PORTAL_COLLAPSE.flashGain * (1 - bell * bell) ** 2 : 0,
+    spin: 1 + (PORTAL_COLLAPSE.spin - 1) * u * u,
+    u,
+  }
+}
+
+/**
+ * portalLensAlpha — the lensing overlay's alpha at a radius, 0..peak.
+ *
+ * A function of the radius ALONE, and that is the safety property rather than a
+ * convenience. The pass-3 pupil gate measures the luma at the centre of the rim,
+ * and this returns exactly 0 there and at every radius inside 0.55 of the core —
+ * so the hole's own dark ground is not darkened by one level, and the swirl band
+ * that same gate reads (0.30-0.62 of the radius) is likewise untouched. The
+ * profile is a tent on [0.55, 1.34] with a smooth join, so there is no ring of
+ * discontinuity for the eye to find at either edge.
+ *
+ * The tent is asymmetric about its peak because the peak is at the RIM, which in
+ * this parameterisation is u = (1 - 0.55) / 0.79 = 0.570 — nearer the inner edge
+ * than the outer one, so the falloff has more room to be soft on the side that
+ * faces open background. `Math.sin(pi*u)` is zero at BOTH ends and 1 in the
+ * middle, which is what makes the join C1 without a second easing term.
+ *
+ * @param {number} ratio the radius as a fraction of the core radius
+ * @returns {number} 0..PORTAL_LENS.peak
+ */
+/**
+ * portalLensAlpha — the lensing overlay's alpha at a radius, 0..peak.
+ *
+ * A function of the radius ALONE, and that is the safety property rather than a
+ * convenience. It returns exactly 0 for every radius at or inside the DISC — and
+ * "the disc" is the load-bearing boundary, because the disc is everything the
+ * pass-3 gate reads: the pupil at the centre, and both swirl layers, which sit at
+ * 0.4 m and 0.66 m on a 0.72 m hole, i.e. at 0.556 and 0.917 of the radius. So the
+ * hole's own dark ground is not darkened by one level and neither is the swirl.
+ *
+ * WHY THE EDGE IS AT 1.0 AND NOT NEARER IN, and this was the first version's bug.
+ * The original profile ran from ratio 0.55, on the reasoning that 0.55 was "well
+ * inside the hole". It is — and the outer swirl layer is at 0.917, so that
+ * profile put up to 0.28 of alpha on the outer third of the swirl band, which is
+ * a visible dark crescent on the one element the pass-3 swirl gate exists to
+ * measure. The fix is not a smaller number, it is moving the whole ramp outside
+ * the disc: the darkening is then *only ever* on background, which is what the
+ * brief asked for in the first place, and the safety argument stops depending on
+ * where the swirl layers happen to be.
+ *
+ * The profile on [1.0, 1.34] is a smoothstep tent peaking at 1.11, so it is
+ * exactly 0 at the lip, exactly 0 at the overlay's own edge, exactly `peak` in
+ * between, and C1 at all three. A tent with a sharp apex is a ring; a tent with
+ * a sharp foot is a decal.
+ *
+ * @param {number} ratio the radius as a fraction of the core radius
+ * @returns {number} 0..PORTAL_LENS.peak
+ */
+export function portalLensAlpha(ratio) {
+  const r = Number.isFinite(ratio) ? ratio : 0
+  if (r <= 1 || r >= PORTAL_LENS.outer) return 0
+  const u = r < PORTAL_LENS.crest ? (r - 1) / (PORTAL_LENS.crest - 1) : 1 - (r - PORTAL_LENS.crest) / (PORTAL_LENS.outer - PORTAL_LENS.crest)
+  return u * u * (3 - 2 * u) * PORTAL_LENS.peak
 }
 
 // ---------------------------------------------------------------------------
