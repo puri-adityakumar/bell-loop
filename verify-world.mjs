@@ -344,6 +344,13 @@ const hud = await import('./src/ui/hud.js')
 // slice 13: the rules — the fog curve, the exit radius and `checkExitWin` are all
 // rules, and a world check that re-derived them would be asserting a copy.
 const rules = await import('./src/game/rules.js')
+// PASS 10 REVIEW: the capture set as DATA, read here so the checks below can ask
+// what a view is actually staged to do rather than re-typing a wait that the
+// gallery owns. `capture.js` is pure (§16.5's set is a frozen table of steps) and
+// is already imported by `verify.mjs`, so importing it here is not a new
+// dependency — it is the same table, and a copy of it in this file would be a
+// second thing to keep right.
+const cap = await import('./src/game/capture.js')
 
 function makeFakeRenderer() {
   return {
@@ -6733,6 +6740,177 @@ check('pass-10: the rig breathes, the elbow lags, and the whole thing is determi
   console.log(`\n  pass-10 rig: scale ${spread.toFixed(4)} over 4 s, shoulders ${swaySpread.toFixed(4)} rad, elbow lag ${lagSeconds.toFixed(3)} s and ${bentMost.toFixed(2)} rad, chase swings ${chaseSwing.toFixed(3)} rad against a telegraph's ${telegraphSwing.toFixed(3)}, ${laid} marks reproduced exactly across two fresh worlds`)
 })
 
+check('pass-10: a trail mark lands INSIDE the frame, and the gallery stages one that does', () => {
+  // THE PASS-10 REVIEW FINDING, and the only place in the repository that can
+  // catch it, because it is the only place with a camera.
+  //
+  // Pass 10 shipped a viscous trail with nineteen mutations, four world checks and
+  // a whole section of prose, and every one of them was about the mark EXISTING:
+  // that the reducer lays one per `DRIP_STRIDE_METRES`, that the cap evicts the
+  // oldest, that the buffer's contents are the marks. Not one of them asked
+  // whether a mark is ever in front of a camera. So the gallery shipped with the
+  // feature in no frame of it, and nothing could see that:
+  //
+  //   creature-stalking  0.35 s -> 0.77 m, no mark laid at all
+  //   creature-chasing   0.30 s -> 0.62 m, no mark laid at all
+  //   banish             0.45 s -> 0.99 m, one mark laid — at the creature's feet,
+  //                              1.0 m from a camera 1.6 m up, which projects to
+  //                              y=1213 in a 720-tall frame. 493 px below the
+  //                              bottom edge. On screen: nothing.
+  //
+  // So "a mark exists" and "a mark is in a picture" are different claims, and only
+  // the second one is the one a reviewer is ever going to see. This check is the
+  // second claim, and it is deliberately a projection rather than a threshold on
+  // alpha: a mark can be at full strength and still be under the camera.
+  //
+  // WHY THE CAMERA MATRICES ARE FORCED
+  // ----------------------------------
+  // `project()` is only meaningful once `matrixWorldInverse` is current, and in
+  // this harness nothing renders, so it is never refreshed. Left alone it is the
+  // identity matrix and EVERY world point projects to the same pixel — a mark at
+  // 3 m and a mark at 26 m land on top of each other, and a check built on that
+  // would pass for the wrong reason. The helper below refreshes all three matrices
+  // and is used by everything here that reasons about screen space.
+  const refreshCamera = () => {
+    const camera = game.camera
+    camera.updateProjectionMatrix()
+    camera.updateMatrixWorld(true)
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert()
+    return camera
+  }
+
+  // A mark is VISIBLE if it projects inside the frame and is still wet enough to
+  // read. The alpha floor is `DRIP_SPREAD`-aware rather than a literal: a mark
+  // inside its own spread ramp is still arriving, and the harness's `wait` can
+  // catch one there, so the floor asks for a mark that has actually landed.
+  const VISIBLE_ALPHA = 0.15
+  const inFrame = (mark, time) => {
+    const camera = refreshCamera()
+    const drawn = game.streetView.worldOf({ x: mark.x, z: mark.z })
+    const point = new THREE.Vector3(drawn.x, beast.DRIP_LIFT, drawn.z).project(camera)
+    const x = (point.x * 0.5 + 0.5) * 1280
+    const y = (-point.y * 0.5 + 0.5) * 720
+    return {
+      x,
+      y,
+      visible: x >= 0 && x < 1280 && y >= 0 && y < 720 && beast.dripAlpha(time - mark.born) > VISIBLE_ALPHA,
+    }
+  }
+
+  // The camera projection is not a thing this harness may assume: with the
+  // matrices stale, three ground points at 3/8/16/26 m all project to the same
+  // pixel. A control that cannot distinguish a near point from a far one would
+  // make every assertion below meaningless, so it is asserted directly.
+  {
+    game.restart()
+    game.start()
+    run(game, 1.6)
+    refreshCamera()
+    const at = (metres) => {
+      const point = new THREE.Vector3(
+        game.player.pos.x - Math.sin(game.player.yaw) * metres,
+        beast.DRIP_LIFT,
+        game.player.pos.z - Math.cos(game.player.yaw) * metres,
+      ).project(game.camera)
+      return { x: (point.x * 0.5 + 0.5) * 1280, y: (-point.y * 0.5 + 0.5) * 720 }
+    }
+    const near = at(3)
+    const far = at(26)
+    assert.ok(
+      Math.hypot(far.x - near.x, far.y - near.y) > 40,
+      `the camera projects a point at 3 m and one at 26 m to within ` +
+        `${Math.hypot(far.x - near.x, far.y - near.y).toFixed(1)} px of each other (${near.x.toFixed(0)},` +
+        `${near.y.toFixed(0)} vs ${far.x.toFixed(0)},${far.y.toFixed(0)}), so its matrices are stale and ` +
+        'nothing measured in screen space here means anything',
+    )
+  }
+
+  // THE BANISH FRAME, measured rather than argued: this is the one that crossed
+  // the time floor and still put its mark nowhere. It is asserted as a documented
+  // limitation instead of being quietly dropped, because "off-screen under the
+  // camera" is the general failure of a decal feature and the next pass will hit
+  // it again.
+  const banish = cap.captureView('banish')
+  {
+    const seconds = banish.steps
+      .slice(banish.steps.findIndex((step) => step.op === 'creature') + 1)
+      .filter((step) => step.op === 'wait')
+      .reduce((total, step) => total + step.seconds, 0)
+    const spec = banish.steps.find((step) => step.op === 'creature')
+    game.restart()
+    // `start()` as well: `restart()` alone leaves the phase at RESET, and §9.3
+    // says no figure may be shown in that phase, so the world would correctly
+    // decline to draw one and the trail would never be advanced. Every check that
+    // needs a live world says both.
+    game.start()
+    run(game, 1.6)
+    // the harness's own helper, which takes a straight dx/dz in the CANONICAL
+    // frame (`creaturePosition` is canonical, §3.3) rather than a view-axis point
+    placeCreature(game, 0, -spec.metres)
+    game.creature = beast.createCreature({ state: spec.state, awareness: 0.45 })
+    game.dismissing = false
+    game.dismissElapsed = 0
+    game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
+    run(game, seconds)
+    const marks = game.creatureTrail.marks
+    const seen = marks.map((mark) => inFrame(mark, game.animTime)).filter((entry) => entry.visible)
+    assert.equal(
+      seen.length,
+      0,
+      `banish now lays a mark that IS in frame (${seen.length} visible at ` +
+        `${seen.map((e) => `${e.x.toFixed(0)},${e.y.toFixed(0)}`).join(' ')}), which is better than this ` +
+        'check assumed — update its comment and the staging note in capture.js rather than deleting it',
+    )
+  }
+
+  // THE CLAIM, on the view that carries it. `creature-chasing` is staged at
+  // tier-0 speed for long enough to walk past `DRIP_STRIDE_METRES`, and this
+  // asserts the marks it lays are inside the frame — the property that was false
+  // for the whole of pass 10, and the reason `verify.mjs` asks only the weaker
+  // time question of the staging data.
+  const chase = cap.captureView('creature-chasing')
+  {
+    const seconds = chase.steps
+      .slice(chase.steps.findIndex((step) => step.op === 'creature') + 1)
+      .filter((step) => step.op === 'wait')
+      .reduce((total, step) => total + step.seconds, 0)
+    const spec = chase.steps.find((step) => step.op === 'creature')
+    game.restart()
+    // `start()` as well: `restart()` alone leaves the phase at RESET, and §9.3
+    // says no figure may be shown in that phase, so the world would correctly
+    // decline to draw one and the trail would never be advanced. Every check that
+    // needs a live world says both.
+    game.start()
+    run(game, 1.6)
+    // the harness's own helper, which takes a straight dx/dz in the CANONICAL
+    // frame (`creaturePosition` is canonical, §3.3) rather than a view-axis point
+    placeCreature(game, 0, -spec.metres)
+    game.creature = beast.createCreature({ state: spec.state, awareness: 1 })
+    game.dismissing = false
+    game.dismissElapsed = 0
+    game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
+    run(game, seconds)
+    const marks = game.creatureTrail.marks
+    const projected = marks.map((mark) => inFrame(mark, game.animTime))
+    const seen = projected.filter((entry) => entry.visible)
+    assert.ok(marks.length > 0, `${chase.id} is staged for ${seconds}s and laid no mark at all`)
+    assert.ok(
+      seen.length > 0,
+      `${chase.id} laid ${marks.length} mark(s) and NONE of them is inside the frame — they project to ` +
+        `${projected.map((e) => `${e.x.toFixed(0)},${e.y.toFixed(0)}`).join(' ')} in a 1280x720 shot. ` +
+        'The trail is in no picture, which is the pass-10 bug this check exists for. Stage the ' +
+        'creature further out, or give it longer, so the marks land where the camera can see them.',
+    )
+    // and it is a real chase at the shutter, not a stalk wearing a chase's filename
+    assert.equal(game.creature.state, 'chase', `${chase.id} waits ${seconds}s and the creature is no longer chasing`)
+    console.log(
+      `\n  pass-10 picture: ${chase.id} lays ${marks.length} mark(s), ${seen.length} inside the frame at ` +
+        `${seen.map((e) => `${e.x.toFixed(0)},${e.y.toFixed(0)}`).join(' ')}; ` +
+        `banish's ${game.creatureTrail.marks.length === 0 ? 0 : 1} mark is off-screen under the camera, as documented`,
+    )
+  }
+})
+
 check('dispose() tears the whole world down without throwing', () => {
   // §15's definition of done. A `dispose` that throws takes React's unmount down
   // with it and leaves a WebGL context alive behind the next mount, so the frame
@@ -6757,6 +6935,7 @@ check('dispose() tears the whole world down without throwing', () => {
   game.dispose()
   game.update(0.1)
 })
+
 
 
 

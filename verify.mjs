@@ -9213,6 +9213,78 @@ test('no capture does an Act II thing before the hammer is held (§8.1)', () => 
   assert.equal(capture.captureView('title').steps.some((step) => step.op === 'begin'), false)
 })
 
+test('at least one view in the gallery is staged so the creature lays a trail', () => {
+  // THE PASS-10 REVIEW FINDING, as a gate.
+  //
+  // Pass 10 built the viscous trail and wrote nineteen mutations and four world
+  // checks for it, and every one of them passed — against a gallery in which the
+  // trail appears NOWHERE. `creature-chasing` photographed a chase after 0.3 s,
+  // and a mark needs `DRIP_STRIDE_METRES` 0.9 m of walking, which at tier 0's
+  // 2.2 m/s is 1.48 s: the one frame named for the chase was the frame in which
+  // the feature was arithmetically impossible. `creature-stalking` (0.35 s) was
+  // 0.05 m short of the same line.
+  //
+  // And `banish` is the trap this check has to be careful about, because it DOES
+  // cross the line — 0.45 s is 0.99 m, just over the 0.9 m stride — and its one
+  // mark is still in no picture. It is laid at the creature's own feet, 1.0 m
+  // from a camera 1.6 m up, which projects to y=1213 in a 720-tall frame: 493 px
+  // BELOW the bottom edge. Time alone is therefore not the property. A mark laid
+  // under the camera is a mark nobody has ever seen, and a gate that counted
+  // seconds would have passed `banish` and declared pass 10 photographed.
+  //
+  // So the floor here is deliberately the weaker of the two claims — enough
+  // world-time for the reducer to lay a mark AT ALL — and `verify-world.mjs` owns
+  // the stronger one, on the built world, where it can project the mark and ask
+  // whether it lands inside the frame. Splitting them that way is the point: the
+  // pure side cannot see a camera, and pretending otherwise is how a feature ends
+  // up measured by a gate that cannot fail.
+  //
+  // WHY "AT LEAST ONE" AND NOT "EVERY VIEW"
+  // ---------------------------------------
+  // Because the three creature views photograph three different beats and only one
+  // of them is a moment where a trail belongs. `creature-stalking` is a silhouette
+  // held at the edge of vision, framed to a measured contrast ratio of 0.607
+  // against a 0.62 floor — 0.013 of headroom, the tightest margin in the
+  // repository. Making it walk would move the figure out of the sodium pool that
+  // view exists to stand it in. `banish` is a connected swing at 1.9 m and §7.4's
+  // beat is the dismissal, not a decal. Demanding a trail of both would be a gate
+  // only satisfiable by wrecking two good frames.
+  const views = capture.CAPTURE_VIEWS.filter((view) => view.steps.some((step) => step.op === 'creature'))
+  assert.ok(views.length > 0, 'no view stages a creature, so this check can never fire')
+  // The world-time a view hands the creature AFTER it is placed. `begin` settles
+  // 1.5 s before the player exists and the creature is placed after that, so only
+  // the waits following the placement count.
+  const walkSeconds = (view) => {
+    const at = view.steps.findIndex((step) => step.op === 'creature')
+    return view.steps.slice(at + 1)
+      .filter((step) => step.op === 'wait')
+      .reduce((total, step) => total + step.seconds, 0)
+  }
+  // The speed is §11.1's own ramp read through its own accessor rather than a
+  // literal, because a literal here is a second copy of the chase speed that
+  // drifts from the table the moment §11.1 is retuned — and a gate whose constant
+  // is a copy of the thing it gates can be green and wrong at once. Every
+  // creature view is a tier-0 staging (none shuts a portal first), so this is the
+  // row the captures actually run at.
+  const speed = beast.rampAt(0).speed
+  const carriers = views.filter((view) => speed * walkSeconds(view) >= beast.DRIP_STRIDE_METRES)
+  assert.ok(
+    carriers.length > 0,
+    'no view in the gallery is staged long enough for the creature to lay a single trail ' +
+      `mark, so pass 10's viscous trail is in no frame of the set: a creature view needs ` +
+      `at least ${(beast.DRIP_STRIDE_METRES / speed).toFixed(2)} s of walk after the creature is ` +
+      `placed (DRIP_STRIDE_METRES ${beast.DRIP_STRIDE_METRES} m at tier 0's ${speed} m/s). ` +
+      views.map((view) => `${view.id}: ${walkSeconds(view).toFixed(2)} s`).join(', '),
+  )
+  const carried = walkSeconds(carriers[0])
+  console.log(
+    `\n  capture staging: long enough to lay a mark in ${carriers.map((view) => view.id).join(', ')} ` +
+      `(${carried.toFixed(2)} s = ${(speed * carried).toFixed(2)} m against a ` +
+      `${beast.DRIP_STRIDE_METRES} m stride); whether those marks land inside the frame is ` +
+      "verify-world.mjs's 'the trail is in a picture' check",
+  )
+})
+
 test('the gallery in the repository is the gallery the design asks for', () => {
   // the anti-rotation check. A view that stops being photographed leaves a stale
   // PNG behind, and a stale PNG in a results README is a claim about a build that

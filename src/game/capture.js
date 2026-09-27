@@ -482,7 +482,31 @@ const VIEWS = [
       { op: 'takeHammer' },
       { op: 'goto', target: 'node', back: 0 },
       { op: 'creature', state: 'chase', metres: 9, bearing: 4 },
-      { op: 'wait', seconds: 0.3 },
+      // 1.2 s, not 0.3 s, and the number is load-bearing in a way the old one was
+      // not. Pass 10 gave the creature a viscous trail, and §16.5.8 photographs a
+      // full chase — but at 0.3 s this view laid NOTHING: `DRIP_STRIDE_METRES` is
+      // 0.9 m, the figure covers 0.62 m in 0.3 s, and the reducer's first mark
+      // needs 1.48 s of walking. So the frame named for the chase was the one
+      // frame in the set where the trail could not possibly appear, and the
+      // feature shipped with no picture of it anywhere in the gallery.
+      //
+      // At 1.2 s it walks 2.60 m and lays two marks, and the world check at the
+      // bottom of `verify-world.mjs` projects both of them INSIDE a 1280x720
+      // frame — about 21 px across, at alpha 0.62 and 0.86, 7-8 m out where the
+      // sodium pool is still lighting the road under them. That is the difference
+      // between a feature that is measured by a gate and a feature a reviewer can
+      // see. The exact pixel coordinates are deliberately not written down here:
+      // they move with the frame, and a comment that goes stale is worse than
+      // one that points at the check that measures it.
+      //
+      // It also stops short of §9.3 and of the state machine's own give-up: the
+      // meter decays once nothing is in the cone, and past ~1.5 s the creature
+      // drops back to stalk, at which point the capture is filing a stalk under a
+      // filename claiming a chase. Measured on the built world, 1.2 s is inside
+      // the window where `creature.state` is still `chase` on the final frame, and
+      // it is the point where BOTH marks are at their most legible together
+      // (alpha 0.62 and 0.86) rather than one strong and one barely there.
+      { op: 'wait', seconds: 1.2 },
       { op: 'frames', count: 2 },
     ],
   },
