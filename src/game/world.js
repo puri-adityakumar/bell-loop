@@ -42,6 +42,11 @@ import { createStore, PHASE } from './store.js'
 import { PlayerController } from './player.js'
 import { PALETTE, StreetView } from './streetView.js'
 import { CreatureView } from './creatureView.js'
+// §15.1's split again, one module further out: the sky is the fourth thing in
+// this file that is a VIEW rather than a rule, and it is the first one whose
+// frame of reference is the camera rather than the world. Read its header for why
+// that is the pass's whole architecture and not a detail.
+import { SkyView } from './skyView.js'
 import * as beast from './creature.js'
 import * as rules from './rules.js'
 import { streamAt } from './hash.js'
@@ -393,6 +398,20 @@ export class LongQuietGame {
 
     this._buildLights()
     this._applyDusk(0)
+
+    // ITERATION 2, PASS 9. The sky, built after the dusk so its `HORIZON_HAZE`
+    // mix reads `PALETTE.skyStops[0]` from the same palette the world just
+    // applied — the order matters, and the reverse order would haze the ring
+    // against a sky colour that is about to change.
+    //
+    // It is constructed with the CAMERA and not with the world, and that is the
+    // whole of its architecture: `skyView.js` places everything at a fixed offset
+    // from the camera and copies the camera's position once a frame, so the sky
+    // is immune to the 448 m wrap the street view is built around. It is a
+    // sibling of `streetView` in the scene graph, NOT a child of
+    // `streetView.group` — a child would translate by whole periods and the
+    // horizon would swim.
+    this.skyView = new SkyView(this.scene, this.camera, { seed: this.seed })
 
     // --- player -------------------------------------------------------------
     // slice 11: the player's stride is a *fact* for the audio frame, not a sound.
@@ -872,6 +891,13 @@ export class LongQuietGame {
     this.animTime += dt
     this.phase = this.store.get().phase ?? this.phase
     this.streetView.update(dt)
+    // ITERATION 2, PASS 9. The sky rides with the camera, so it is updated AFTER
+    // the street and BEFORE anything reads the camera's new position for the
+    // frame. The root copies `this.camera.position` and the player controller has
+    // already written it, so the order that matters is the one this sits in: the
+    // street recentres itself on the following line, and a sky that recentred
+    // with it would be translating by a whole period.
+    this.skyView.update(dt)
     this._recentre()
     this._updateLampPool()
     this.fill.position.set(this.player.pos.x, 1.5, this.player.pos.z)
@@ -2196,6 +2222,11 @@ export class LongQuietGame {
     this._resizeObserver?.disconnect()
     this.player.dispose()
     this.streetView.dispose()
+    // ITERATION 2, PASS 9. The sky leaves the scene BEFORE the traversal below,
+    // for the reason `creatureView.dispose()`'s own line gives: the traversal
+    // disposes every geometry and material it can reach, and a view that has
+    // already released its own is not reachable.
+    this.skyView.dispose()
     // the hums are oscillators this file started, and nothing else will ever stop
     // them: the game is gone and its per-portal voices go with it. The drone and
     // the ambience belong to the AudioManager's lifetime, not to the world's, so

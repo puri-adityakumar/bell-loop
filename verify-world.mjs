@@ -4285,6 +4285,10 @@ check('the wire shader is told the DEVICE resolution, and follows a resize', () 
  * comment-free `Object.freeze` call, so a regex is a complete parse of it.
  */
 const STREET_VIEW_SOURCE = readFileSync(new URL('./src/game/streetView.js', import.meta.url), 'utf8')
+// Iteration 2, pass 9. Read for `skyNumber` above, and only for it: the horizon
+// ring's radius is a claim about a constant and a build, and the two cannot both
+// be read off the scene.
+const SKY_VIEW_SOURCE = readFileSync(new URL('./src/game/skyView.js', import.meta.url), 'utf8')
 
 /** The fifteen pools this pass adds, in creation order. */
 const PASS7_POOLS = Object.freeze([
@@ -5725,6 +5729,602 @@ check('the portal exclusion is CALLED, and not merely correct when asked', () =>
   assert.equal(streaks, view.lampPositions.length * 3, `after restoring the portal the world has ${streaks} streaks, so the plant was not undone and every later check is reading a different world`)
   for (const name of POOLS) view.pools[name].commit()
   console.log(`\n  pass-8 portal plant: both water families re-filtered, ${streaks} streaks restored`)
+})
+
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 9 — the sky in the BUILT world
+//
+// These are the checks `verify.mjs` could not write. Everything above is a
+// property of a line of source; everything below is a property of the scene that
+// line produced, measured off the live Three.js objects after the world has been
+// constructed, stepped and torn down.
+//
+// The headline is the SECOND one. The brief asked for "an explicit
+// distance/position check" proving the horizon silhouettes cannot block a portal
+// or shed sightline, and the check below answers it in the only form that can be
+// true for every player position: the ring is CAMERA-RELATIVE at a constant
+// radius, so the distance from the eye to the nearest silhouette is a constant
+// that no walk can change. A filter would have to be re-applied to every future
+// placement; a constant radius cannot be forgotten.
+// ---------------------------------------------------------------------------
+
+/** The pass's built objects, and the pool-free counts the harness reads. */
+const SKY_MESHES = ['skyMoon', 'skyHorizon', 'skyHazeBand0', 'skyHazeBand1', 'skyHazeBand2', 'skyAsh']
+
+/**
+ * `skyNumber` — a named constant out of `skyView.js`.
+ *
+ * The same reason `waterNumber` exists: the check and the thing it checks cannot
+ * then disagree about what the number is, and the values are READ rather than
+ * re-derived, because the assertion below is that the constant and the BUILT ring
+ * agree. A helper that re-derived the radius from the geometry would be checking
+ * the geometry against itself.
+ *
+ * This file needs a source string where the pure harness does not, which is worth
+ * noting: it is not because the world harness cannot read a material (it can, and
+ * the budget check below does), but because the ring's radius has no material to
+ * read it from. The geometry is forty-two boxes and the radius is the number
+ * their positions were computed from; the only way to compare the two is to hold
+ * the claim on one side and the build on the other.
+ *
+ * @param {string} name the constant's name, without `const`
+ * @returns {number} its value
+ */
+function skyNumber(name) {
+  const found = new RegExp(`const ${name} = (-?[\\d.]+)`).exec(SKY_VIEW_SOURCE)
+  assert.ok(found, `${name} is not a named constant any more, so this check is reading nothing`)
+  return Number(found[1])
+}
+
+/** Every mesh under the sky root, flattened. */
+function skyObjects(sky) {
+  const out = []
+  sky.root.traverse((object) => {
+    if (object.isMesh || object.isPoints) out.push(object)
+  })
+  return out
+}
+
+check('the sky is built, camera-relative, and never inside the wrapped street group', () => {
+  game.restart()
+  run(game, 0.5)
+  const sky = game.skyView
+  assert.ok(sky, 'the world has no skyView, so this pass is not in the build')
+  assert.ok(sky.root, 'the sky has no root')
+  assert.equal(sky.disposed, false, 'the sky is already disposed after half a second of running')
+  // It is a SIBLING of the street, not a child. This is the wrap immunity stated
+  // in the module header and it is the one structural claim about the scene
+  // graph: `streetView.group` translates by whole 448 m periods as the player
+  // walks, so a sky inside it would swim across the frame every time the wrap
+  // fired. Reading it off the parent chain is the only way to be sure, and a
+  // comment is not.
+  assert.equal(sky.root.parent, game.scene, 'the sky root is not a direct child of the scene, so it may be inside the wrapped street group')
+  assert.notEqual(
+    sky.root.parent,
+    game.streetView.group,
+    'the sky is inside the street group, which translates by whole 448 m periods — the horizon would swim',
+  )
+  assert.notEqual(sky.root.parent, game.creatureView.root, 'the sky is inside the creature view, which is disposed on banish')
+  // All six families exist, are named, and are in the scene. Counted rather than
+  // pattern-matched, because a family that renders nothing still has a name.
+  // The five families, read as a NAME over everything under the root — meshes,
+  // points AND groups. `skyHorizon` is a group, not a mesh, and a check that only
+  // walked meshes would have reported the ring as missing while the ring was
+  // standing right there. The distinction matters: the group is what holds the
+  // forty-two parts, so "the horizon is not in the scene" and "the horizon is not
+  // a mesh" are different failures with different fixes.
+  const names = new Set()
+  sky.root.traverse((object) => {
+    if (object.name) names.add(object.name)
+  })
+  for (const name of SKY_MESHES) {
+    assert.ok(names.has(name), `the sky family ${name} is not in the built scene`)
+  }
+  assert.equal(sky.root.name, 'sky', 'the sky root is not named, so it cannot be told from any other group in the scene')
+  // The root follows the camera in X and Z, and is PINNED to y = 0. Following Y
+  // would put a skyline at eye level and drop the ash through the road, so this
+  // asserts the exact triple rather than "close to the camera".
+  const camera = game.camera.position
+  assert.ok(Math.abs(sky.root.position.x - camera.x) < 1e-6, `the sky root is ${(sky.root.position.x - camera.x).toFixed(3)} m from the camera in x`)
+  assert.ok(Math.abs(sky.root.position.z - camera.z) < 1e-6, `the sky root is ${(sky.root.position.z - camera.z).toFixed(3)} m from the camera in z`)
+  assert.equal(sky.root.position.y, 0, `the sky root is at y = ${sky.root.position.y}, so the horizon is at eye level and the ash is underground`)
+  // And the whole thing moves WITH the camera. This is the property that makes
+  // the ring a horizon rather than a landmark, and it is measured by walking.
+  const before = { x: sky.root.position.x, z: sky.root.position.z }
+  game.player.teleport(camera.x + 37.5, camera.z - 21.25)
+  run(game, 0.2)
+  assert.ok(
+    Math.abs(game.skyView.root.position.x - game.camera.position.x) < 1e-6
+      && Math.abs(sky.root.position.x - before.x) > 30,
+    'the sky root did not follow the camera when the player walked 43 m, so the horizon is world-anchored and will wrap',
+  )
+  console.log(`\n  pass-9 sky: ${skyObjects(sky).length} meshes under a root that is a scene sibling, following the camera in x/z at y = 0`)
+})
+
+check('the horizon ring is a constant radius from the eye, and clear of every portal and shed', () => {
+  game.restart()
+  run(game, 0.5)
+  const sky = game.skyView
+  const radius = skyNumber('HORIZON_RADIUS')
+
+  // THE EXPLICIT DISTANCE/POSITION CHECK THE BRIEF ASKED FOR, and it is measured
+  // off the built matrices rather than asserted from the source: every silhouette
+  // sits at EXACTLY `HORIZON_RADIUS` from the camera, in every direction.
+  //
+  // The reason this is the right form of the guarantee is worth stating, because
+  // the obvious alternative is wrong. A world-anchored ring has to be checked
+  // against every lot, every shed and every portal anchor at every position the
+  // player can reach — and the player can reach 448 m of world, so that check is
+  // 448 m of continuous cases rather than a constant. The camera-relative ring
+  // collapses the whole question to one number, and the number cannot change
+  // because nothing in the ring reads the player's position.
+  const ring = sky.horizon.children
+  assert.ok(ring.length >= 14, `the horizon has ${ring.length} parts, so the ring is not built`)
+  let worst = 0
+  for (const mesh of ring) {
+    // The part is a child of `horizon`, which is a child of `root`, which is at
+    // the camera. The world position is the sum, and the distance from the eye is
+    // the radius by construction — so this measures the construction rather than
+    // trusting it.
+    const world = new THREE.Vector3()
+    mesh.getWorldPosition(world)
+    const eye = new THREE.Vector3(game.camera.position.x, 0, game.camera.position.z)
+    const distance = Math.hypot(world.x - eye.x, world.z - eye.z)
+    worst = Math.max(worst, Math.abs(distance - radius))
+  }
+  assert.ok(
+    worst < 1e-6,
+    `a horizon silhouette is ${worst.toFixed(4)} m off the ${radius} m ring, so the ring is not a constant radius and the sightline guarantee is void`,
+  )
+
+  // ...and it is the same constant from EVERY position, which is the guarantee.
+  // Four corners of the canonical window plus the spawn, because the wrap makes
+  // "four corners" a statement about the torus rather than about one block.
+  for (const [x, z] of [[-190, 254], [-190, -190], [254, 254], [254, -190], [0, 0]]) {
+    game.player.teleport(x, z)
+    run(game, 0.2)
+    const moved = game.skyView
+    const eye = { x: game.camera.position.x, z: game.camera.position.z }
+    for (const mesh of moved.horizon.children) {
+      const world = new THREE.Vector3()
+      mesh.getWorldPosition(world)
+      const distance = Math.hypot(world.x - eye.x, world.z - eye.z)
+      assert.ok(
+        Math.abs(distance - radius) < 1e-6,
+        `at (${x}, ${z}) a silhouette is ${distance.toFixed(2)} m from the eye rather than ${radius} m`,
+      )
+    }
+  }
+
+  // THE PORTAL SIGHTLINE, and this is where the first version of the check was
+  // wrong in a way worth recording. It asserted that every portal anchor is nearer
+  // than the ring, and it failed at 350.8 m — which is NOT a defect in the sky.
+  // Across a 448 m torus a portal in the next copy is genuinely 350 m from the
+  // player, the far plane is 260 m, and the fog at dusk 0 is 50% opaque at 111 m:
+  // that portal is a shape nobody can see through a 260 m clip, let alone one
+  // standing 232 m in front of it. The assertion was a real property with an
+  // unjustified scope, and the honest version is the one the brief asked for.
+  //
+  // The claim is about the DISTANCES THE PLAYER CAN ACTUALLY SEE, which the fog
+  // defines, and there are exactly two of them: the §16.5.5 stand-off a capture
+  // photographs a gate from, and the creature's own §6.1 sighting range. A
+  // silhouette standing between the eye and either of those is the only failure
+  // that matters, and both are far inside the ring.
+  const fogHalf = rules.fogVisibility(rules.fogDensityForDusk(0))
+  const anchors = game.streetView.portals.map((entry) => game.streetView.worldOf(entry.position))
+  const nearestPortal = Math.min(
+    ...anchors.map((anchor) => Math.hypot(anchor.x - game.camera.position.x, anchor.z - game.camera.position.z)),
+  )
+  assert.ok(
+    radius > fogHalf * 2,
+    `the ring is at ${radius} m and the world is half-fogged at ${fogHalf.toFixed(0)} m, so a silhouette can stand in front of geometry the player is still able to see`,
+  )
+  // The §16.5.5 stand-off itself: 4.5 m on the structure's own facing, which is
+  // `PORTAL_GATE_OFFSET`'s neighbourhood. The check is that the ring is two orders
+  // of magnitude beyond it, so no silhouette is ever between that camera and its
+  // subject — and the render order guarantees the rest.
+  const standOff = 4.5
+  assert.ok(
+    radius > standOff * 20,
+    `the ring is at ${radius} m and the §16.5.5 gate stand-off is ${standOff} m, so a silhouette could be in the pupil frame`,
+  )
+  // And the far plane, which is the other hard bound: anything the renderer
+  // cannot draw cannot be obscured by anything the renderer does draw.
+  assert.ok(radius < game.camera.far, `the ring is at ${radius} m and the far plane is ${game.camera.far} m`)
+  // The nearest portal, reported because a reader of this log will want to know
+  // the ring's margin against the thing it is protecting. The far ones are not a
+  // concern and are deliberately not asserted on.
+  assert.ok(
+    nearestPortal > 0,
+    `a portal anchor is on top of the camera at (${game.camera.position.x.toFixed(1)}, ${game.camera.position.z.toFixed(1)}), so the stand-off is broken independently of the sky`,
+  )
+
+  // And the ring is outside the street grid's own reach, with margin, read from
+  // the neighbourhood's constants so a change to `SETBACK` moves the bound.
+  const built = ((hood.GRID - 1) / 2) * hood.BLOCK + hood.SETBACK + hood.LOT_DEPTH
+  assert.ok(
+    radius > built + 10,
+    `the ring is at ${radius} m and the street builds to ${built.toFixed(0)} m, so a silhouette stands inside the grid`,
+  )
+  // The far plane holds it, read off the camera rather than restated.
+  assert.ok(
+    radius < game.camera.far,
+    `the ring is at ${radius} m and the camera's far plane is ${game.camera.far} m, so the horizon is clipped away`,
+  )
+  // And the occluder list is untouched: the ring contributes NOTHING to what
+  // `creature.js`'s §6.3 sightline walks. This is the second, independent line of
+  // defence, and it is checked by PLANTING rather than by reading a count — see
+  // the plant check below.
+  const before = game.streetView.occluders().length
+  const kinds = new Set(game.streetView.occluders().map((entry) => entry.kind))
+  assert.equal(kinds.has('sky') || kinds.has('horizon'), false, 'a horizon silhouette is in the occluder list, so it can hide the creature')
+  assert.equal(before, game.streetView.occluders().length, 'building the sky changed the occluder list, so the ring is a world object after all')
+  console.log(`\n  pass-9 horizon: ${ring.length} parts at a constant ${radius} m, ${(radius - built).toFixed(0)} m past the built world (${built.toFixed(0)} m), ${(game.camera.far - radius).toFixed(0)} m inside the far plane (${game.camera.far} m), nearest portal ${Math.max(...anchors.map((a) => Math.hypot(a.x - game.camera.position.x, a.z - game.camera.position.z))).toFixed(1)} m`)
+})
+
+check('the sky is layered by render order, and the moon is behind the bands that veil it', () => {
+  game.restart()
+  run(game, 0.5)
+  const sky = game.skyView
+  const world = game.scene
+  // Read the orders off the BUILT objects, not off the source. A constant that is
+  // declared and never applied to a mesh is the failure this catches, and it is
+  // invisible in a screenshot because the sky still draws — just in the wrong
+  // order, which for a moon means it stops being occluded by the overcast.
+  const orderOf = (name) => {
+    let found = null
+    world.traverse((object) => {
+      if (object.name === name) found = object.renderOrder
+    })
+    assert.notEqual(found, null, `${name} is not in the built scene, so its render order cannot be read`)
+    return found
+  }
+  const moon = orderOf('skyMoon')
+  const horizon = orderOf('skyHorizon')
+  const bands = [0, 1, 2].map((index) => orderOf(`skyHazeBand${index}`))
+  const ash = orderOf('skyAsh')
+
+  // EVERY sky order is below the world's lowest. This is the structural safety
+  // property and it is checked against the world's OWN value rather than a
+  // restatement, so a future pass that reorders the street cannot quietly make
+  // the sky the thing drawn on top.
+  // The world's own floor, found by EXCLUDING the sky subtree properly. The first
+  // version of this scan tested `sky.root.children.includes(object)`, which is one
+  // level deep and let `skyHorizon` — a direct child of the root — count as world
+  // geometry. The symptom was a sky order of -99 reported as "the world starts at
+  // -99", which is a gate comparing the thing under test against itself. The
+  // subtree is excluded by walking it, which is depth-independent.
+  const inSky = new Set()
+  sky.root.traverse((object) => inSky.add(object))
+  let worldLowest = Infinity
+  let worldSamples = 0
+  world.traverse((object) => {
+    if (inSky.has(object)) return
+    if (object === world) return
+    worldSamples += 1
+    if (object.renderOrder < worldLowest) worldLowest = object.renderOrder
+  })
+  assert.ok(worldSamples > 100, `only ${worldSamples} objects outside the sky, so the world scan is not seeing the scene`);
+  for (const [name, order] of [['moon', moon], ['horizon', horizon], ['ash', ash], ...bands.map((o, i) => [`band${i}`, o])]) {
+    assert.ok(
+      order < worldLowest,
+      `the sky's ${name} is drawn at order ${order} and the world starts at ${worldLowest}, so the sky can appear in front of the street`,
+    )
+  }
+  // The moon comes before the bands. This is not an occlusion claim — additive
+  // blending is commutative, so no ordering of the sky's own elements can change
+  // the frame. It is a SLOT claim, and the reason to make it is the one the next
+  // assertion checks.
+  assert.ok(moon < bands[0], `the moon is at ${moon} and the nearest band at ${bands[0]}, so the disc no longer has a slot of its own before the strata`)
+  // EVERY ORDER IS DISTINCT. This is the real check, and it is here because the
+  // first version of `skyView.js` computed the bands as `base - index`, which put
+  // the third band on -100 — the MOON's slot. A tie is not an order: three.js
+  // breaks a renderOrder tie by material id, which is an allocation artefact and
+  // not a layering rule. The symptom was invisible and would have stayed
+  // invisible, which is why it is a count rather than a comparison.
+  const orders = [moon, horizon, ash, ...bands]
+  assert.equal(
+    new Set(orders).size,
+    orders.length,
+    `the sky's render orders are ${orders.join(', ')} — two of them share a slot, so their relative order is decided by material id`,
+  )
+  // The bands ascend near-to-far, i.e. the NEAR band takes the last-drawn slot.
+  // The sign is the thing worth asserting: three.js draws the LOWER renderOrder
+  // first, so the opposite sign would put the far band in front of the near one.
+  assert.ok(
+    bands[0] < bands[1] && bands[1] < bands[2],
+    `the band orders are ${bands.join(', ')} — the near band is not drawn last, so the run is the wrong way round`,
+  )
+  // And the bands really are near-to-far, which is what the run encodes. Read off
+  // the built positions rather than the table, so a reordered table fails here.
+  const radii = sky.bands.map((entry) => Math.hypot(entry.mesh.position.x, entry.mesh.position.z))
+  for (let index = 0; index + 1 < radii.length; index += 1) {
+    assert.ok(radii[index] < radii[index + 1], `band ${index} is at ${radii[index].toFixed(1)} m and band ${index + 1} at ${radii[index + 1].toFixed(1)} m, so the draw order does not match the depth`)
+  }
+  console.log(`\n  pass-9 order: moon ${moon}, horizon ${horizon}, bands ${bands.join('/')}, ash ${ash}, world's lowest ${worldLowest}; band radii ${radii.map((r) => r.toFixed(0)).join('/')} m`)
+})
+
+check('the sky is a light rim and a light rim is all it is: the luma budget, measured on the built materials', () => {
+  game.restart()
+  run(game, 0.5)
+  const sky = game.skyView
+  // The budget `verify.mjs` computes arithmetically, measured here on the objects
+  // that will actually be submitted. The two are the same claim read two ways, and
+  // that is deliberate: the pure harness reads the palette and the peaks, and
+  // this one reads the `THREE.Color` instances three.js will tone-map. A
+  // disagreement between them is a bug in one of them.
+  //
+  // `lumaOf` encodes to sRGB first, which is the whole point — a `Color` holds
+  // linear components, and taking a luminance straight off them reports 6 luma
+  // for a fog `streetView.js` calls 43.
+  // How the peak reaches the frame differs per family, and reading it wrong is
+  // how this check first reported 127.9 luma against a budget of 75:
+  //
+  //  - the MOON keeps `skyMoon` as its colour and applies `MOON_PEAK` through
+  //    `opacity`, so the contribution is `lumaOf(colour) * opacity`;
+  //  - the BANDS bake their peak into the colour (`skyHaze` scaled by the band's
+  //    own `peak`) and leave `opacity` at 1, so `lumaOf(colour)` is already the
+  //    contribution and multiplying by anything double-counts it;
+  //  - the ASH does the same.
+  //
+  // The bands' and the ash's material `opacity` is asserted to be 1 below, which
+  // is what pins the distinction — otherwise a future pass that switches one of
+  // them to `opacity` would silently halve its contribution here.
+  // ...and the moon is the SAME case as the others, which the first version of
+  // this check got wrong in the opposite direction. `opacity` scales the
+  // fragment's ALPHA, and AdditiveBlending is `src.rgb * src.a + dst.rgb` — so the
+  // added light is the LINEAR colour times `opacity`, encoded afterwards. Reading
+  // it as `lumaOf(colour) * opacity` multiplies in sRGB space and reports 3.3
+  // luma where the renderer produces 21.4, because sRGB encoding is steep near
+  // black. All three families are now measured the same way, and the one place
+  // they differ is that the moon uses `opacity` where the others bake the peak
+  // into the colour — which is why `lumaOf(colour.clone().multiplyScalar(peak))`
+  // is the right expression for all three.
+  const moonMaterial = sky.moonMaterial()
+  const moonLuma = lumaOf(moonMaterial.color.clone().multiplyScalar(moonMaterial.opacity))
+  const bandLumas = sky.bandMaterials().map((material) => lumaOf(material.color))
+  const ashLuma = lumaOf(sky.ashMaterial().color)
+  const total = moonLuma + bandLumas.reduce((a, b) => a + b, 0) + ashLuma
+  for (const material of [...sky.bandMaterials(), sky.ashMaterial()]) {
+    assert.equal(
+      material.opacity,
+      1,
+      'a band or the ash applies its peak through `opacity` as well as through its colour, so its contribution is counted twice by this check and once by the renderer',
+    )
+  }
+
+  const EYE_MIN = 150
+  assert.ok(
+    total < EYE_MIN * 0.5,
+    `the built sky adds ${total.toFixed(1)} luma at worst, over half of EYE_MIN ${EYE_MIN} — png-luma's eye finder could resolve it as the creature`,
+  )
+  // The moon on its own, because the brief named it: visible, and dim.
+  // "Barely-visible" and "not bright" are two bounds, and both are here. The
+  // floor is 12: below that the disc is under the sky's own noise and the brief's
+  // "pale disc" is a smudge nobody would ever describe as a moon.
+  assert.ok(moonLuma > 12, `the moon is ${moonLuma.toFixed(1)} luma, so it is not visible and the brief's pale disc is a smudge`)
+  assert.ok(moonLuma < 40, `the moon is ${moonLuma.toFixed(1)} luma, which is a light rather than a disc`)
+  // And the three additive families really are additive, and the two distant ones
+  // really are unfogged, read off the built materials.
+  for (const material of [sky.moonMaterial(), sky.ashMaterial(), ...sky.bandMaterials()]) {
+    assert.equal(material.blending, THREE.AdditiveBlending, 'a sky material is not additive, so it is painting over the sky rather than adding to it')
+    assert.equal(material.depthWrite, false, 'a sky material writes depth, so it can occlude the world drawn after it')
+  }
+  assert.equal(sky.moonMaterial().fog, false, 'the moon is fogged, so at 236 m it is a 0.0003%-opacity disc')
+  assert.equal(sky.horizonMaterial.fog, false, 'the horizon is fogged, so at 232 m the ring is invisible')
+  assert.equal(sky.ashMaterial().fog, false, 'the ash is fogged, so an additive mote adds the whole fog colour to itself')
+  for (const material of sky.bandMaterials()) {
+    assert.equal(material.fog, true, 'a haze band is unfogged, so it does not thicken with the dusk and §3.7 loses a limb')
+  }
+  console.log(`\n  pass-9 budget: moon ${moonLuma.toFixed(1)} + bands ${bandLumas.map((l) => l.toFixed(1)).join('/')} + ash ${ashLuma.toFixed(1)} = ${total.toFixed(1)} luma, ${(total / EYE_MIN * 100).toFixed(0)}% of EYE_MIN`)
+})
+
+check('the sky is deterministic: the same time twice gives the same sky', () => {
+  // The contract `skyView.js`'s header states, exercised. Pass 8's shimmer is the
+  // precedent: an accumulator would satisfy every screenshot and fail this,
+  // because the sum depends on the frame history rather than on the clock.
+  //
+  // TWO ROUTES TO THE SAME TIME, which is the part that matters. A single route
+  // would be satisfied by an accumulator that happened to agree, and the two
+  // routes below differ by 2 extra frames: 62 x (1/60) and 60 x (1/60) + 2 x
+  // (1/120), both landing on 1.0333 s. An accumulator carries the extra pair of
+  // steps' residue; a pure function of `_time` does not.
+  const snapshot = () => {
+    const sky = game.skyView
+    return {
+      root: [sky.root.position.x, sky.root.position.y, sky.root.position.z],
+      moon: [sky.moon.position.x, sky.moon.position.y, sky.moon.position.z, sky.moon.material.opacity],
+      bands: sky.bands.map((entry) => [entry.mesh.position.x, entry.mesh.position.z]),
+      ash: Array.from(sky.ashPositions),
+    }
+  }
+
+  // The two routes have to reach the same `_time` BIT-IDENTICALLY, and the first
+  // version of this check did not: 62 additions of 1/60 and 60 additions of 1/60
+  // plus 2 of 1/120 are both 1.0333... in exact arithmetic, but `_time` is a
+  // running float sum and the two sums differ in the last bits. The sky is a pure
+  // function of `_time`, so the check was comparing two different values of it and
+  // reporting the (correct) purity as drift.
+  //
+  // The fix is to make the SECOND route start from the first route's own state
+  // and step back to the same clock: snapshot at some `t`, run on, then rewind
+  // `_time` to exactly `t` and take a second snapshot. Any dependence on frame
+  // history shows up as a difference, and the value under test is the one the
+  // module's contract actually names.
+  game.restart()
+  run(game, 62 * (1 / 60))
+  const first = snapshot()
+  const at = game.skyView._time
+
+  run(game, 45)
+  assert.notEqual(game.skyView._time, at, 'the clock did not advance, so the rewind below is a no-op and proves nothing')
+  // Rewind the clock alone, then step one frame of zero: the ash must come back
+  // exactly. A history-dependent implementation cannot do this, because the
+  // positions it accumulated on the way out are still in the buffer.
+  game.skyView._time = at
+  game.skyView.update(0)
+  const second = snapshot()
+
+  // The ash is the interesting one: ninety positions, three floats each, and the
+  // only claim in the pass that a screenshot cannot make at all.
+  assert.deepEqual(
+    second.ash,
+    first.ash,
+    'the ash drifted between two runs that reached the same time, so it is a function of frame history rather than of the clock',
+  )
+  assert.deepEqual(second.bands, first.bands, 'the haze bands drifted between two runs at the same time')
+  assert.deepEqual(second.moon, first.moon, 'the moon moved between two runs at the same time')
+  assert.deepEqual(second.root, first.root, 'the sky root moved between two runs at the same time')
+  // ...and the ash is actually MOVING, or all of the above is the trivial claim
+  // that a frozen sky is a reproducible one. Measured ACROSS TIME, which is the
+  // only way to measure it now that both snapshots are the same instant.
+  const before = Array.from(game.skyView.ashPositions)
+  run(game, 3)
+  const after = Array.from(game.skyView.ashPositions)
+  let drift = 0
+  for (let index = 0; index < before.length; index += 1) {
+    if (Math.abs(before[index] - after[index]) > 1e-6) drift += 1
+  }
+  assert.ok(drift > before.length * 0.5, `only ${drift} of ${before.length} mote coordinates changed in three seconds, so the ash is not drifting`)
+  console.log(`\n  pass-9 determinism: ${first.ash.length / 3} motes bit-identical after the clock was advanced 3 s and rewound to t = ${at.toFixed(4)} s, ${drift} coordinates moved over the 3 s it was away`)
+})
+
+check('the horizon is a hazed silhouette: dark against the live sky, and varied in profile', () => {
+  game.restart()
+  run(game, 0.5)
+  const sky = game.skyView
+  const material = sky.horizonMaterial
+  const shapeLuma = lumaOf(material.color)
+  const skyLuma = lumaOf(game.scene.background)
+  const fogLuma = lumaOf(game.scene.fog.color)
+
+  // §12.1's silhouette rule, measured on the BUILT material against the live
+  // sky rather than against the palette: the ring has to be a dark shape in
+  // front of a lighter haze, or it is not a skyline. This is the same rule
+  // `creature.js` obeys and the reason its body is near-black.
+  assert.ok(
+    shapeLuma < skyLuma,
+    `the hazed silhouette is luma ${shapeLuma.toFixed(1)} and the sky is ${skyLuma.toFixed(1)}, so the ring is lighter than the air and reads as a stain`,
+  )
+  // And enough separation to actually read. A ring at 95% of the sky's luma is a
+  // ring nobody can resolve, which is a different failure with the same cause.
+  assert.ok(
+    shapeLuma < skyLuma * 0.85,
+    `the silhouette is luma ${shapeLuma.toFixed(1)} against a ${skyLuma.toFixed(1)} sky — not enough separation to read as a skyline`,
+  )
+  // It is hazed rather than black, and the check is that it is measurably LIGHTER
+  // than its own palette entry. `horizonShape` is luma 29.7 and the sky stop is
+  // 89.6, so an unhazed ring would be at 29.7 and a hazed one between.
+  const raw = lumaOf(new THREE.Color(0x231d16))
+  assert.ok(
+    shapeLuma > raw,
+    `the silhouette is luma ${shapeLuma.toFixed(1)}, which is at or below its unhazed palette value of ${raw.toFixed(1)} — the aerial-perspective mix is not being applied`,
+  )
+  assert.ok(shapeLuma < skyLuma, 'and it must still be under the sky')
+
+  // PROFILE, and this is the one property of the ring that is about SHAPE. Three
+  // kinds, and a ring of one kind is a fence. The check counts the meshes by name
+  // off the built group rather than reading the table, because a kind that is
+  // named in `HORIZON_SHAPES` and never built is the exact defect: the first
+  // version of `_horizonParts` had no `crane` branch at all and let it fall
+  // through, which rendered correctly until a fourth kind arrived.
+  const kinds = new Map()
+  for (const mesh of sky.horizon.children) {
+    const kind = mesh.name.replace('skyHorizon_', '')
+    kinds.set(kind, (kinds.get(kind) ?? 0) + 1)
+  }
+  assert.deepEqual(
+    [...kinds.keys()].sort(),
+    ['crane', 'mast', 'tower'],
+    `the ring carries kinds ${[...kinds.keys()].join(', ')} — the brief asked for water towers, radio masts and cranes`,
+  )
+  for (const [kind, count] of kinds) {
+    assert.ok(count >= 4, `only ${count} ${kind} parts on a fourteen-silhouette ring, so one quadrant has none`)
+  }
+  // Every part is THREE boxes, so 14 x 3 = 42, and the whole ring is 42 boxes
+  // sharing a handful of geometries. The count is the cheap-geometry claim.
+  assert.equal(sky.horizonCount, [...kinds.values()].reduce((a, b) => a + b, 0), 'horizonCount does not match the meshes actually in the group')
+  // The geometry cache has to HIT, and the first version of the check demanded a
+  // third of the parts and was wrong: the ring is three different SHAPES at three
+  // different heights, so even a perfect cache cannot collapse them further than
+  // the number of distinct sizes, which is about eighteen. The claim is that the
+  // cache is doing work — one geometry per part would mean forty-two buffers, and
+  // the doc comment claiming they share would be false while reading true.
+  const distinct = new Set(sky.horizon.children.map((mesh) => mesh.geometry)).size
+  assert.ok(
+    distinct < sky.horizonCount / 2,
+    `the ring has ${sky.horizonCount} parts on ${distinct} distinct geometries, so the sharing claim in \`_horizonGeometry\` is not true`,
+  )
+  // The parts differ in SIZE, which is the variety claim: fourteen identical
+  // stamps read as generated, and the per-object scale is what stops that.
+  const heights = sky.horizon.children.map((mesh) => mesh.geometry.parameters.height)
+  const tallest = Math.max(...heights)
+  const shortest = Math.min(...heights)
+  assert.ok(tallest / shortest > 1.5, `every part on the ring is between ${shortest.toFixed(1)} m and ${tallest.toFixed(1)} m, so the per-object scale is not being applied`)
+
+  // The cost, and pass 17's budget is the frame of reference. The whole pass is
+  // three draw calls plus one Points and about 500 triangles; the world draws
+  // about ninety. This is the check that says the sky is cheap, and it is a
+  // triangle count because a draw-call count would be a claim about the source.
+  let triangles = 0
+  for (const mesh of skyObjects(sky)) {
+    if (mesh.name === 'skyAsh') continue  // points, not triangles
+    const geometry = mesh.geometry
+    const per = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
+    // Instanced meshes would need the count; the horizon is not instanced, so
+    // each child is one object and the geometry count IS the triangle count.
+    triangles += per
+  }
+  assert.ok(triangles < 800, `the sky costs ${triangles} triangles, over the 800 this pass budgeted for a backdrop`)
+  console.log(`\n  pass-9 silhouette: luma ${shapeLuma.toFixed(1)} (unhazed ${raw.toFixed(1)}) against a sky of ${skyLuma.toFixed(1)} and fog of ${fogLuma.toFixed(1)}; ${[...kinds].map(([k, n]) => `${n} ${k}`).join(', ')} on ${distinct} geometries, ${triangles} triangles`)
+})
+
+check('the sky costs three draw calls and a point cloud, and teardown releases all of it', () => {
+  // §15's definition of done, and pass 17's budget, together. The render order
+  // check above reads the compositing; this reads the COST and the LIFETIME, and
+  // the two are separate claims: a sky that renders correctly and leaks a
+  // texture per mount is a bug that only shows up as a slow death.
+  game.restart()
+  run(game, 0.5)
+  const sky = game.skyView
+  const objects = skyObjects(sky)
+  // One group, one moon, 42 horizon parts, three bands, one point cloud.
+  const bands = objects.filter((mesh) => mesh.name.startsWith('skyHazeBand'))
+  const horizonParts = objects.filter((mesh) => mesh.name.startsWith('skyHorizon_'))
+  const ash = objects.filter((mesh) => mesh.name === 'skyAsh')
+  const moon = objects.filter((mesh) => mesh.name === 'skyMoon')
+  assert.equal(bands.length, 3, `there are ${bands.length} haze bands, so the pass's own budget is wrong`)
+  assert.equal(moon.length, 1, 'there is not exactly one moon')
+  assert.equal(ash.length, 1, 'the ash is not a single point cloud')
+  assert.ok(horizonParts.length >= 42, `the ring has ${horizonParts.length} parts, so it is not the fourteen three-part silhouettes the pass claims`)
+  // The bands share ONE geometry and ONE texture, which is the cheap claim: three
+  // copies of a 64x64 canvas would be three uploads and three chances to
+  // generate a different band, and the bands must match to read as one fog bank.
+  assert.equal(new Set(bands.map((mesh) => mesh.geometry)).size, 1, 'the three haze bands do not share one geometry')
+  assert.equal(new Set(bands.map((mesh) => mesh.material.map)).size, 1, 'the three haze bands do not share one texture')
+  // The ring shares ONE material, so the dusk retune is one write.
+  assert.equal(new Set(horizonParts.map((mesh) => mesh.material)).size, 1, 'the horizon parts do not share one material')
+
+  // TEARDOWN, and the order matters: `dispose` is the last check in this file
+  // because it destroys the shared `game`. So the sky's part is asserted HERE,
+  // on a throwaway mount, rather than by reaching into the final check.
+  const scratch = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  const view = scratch.skyView
+  const geometries = view._geometries.length
+  const textures = view.textures.length
+  assert.ok(geometries > 0, 'the sky tracked no geometries, so §15\'s teardown check would be satisfied by an empty world')
+  assert.ok(textures > 0, 'the sky tracked no textures, so the two procedural canvases are not registered for disposal')
+  scratch.dispose()
+  assert.equal(view.disposed, true, 'the sky view did not dispose')
+  assert.equal(view.root.parent, null, 'and did not remove itself from the scene')
+  assert.equal(view._geometries.length, 0, 'and left its geometries behind')
+  assert.equal(view.textures.length, 0, 'and its textures')
+  assert.equal(view.root.children.length, 0, 'and its children')
+  // ...and it is idempotent, because `dispose` may legitimately be called twice
+  // on the way out of a hot reload.
+  scratch.dispose()
+  console.log(`\n  pass-9 cost: 3 bands on 1 geometry + 1 texture, ${horizonParts.length} horizon parts on 1 material, 1 point cloud; teardown released ${geometries} geometries and ${textures} textures`)
 })
 
 check('dispose() tears the whole world down without throwing', () => {

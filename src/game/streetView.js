@@ -395,6 +395,51 @@ export const PALETTE = Object.freeze({
   wetSheen: 0x0a0a0c,
   canalBed: 0x0c0c0e,
   waterStreak: 0xffb877,
+  // ITERATION 2, PASS 9 — SKY & ATMOSPHERE
+  // -------------------------------------
+  // BEFORE: nothing. Nine passes had filled the lower two thirds of the frame —
+  // the street, the façades, the furniture, the water — and the upper third was
+  // still `scene.background`, which is one flat colour. It is the *fog* colour, so
+  // it agrees with the horizon perfectly and is therefore invisible as a
+  // background: a sodium haze with no structure in it reads as a flat wash, and a
+  // flat wash is what §12.1's "lit horizon" is not.
+  //
+  // Four entries, and every one of them obeys two rules the pass is held to.
+  //
+  // RULE 1 — WARMTH, AND IT IS A MEASURED ONE. A sky is the one place a game
+  // reaches for a cold colour, and §12.2's contract is that cyan belongs to the
+  // portals alone. `skyMoon` is a *pale* moon and pale reads as white, which at
+  // R=G=B would sit outside the amber ramp entirely; it is pulled to
+  // R > G > B and its g/r is asserted against the same 0.1 spread §12.3's ramps
+  // are held to, so it is a moon seen THROUGH sodium rather than through air.
+  //
+  // RULE 2 — EVERY ONE OF THEM IS A DIMMING OF SOMETHING ELSE, never a new
+  // light. §12.1's silhouette rule needs a dark thing to be a hole in, and
+  // T11's closed ladder has no rung above `windowLit` (198.3). So:
+  //
+  //   skyHaze      0x6a5a3a   luma 91.1  the band tint. Drawn ADDITIVE and at a
+  //                                low peak, so what reaches the frame is a
+  //                                fraction of this; the number is the ceiling,
+  //                                not the contribution.
+  //   skyMoon      0xb9a583   luma 166.8  also additive, and the ASTRONOMICAL
+  //                                value would be absurd — the contribution is
+  //                                `MOON_PEAK` of it, about 30 luma against a
+  //                                90-luma sky, which is a 1.3x lift. The brief
+  //                                asked for "dim, occluded by haze, NOT
+  //                                bright", and 1.3x is the number that says so.
+  //   horizonShape 0x231d16   luma 29.7  a silhouette, and it has to stay below
+  //                                the DARKEST sky stop (52.2) or the towers
+  //                                stop being shapes and become holes. It is the
+  //                                same rule §12.1 states for the creature, and
+  //                                it is asserted at all three dusk stops.
+  //   skyAsh       0x6b5a3c   luma 91.1  the motes. Additive, tiny, and drawn
+  //                                BEFORE the world, so the portal paints over
+  //                                them — see `ASH_RENDER_ORDER` in skyView.js
+  //                                for why that is a gate and not a preference.
+  skyHaze: 0x6a5a3a,
+  skyMoon: 0xb9a583,
+  horizonShape: 0x231d16,
+  skyAsh: 0x6b5a3c,
 })
 
 /** §5.1: one portal per liminal structure, in PORTAL_IDS order. */

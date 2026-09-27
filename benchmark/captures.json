@@ -12,8 +12,8 @@
   "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.57 Safari/537.36",
   "browser": "HeadlessChrome/154.0.8037.57",
   "node": "v26.7.0",
-  "started": "2026-09-27T03:21:28.399Z",
-  "ms": 771346,
+  "started": "2026-09-27T05:06:12.539Z",
+  "ms": 679463,
   "captured": 14,
   "failed": 0,
   "captures": [
@@ -27,17 +27,17 @@
       "file": "benchmark/screenshots/title.png",
       "minLit": 0.035,
       "luma": {
-        "lit": 0.48063802083333335,
-        "litPct": 48.06,
-        "mean": 37.229,
+        "lit": 0.4804470486111111,
+        "litPct": 48.04,
+        "mean": 37.422,
         "max": 205
       },
       "furniture": {
         "pools": 8,
-        "onScreen": 133,
+        "onScreen": 131,
         "legible": 3,
         "kinds": 2,
-        "nearest": 64.51,
+        "nearest": 64.44,
         "byKind": {
           "dumpster": {
             "pieces": 12,
@@ -52,20 +52,20 @@
           "vending": {
             "pieces": 12,
             "legible": 1,
-            "maxPx": 3.21
+            "maxPx": 3.22
           },
           "shelter": {
             "pieces": 4,
             "legible": 2,
-            "maxPx": 3.88
+            "maxPx": 3.89
           },
           "bike": {
             "pieces": 5,
             "legible": 0,
-            "maxPx": 1.04
+            "maxPx": 1.05
           },
           "bollard": {
-            "pieces": 68,
+            "pieces": 66,
             "legible": 0,
             "maxPx": 1.74
           },
@@ -85,7 +85,7 @@
           "height": 720
         },
         "steps": 2,
-        "ms": 7395,
+        "ms": 3359,
         "phase": "start",
         "paused": false,
         "simFrozen": false,
@@ -105,10 +105,10 @@
         "banished": 0,
         "furniture": {
           "pools": 8,
-          "onScreen": 133,
+          "onScreen": 131,
           "legible": 3,
           "kinds": 2,
-          "nearest": 64.51,
+          "nearest": 64.44,
           "byKind": {
             "dumpster": {
               "pieces": 12,
@@ -123,20 +123,20 @@
             "vending": {
               "pieces": 12,
               "legible": 1,
-              "maxPx": 3.21
+              "maxPx": 3.22
             },
             "shelter": {
               "pieces": 4,
               "legible": 2,
-              "maxPx": 3.88
+              "maxPx": 3.89
             },
             "bike": {
               "pieces": 5,
               "legible": 0,
-              "maxPx": 1.04
+              "maxPx": 1.05
             },
             "bollard": {
-              "pieces": 68,
+              "pieces": 66,
               "legible": 0,
               "maxPx": 1.74
             },
@@ -148,7 +148,7 @@
           }
         }
       },
-      "ms": 7395
+      "ms": 3359
     },
     {
       "id": "street",
@@ -160,9 +160,9 @@
       "file": "benchmark/screenshots/street.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8369986979166667,
-        "litPct": 83.7,
-        "mean": 74.853,
+        "lit": 0.83802734375,
+        "litPct": 83.8,
+        "mean": 79.955,
         "max": 249
       },
       "furniture": {
@@ -218,7 +218,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 26417,
+        "ms": 16514,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -281,7 +281,7 @@
           }
         }
       },
-      "ms": 26417
+      "ms": 16514
     },
     {
       "id": "hammer-located",
@@ -293,9 +293,9 @@
       "file": "benchmark/screenshots/hammer-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.24604600694444445,
-        "litPct": 24.6,
-        "mean": 44.108,
+        "lit": 0.23075520833333332,
+        "litPct": 23.08,
+        "mean": 46.583,
         "max": 238
       },
       "furniture": {
@@ -351,7 +351,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 16905,
+        "ms": 12430,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -414,7 +414,7 @@
           }
         }
       },
-      "ms": 16905
+      "ms": 12430
     },
     {
       "id": "hammer-awakening",
@@ -426,10 +426,10 @@
       "file": "benchmark/screenshots/hammer-awakening.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.23061414930555554,
-        "litPct": 23.06,
-        "mean": 43.853,
-        "max": 237
+        "lit": 0.230078125,
+        "litPct": 23.01,
+        "mean": 46.279,
+        "max": 236
       },
       "furniture": {
         "pools": 8,
@@ -484,7 +484,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 40059,
+        "ms": 37135,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -547,7 +547,7 @@
           }
         }
       },
-      "ms": 40059
+      "ms": 37135
     },
     {
       "id": "portal-located",
@@ -559,10 +559,10 @@
       "file": "benchmark/screenshots/portal-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.41291232638888886,
-        "litPct": 41.29,
-        "mean": 45.4,
-        "max": 219
+        "lit": 0.4155099826388889,
+        "litPct": 41.55,
+        "mean": 56.956,
+        "max": 218
       },
       "furniture": {
         "pools": 8,
@@ -617,7 +617,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 32600,
+        "ms": 15862,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -680,7 +680,7 @@
           }
         }
       },
-      "ms": 32600
+      "ms": 15862
     },
     {
       "id": "portal-shutdown",
@@ -692,10 +692,10 @@
       "file": "benchmark/screenshots/portal-shutdown.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8859505208333334,
-        "litPct": 88.6,
-        "mean": 33.4,
-        "max": 188
+        "lit": 0.8848263888888889,
+        "litPct": 88.48,
+        "mean": 33.033,
+        "max": 189
       },
       "furniture": {
         "pools": 8,
@@ -750,7 +750,7 @@
           "height": 720
         },
         "steps": 3,
-        "ms": 26145,
+        "ms": 24388,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -813,7 +813,7 @@
           }
         }
       },
-      "ms": 26145
+      "ms": 24388
     },
     {
       "id": "creature-stalking",
@@ -825,10 +825,10 @@
       "file": "benchmark/screenshots/creature-stalking.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.3044140625,
-        "litPct": 30.44,
-        "mean": 43.917,
-        "max": 252
+        "lit": 0.31238498263888886,
+        "litPct": 31.24,
+        "mean": 48.29,
+        "max": 253
       },
       "furniture": {
         "pools": 8,
@@ -883,7 +883,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 38055,
+        "ms": 50232,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -946,7 +946,7 @@
           }
         }
       },
-      "ms": 38055
+      "ms": 50232
     },
     {
       "id": "creature-chasing",
@@ -958,10 +958,10 @@
       "file": "benchmark/screenshots/creature-chasing.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9189735243055556,
-        "litPct": 91.9,
-        "mean": 45.685,
-        "max": 249
+        "lit": 0.9311219618055555,
+        "litPct": 93.11,
+        "mean": 48.393,
+        "max": 250
       },
       "furniture": {
         "pools": 8,
@@ -1016,7 +1016,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 37847,
+        "ms": 37930,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1079,7 +1079,7 @@
           }
         }
       },
-      "ms": 37847
+      "ms": 37930
     },
     {
       "id": "banish",
@@ -1091,10 +1091,10 @@
       "file": "benchmark/screenshots/banish.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.7996050347222222,
-        "litPct": 79.96,
-        "mean": 68.161,
-        "max": 241
+        "lit": 0.8036762152777778,
+        "litPct": 80.37,
+        "mean": 73.696,
+        "max": 246
       },
       "furniture": {
         "pools": 8,
@@ -1149,7 +1149,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 47680,
+        "ms": 25454,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1212,7 +1212,7 @@
           }
         }
       },
-      "ms": 47680
+      "ms": 25454
     },
     {
       "id": "capture-reset",
@@ -1224,9 +1224,9 @@
       "file": "benchmark/screenshots/capture-reset.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8371180555555555,
+        "lit": 0.8370529513888889,
         "litPct": 83.71,
-        "mean": 75.102,
+        "mean": 77.74,
         "max": 249
       },
       "furniture": {
@@ -1282,7 +1282,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 53793,
+        "ms": 26938,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1345,7 +1345,7 @@
           }
         }
       },
-      "ms": 53793
+      "ms": 26938
     },
     {
       "id": "finale-headlights",
@@ -1357,10 +1357,10 @@
       "file": "benchmark/screenshots/finale-headlights.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9458181423611111,
-        "litPct": 94.58,
-        "mean": 41.067,
-        "max": 245
+        "lit": 0.9335633680555555,
+        "litPct": 93.36,
+        "mean": 44.809,
+        "max": 247
       },
       "furniture": {
         "pools": 8,
@@ -1415,7 +1415,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 93183,
+        "ms": 100898,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1478,7 +1478,7 @@
           }
         }
       },
-      "ms": 93183
+      "ms": 100898
     },
     {
       "id": "win",
@@ -1490,9 +1490,9 @@
       "file": "benchmark/screenshots/win.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.10202907986111111,
-        "litPct": 10.2,
-        "mean": 15.551,
+        "lit": 0.10216145833333333,
+        "litPct": 10.22,
+        "mean": 15.9,
         "max": 196
       },
       "furniture": {
@@ -1548,7 +1548,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 105155,
+        "ms": 112276,
         "phase": "won",
         "paused": false,
         "simFrozen": false,
@@ -1611,7 +1611,7 @@
           }
         }
       },
-      "ms": 105155
+      "ms": 112276
     },
     {
       "id": "responsive",
@@ -1623,9 +1623,9 @@
       "file": "benchmark/screenshots/responsive.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9305620608899298,
-        "litPct": 93.06,
-        "mean": 65.227,
+        "lit": 0.9414032006245121,
+        "litPct": 94.14,
+        "mean": 66.948,
         "max": 249
       },
       "furniture": {
@@ -1681,7 +1681,7 @@
           "height": 854
         },
         "steps": 4,
-        "ms": 8278,
+        "ms": 14899,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1744,7 +1744,7 @@
           }
         }
       },
-      "ms": 8278
+      "ms": 14899
     },
     {
       "id": "pause",
@@ -1756,9 +1756,9 @@
       "file": "benchmark/screenshots/pause.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.6766319444444444,
-        "litPct": 67.66,
-        "mean": 44.744,
+        "lit": 0.66814453125,
+        "litPct": 66.81,
+        "mean": 46.2,
         "max": 196
       },
       "furniture": {
@@ -1814,7 +1814,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 16623,
+        "ms": 13074,
         "phase": "playing",
         "paused": true,
         "simFrozen": true,
@@ -1877,17 +1877,17 @@
           }
         }
       },
-      "ms": 16623
+      "ms": 13074
     }
   ],
   "luma": {
     "floor": 6,
-    "mean": 61.487,
+    "mean": 61.494,
     "tightest": {
       "id": "win",
-      "litPct": 10.2,
+      "litPct": 10.22,
       "floor": 6,
-      "margin": 4.2
+      "margin": 4.22
     }
   }
 }

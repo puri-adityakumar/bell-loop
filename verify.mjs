@@ -9010,7 +9010,15 @@ test('v1 is deleted, and nothing in src/ can reach for it', () => {
   for (const name of ['game/maze.js', 'game/loop.js']) {
     assert.equal(existsSync(new URL(`./src/${name}`, import.meta.url)), false, `${name} is still on disk`)
   }
-  assert.equal(SRC_SOURCES.length, 18, `src/ has ${SRC_SOURCES.length} sources — the walk may be broken`)
+  // BEFORE 18 / AFTER 19 (iteration 2, pass 9). The pin is EXACT rather than a
+  // floor, and that is what makes it useful: a floor would still be satisfied by
+  // a walk that found half the tree, and this number is the claim that it did
+  // not. Adding a module is therefore a deliberate act — the pin moves in the
+  // same commit as the file, which is the whole point of pinning it. Pass 9's
+  // `skyView.js` is the nineteenth: the sky, in the same §15.1 split as
+  // `streetView` and `creatureView`, and the first view whose frame of reference
+  // is the camera rather than the world.
+  assert.equal(SRC_SOURCES.length, 19, `src/ has ${SRC_SOURCES.length} sources — the walk may be broken, or a module arrived without moving this pin`)
   for (const name of SRC_SOURCES) {
     const text = readFileSync(new URL(`./src/${name}`, import.meta.url), 'utf8')
     // an import is a failure; a sentence remembering v1 is not, and there are
@@ -9373,6 +9381,599 @@ test('every view in the gallery photographs street furniture, and the report pro
   }
 })
 
+
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 9 — SKY & ATMOSPHERE
+//
+// WHY THIS SECTION IS MOSTLY SOURCE
+// ---------------------------------
+// Three of the pass's four properties are invisible to any measurement of the
+// built world, and the two harnesses between them cannot reach all of them.
+//
+//  - The horizon is `fog: false` and hazed BY HAND. Whether that hand-mix is
+//    `HORIZON_HAZE` or a hard-coded 0.5 is a property of a line of code; the
+//    built world only shows the result, and a result can be reached two ways.
+//  - The render ORDER is what makes the moon "occluded by haze" and what keeps
+//    the whole sky behind the world. Both are assignments, not geometry.
+//  - The ash's exclusion from the portal's pupil ray is a HEIGHT, and the
+//    relationship between that height and the gate's is arithmetic on two
+//    constants that live in two different files.
+//
+// So the claims live here as `skyClaims`, the same shape as `waterClaims`, with
+// the same mutation table, and the two properties that ARE properties of the
+// built scene — the ring's radius and the measured luma budget — are measured in
+// `verify-world.mjs` instead of being asserted here a second time.
+// ---------------------------------------------------------------------------
+
+section('Sky and atmosphere (iteration 2, pass 9)')
+
+/** `skyView.js` read as text: it touches Three.js, so §15.1's seam holds here too. */
+const SKY_VIEW_SOURCE = readFileSync(new URL('./src/game/skyView.js', import.meta.url), 'utf8')
+
+/**
+ * `skyNumber` — a named constant out of `skyView.js`, read from the source.
+ *
+ * The same reason `waterNumber` exists in `verify-world.mjs` and `paletteHex`
+ * exists here: a check that re-derives the number it is checking is checking
+ * itself. These are READ, and the properties below are asserted about them.
+ *
+ * @param {string} name the constant's name, without `const`
+ * @returns {number} its value
+ */
+function skyNumber(name) {
+  const found = new RegExp(`const ${name} = (-?[\\d.]+)`).exec(SKY_VIEW_SOURCE)
+  assert.ok(found, `${name} is not a named constant any more, so this check is reading nothing`)
+  return Number(found[1])
+}
+
+/** The pass's named render orders, read from the source rather than restated. */
+const SKY_ORDERS = {
+  moon: skyNumber('MOON_RENDER_ORDER'),
+  horizon: skyNumber('HORIZON_RENDER_ORDER'),
+  band: skyNumber('BAND_RENDER_ORDER_BASE'),
+  ash: skyNumber('ASH_RENDER_ORDER'),
+}
+
+/** The pass's named geometry/drift numbers. */
+const SKY_NUMBERS = {
+  radius: skyNumber('HORIZON_RADIUS'),
+  haze: skyNumber('HORIZON_HAZE'),
+  moonPeak: skyNumber('MOON_PEAK'),
+  moonDistance: skyNumber('MOON_DISTANCE'),
+  moonRadius: skyNumber('MOON_RADIUS'),
+  ashPeak: skyNumber('ASH_PEAK'),
+  ashMinY: skyNumber('ASH_MIN_Y'),
+  ashSize: skyNumber('ASH_SIZE'),
+  ashCount: skyNumber('ASH_COUNT'),
+  ashBox: skyNumber('ASH_BOX'),
+  horizonCount: skyNumber('HORIZON_COUNT'),
+}
+
+/** `PALETTE.<key>`, the same reader `paletteHex` uses, reached through `stripProse`. */
+function skyPaletteHex(key) {
+  const code = stripProse(STREET_VIEW_SOURCE)
+  const found = new RegExp(`${key}:\\s*0x([0-9a-fA-F]{6})`).exec(code)
+  assert.ok(found, `PALETTE.${key} is not a six-digit hex any more`)
+  return Number.parseInt(found[1], 16)
+}
+
+test('the four sky colours are sodium, and the silhouettes are darker than every sky stop', () => {
+  // The warmth claim as arithmetic, on the same footing as §12.3's own ramps: R > G
+  // > B on all four, and the g/r spread inside the ramps' 0.1 window. A moon at
+  // R=G=B is a white moon, and a white moon in a mono-yellow world is a fifth
+  // colour family — which is the exact defect §12.2 exists to prevent.
+  const spread = []
+  for (const key of ['skyHaze', 'skyMoon', 'horizonShape', 'skyAsh']) {
+    const hex = skyPaletteHex(key)
+    const r = (hex >> 16) & 0xff
+    const g = (hex >> 8) & 0xff
+    const b = hex & 0xff
+    assert.ok(r > g, `PALETTE.${key} is not red-dominant (${r}, ${g}, ${b}) — §12.2 gives cold light to the portals alone`)
+    assert.ok(g > b, `PALETTE.${key} is not amber (${r}, ${g}, ${b})`)
+    spread.push(g / r)
+  }
+  const min = Math.min(...spread)
+  const max = Math.max(...spread)
+  assert.ok(max - min < 0.1, `the sky colours disagree on hue: g/r spans ${min.toFixed(3)}-${max.toFixed(3)}, and §12.3's ramps hold 0.1`)
+})
+
+test('no sky element is bright enough to be a creature eye, and the whole pass is counted', () => {
+  // THE headline property of the pass, and the one the brief's "NOT bright" is
+  // really about. `tools/png-luma.mjs` finds the creature's eye by flood-filling
+  // every compact blob at or above `EYE_MIN` 150, and §11.3's whole balance rests
+  // on that finder resolving the figure. A sky that can manufacture a 150-luma
+  // blob does not just look wrong: it can make the eye gate pass on a frame with
+  // no creature in it, and can make a frame with a creature in it report the
+  // wrong contrast.
+  //
+  // So the budget is a SUM, not a per-element ceiling. Every additive element
+  // contributes its material colour's luma scaled by its own peak, and the sum
+  // has to stay clear of the threshold even in the frame where the moon, all
+  // three bands and the brightest mote are all in view at once.
+  const EYE_MIN = 150
+  // THE COLOUR SPACE, and it is the whole of the difference between this harness
+  // and `verify-world.mjs`. A `THREE.Color` holds LINEAR components, a peak is
+  // applied to those, and only then is the result encoded to sRGB. So
+  // `lumaOf(colour) * peak` — multiplying in sRGB — understates the contribution
+  // badly, because sRGB encoding is steep near black: this harness read the moon
+  // at 3.3 luma where the renderer produces 21.4, and disagreed with a check that
+  // reads the built material. `scaledLuma` below reproduces the renderer's model
+  // in eight-bit, and the two harnesses now agree by construction rather than by
+  // coincidence.
+  const toLinear = (channel) => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+  const toSrgb = (linear) => (linear <= 0.0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - 0.055)
+  /** The luma a colour contributes once a peak is applied the way three.js does. */
+  const scaledLuma = (hex, peak) => {
+    const r = toSrgb(toLinear(((hex >> 16) & 0xff) / 255) * peak)
+    const g = toSrgb(toLinear(((hex >> 8) & 0xff) / 255) * peak)
+    const b = toSrgb(toLinear((hex & 0xff) / 255) * peak)
+    return 0.2126 * r * 255 + 0.7152 * g * 255 + 0.0722 * b * 255
+  }
+  const moon = scaledLuma(skyPaletteHex('skyMoon'), SKY_NUMBERS.moonPeak)
+  // Read the three peaks out of the frozen table rather than restating them, so
+  // retuning a peak in `skyView.js` moves this number with it.
+  const peaks = [...SKY_VIEW_SOURCE.matchAll(/drift: -?[\d.]+, peak: ([\d.]+)/g)].map((m) => Number(m[1]))
+  assert.equal(peaks.length, 3, `the haze table has ${peaks.length} peaks, not the three the luma budget assumes`)
+  const bands = peaks.reduce((sum, peak) => sum + scaledLuma(skyPaletteHex('skyHaze'), peak), 0)
+  const ash = scaledLuma(skyPaletteHex('skyAsh'), SKY_NUMBERS.ashPeak)
+
+  const total = moon + bands + ash
+  assert.ok(
+    total < EYE_MIN * 0.5,
+    `the whole sky pass adds ${total.toFixed(1)} luma at worst (moon ${moon.toFixed(1)} + bands ${bands.toFixed(1)} + ash ${ash.toFixed(1)}), and that is over half of EYE_MIN ${EYE_MIN} — it could be found as a creature's eye`,
+  )
+  // And the half-way mark is not a soft target: the same sum against the sky
+  // itself is the legibility claim. 89.6 is `skyStops[0]`, so a full-strength
+  // worst case may lift the sky by at most this much before the pass stops being
+  // an atmosphere and becomes a light source.
+  const skyLow = relLuma(SKY_STOPS[0])
+  assert.ok(
+    total < skyLow * 0.8,
+    `the sky pass can add ${total.toFixed(1)} luma to a ${skyLow.toFixed(1)}-luma sky, a ${(total / skyLow).toFixed(2)}x lift — the brief asked for "dim" and this is a light rig`,
+  )
+  // The moon on its own, because the brief named IT specifically: it must be
+  // visible AND it must be dim, and those are two different bounds on the same
+  // number. The floor of 12 luma is `verify-world.mjs`'s, read here so the two
+  // harnesses cannot drift on where "barely visible" begins.
+  assert.ok(moon > 12, `the moon adds ${moon.toFixed(1)} luma, so it is not visible at all and the brief's "pale disc" is a smudge`)
+  assert.ok(moon < 40, `the moon adds ${moon.toFixed(1)} luma, which is a light rather than a disc`)
+  console.log(`\n  sky budget: moon ${moon.toFixed(1)} + bands ${bands.toFixed(1)} + ash ${ash.toFixed(1)} = ${total.toFixed(1)} luma worst case, ${(total / skyLow * 100).toFixed(0)}% of skyStops[0] and ${(total / 150 * 100).toFixed(0)}% of EYE_MIN`)
+})
+
+test('the horizon ring is a constant radius, past the built world and inside the far plane', () => {
+  // THE "outside the street grid" claim, as arithmetic rather than as a picture.
+  // `neighborhood.js` owns the numbers that decide how far the street can reach,
+  // and they are read from it rather than restated, so a change to `SETBACK` or
+  // `LOT_DEPTH` moves this bound instead of silently invalidating it.
+  const built = ((hood.GRID - 1) / 2) * hood.BLOCK + hood.SETBACK + hood.LOT_DEPTH
+  assert.ok(
+    SKY_NUMBERS.radius > built,
+    `the horizon ring is at ${SKY_NUMBERS.radius} m and the street can build to ${built.toFixed(0)} m, so a silhouette is inside the grid`,
+  )
+  // ...and with margin, because a ring that merely clears the roofline is a ring
+  // that clips into one the moment a roof gets taller.
+  assert.ok(
+    SKY_NUMBERS.radius > built + 10,
+    `the ring clears the built world by only ${(SKY_NUMBERS.radius - built).toFixed(1)} m, which is not enough margin for a taller building`,
+  )
+  // The far plane is the other side. `world.js` writes 260 into a camera literal
+  // and the ring has to be inside it or the horizon is simply not drawn — which
+  // is the failure a screenshot catches and a number does not, so the number is
+  // what gets asserted.
+  // The camera is `PerspectiveCamera(fov, aspect, near, far)` and the aspect
+  // argument is a CALL (`this._aspect()`), so a regex that balances one level of
+  // parentheses reads the wrong pair. Match the TAIL instead: `near, far)` is the
+  // end of the argument list, and both are literals in the source. A far plane
+  // that became an expression would fail this read loudly, which is the right
+  // failure — a gate that silently read the wrong number is worse than one that
+  // stops.
+  const farPlane = /,\s*([\d.]+),\s*([\d.]+)\s*\)\s*$/.exec(
+    /new THREE\.PerspectiveCamera\([\s\S]*?\n/.exec(stripProse(WORLD_SOURCE))[0],
+  )
+  assert.ok(farPlane, 'world.js no longer constructs a THREE.PerspectiveCamera with two literal plane distances, so the far plane cannot be read')
+  const far = Number(farPlane[2])
+  assert.ok(
+    SKY_NUMBERS.radius < far,
+    `the ring is at ${SKY_NUMBERS.radius} m and the camera's far plane is ${far} m, so the horizon is clipped away`,
+  )
+  // And past the fog at its LOOSEST, which is the property that makes `fog: false`
+  // honest rather than lazy: a ring inside the readable range would be a fogged
+  // smudge, and the comment claiming otherwise would be the bug.
+  const halfVis = rules.fogVisibility(rules.DUSK_FOG[0].density)
+  assert.ok(
+    SKY_NUMBERS.radius > halfVis * 2,
+    `the ring is at ${SKY_NUMBERS.radius} m and the world is half-fogged at ${halfVis.toFixed(0)} m, so the horizon is inside the readable range and \`fog: false\` is hiding it`,
+  )
+  // 14 on a 360° ring: the largest gap between bearings is 2*pi/14 = 25.7°, and at
+  // the ring's radius that is a 104 m hole. A ring with a 104 m gap reads as a
+  // gap; this one is a distribution, and the count is what says so.
+  const gap = (2 * Math.PI * SKY_NUMBERS.radius) / SKY_NUMBERS.horizonCount
+  assert.ok(gap < 130, `the widest gap in the horizon ring is ${gap.toFixed(0)} m, which reads as a hole rather than a skyline`)
+  console.log(`\n  horizon: ${SKY_NUMBERS.horizonCount} silhouettes at ${SKY_NUMBERS.radius} m, ${(SKY_NUMBERS.radius - built).toFixed(0)} m past the built world (${built.toFixed(0)} m) and ${(far - SKY_NUMBERS.radius).toFixed(0)} m inside the far plane (${far} m); gaps ${gap.toFixed(0)} m`)
+})
+
+test('the sky is drawn BEFORE the world, and the moon before the bands that veil it', () => {
+  // This is the safety property the brief asked for by name, and it is a
+  // RENDER ORDER rather than a filter. That distinction is the whole design: a
+  // `PORTAL_FURNITURE_CLEAR`-style exclusion has to be re-applied to every new
+  // thing placed in the world, and a future pass that forgets is a pass that
+  // photographs a tower through a portal. A negative renderOrder cannot be
+  // forgotten, because it is not consulted by anything.
+  const worldLowest = 1  // `wetSheen`, set by pass 8 and read back in verify-world
+  for (const [name, order] of Object.entries(SKY_ORDERS)) {
+    assert.ok(
+      order < 0,
+      `the ${name} render order is ${order}, so the sky is drawn after the world's lowest order (${worldLowest}) and can appear in front of a portal`,
+    )
+  }
+  // The relative order is the other half, and it is the literal reading of the
+  // brief's "occluded by haze": the moon at -100, the bands from -98 down. A band
+  // drawn BEFORE the moon would brighten it rather than veil it, which is the
+  // exact opposite of what a moon behind overcast is.
+  assert.ok(SKY_ORDERS.moon < SKY_ORDERS.band, 'the moon is drawn after the haze bands, so the disc no longer has its own slot before the strata')
+  assert.ok(SKY_ORDERS.band < SKY_ORDERS.ash, 'the ash is drawn before the bands, so the motes are not last in the sky')
+  // The bands ASCEND from the base, near band last. The SIGN is the assertion:
+  // three.js draws the LOWER renderOrder first, so `- index` would put the far
+  // band in front of the near one — and, at three bands, would run the third band
+  // up onto the moon's -100 and TIE with it. A tie is not an order; three.js
+  // breaks it by material id. The world check asserts the distinctness, and this
+  // one asserts the derivation, because the two fail differently: a changed sign
+  // here, a duplicated slot there.
+  // COMMENT-STRIPPED, and the first version of this assertion did not strip. The
+  // check has to read the module's CODE, and this project's comments quote their
+  // own code — including the *wrong* form, because explaining the bug means
+  // writing the bug down. `stripProse` is the established answer (it is what the
+  // pass-8 shimmer claim uses for exactly this) and a gate that fails on prose is a
+  // gate that gets deleted rather than fixed.
+  const skyCode = stripProse(SKY_VIEW_SOURCE)
+  const bandOrders = [...skyCode.matchAll(/BAND_RENDER_ORDER_BASE \+ index/g)]
+  assert.equal(
+    bandOrders.length,
+    1,
+    'the bands no longer ascend from the base, so the near band is not drawn last and the third may collide with the moon',
+  )
+  assert.equal(
+    /BAND_RENDER_ORDER_BASE - index/.test(skyCode),
+    false,
+    'the bands subtract from the base again, which runs the third band onto the moon\'s render order',
+  )
+  // And the sky is a SIBLING of the street, not a child of it. This is the
+  // architectural claim in the file's header and it is one word in `world.js`:
+  // `streetView.group` translates by whole 448 m periods as the player walks, and
+  // a sky inside it would swim across the frame every time the wrap fired.
+  assert.match(
+    WORLD_SOURCE,
+    /this\.skyView = new SkyView\(this\.scene, this\.camera/,
+    'the sky is not constructed from the scene and the camera, so it is not camera-relative',
+  )
+  assert.equal(
+    /streetView\.group\.add\(\s*this\.skyView/.test(WORLD_SOURCE),
+    false,
+    'the sky was added to the street group, which translates by whole periods — the horizon would swim',
+  )
+})
+
+test('the ash cannot cross a portal gate, and the exclusion is geometric rather than a budget', () => {
+  // §16.5.5 photographs a portal from `PORTAL_GATE_OFFSET` 4.5 m away and the
+  // pass-3 gate measures the luma at the exact centre of the rim's bounding box,
+  // requiring it at or under 20. The committed frame measures 9, so there is 11
+  // luma of headroom — and an ADDITIVE mote bright enough to be worth drawing is
+  // 27. A mote drifting between that camera and that gate would therefore break
+  // the gate, not tint it.
+  //
+  // The fix is a HEIGHT, not a dimmer: the ash's floor sits above the eye, and a
+  // ray from the eye to a gate centred below it DESCENDS, so the box cannot
+  // intersect the ray however the ash is retuned. This test is the geometry.
+  const EYE_HEIGHT = 1.6
+  const GATE_CENTRE = 1.18
+  const STANDOFF = 4.5
+  const ashFloor = EYE_HEIGHT + SKY_NUMBERS.ashMinY
+  assert.ok(
+    ashFloor > EYE_HEIGHT,
+    `the ash's floor is at ${ashFloor.toFixed(2)} m, which is not above the ${EYE_HEIGHT} m eye, so a mote can cross the gate ray`,
+  )
+  // The descent is the part that makes it a proof rather than an assertion: the
+  // gate is BELOW the eye, so the sightline's highest point is the eye itself.
+  assert.ok(GATE_CENTRE < EYE_HEIGHT, 'the gate centre is above the eye, so the sightline ascends and the height exclusion does not hold')
+  const sightlineCeiling = Math.max(EYE_HEIGHT, GATE_CENTRE)
+  assert.ok(ashFloor > sightlineCeiling, `the ash floor (${ashFloor.toFixed(2)} m) is below the highest point of the gate ray (${sightlineCeiling} m)`)
+  // And the box is bounded, so "above the eye" is not an unbounded claim: a mote
+  // that drifted 400 m up would be a different problem, and the fall is what
+  // keeps it near.
+  assert.ok(SKY_NUMBERS.ashBox < 20, `the ash box is ${SKY_NUMBERS.ashBox} m across, so the near field is a fog of motes rather than drifting dust`)
+  assert.ok(
+    SKY_NUMBERS.ashMinY < SKY_NUMBERS.ashBox,
+    `the ash floor (${SKY_NUMBERS.ashMinY} m) is above its own box (${SKY_NUMBERS.ashBox} m), so the drift cannot stay in the box`,
+  )
+  // The motes are additive and drawn in the opaque queue's negative order, so the
+  // portal — which is a `_glow` with `fog: false` and a positive order — paints
+  // over them. That is a second, independent line of defence, and it is why the
+  // pass does not need a portal exclusion for its ash at all.
+  assert.match(
+    SKY_VIEW_SOURCE,
+    /blending: THREE\.AdditiveBlending,\s*\n\s*sizeAttenuation: true,\s*\n[\s\S]*?fog: false,/,
+    'the ash material is no longer an unfogged additive point sprite',
+  )
+  console.log(`\n  ash: ${SKY_NUMBERS.ashCount} motes, floor ${ashFloor.toFixed(2)} m (eye ${EYE_HEIGHT} m, gate centre ${GATE_CENTRE} m at ${STANDOFF} m), peak ${SKY_NUMBERS.ashPeak} x skyAsh, ${SKY_NUMBERS.ashSize} m`)
+})
+
+test('the horizon is a silhouette: hazed, unfogged, dark, and varied in profile', () => {
+  // Three properties of the ring, each of which has exactly one failure mode
+  // that a screenshot would show as "fine".
+  //
+  // 1. UNFOGGED. At 232 m the fog is 99.9997% opaque, so a fogged silhouette is
+  //    a shape you cannot see, and `fog: false` is what makes the ring exist.
+  // 2. HAZED. The opposite failure: at full contrast the eye reads the shapes
+  //    as NEAR, because contrast is how depth is seen, and a 232 m tower at full
+  //    contrast reads as a thing 20 m away. `HORIZON_HAZE` is the fix, and its
+  //    value has a window rather than a preference.
+  // 3. DARK. §12.1's silhouette rule: a shape has to stay darker than the air in
+  //    front of it or it is not a shape. The hazed colour is compared against the
+  //    DARKEST sky stop, which is the binding case — at dusk 2 the sky is 52.2 and
+  //    a ring hazed to 60 would be lighter than the air it stands in.
+  const shape = skyPaletteHex('horizonShape')
+  const skyLow = relLuma(SKY_STOPS[0])
+  const skyDarkest = Math.min(...SKY_STOPS.map(relLuma))
+  // three.js `Color.lerp` mixes in the LINEAR working space, so this reproduces
+  // the built material rather than approximating it in 8-bit sRGB.
+  const encode = (linear) => (linear <= 0.0031308 ? linear * 12.92 : 1.055 * linear ** (1 / 2.4) - 0.055)
+  const channel = (hex, shift) => {
+    const srgb = ((hex >> shift) & 0xff) / 255
+    return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4
+  }
+  const mix = (shift) => {
+    const from = channel(shape, shift)
+    const to = channel(SKY_STOPS[0], shift)
+    return encode(from + (to - from) * SKY_NUMBERS.haze)
+  }
+  const hazed = 0.2126 * mix(16) + 0.7152 * mix(8) + 0.0722 * mix(0)
+  assert.ok(
+    hazed < skyDarkest,
+    `the hazed silhouette is luma ${hazed.toFixed(1)} and the darkest sky stop is ${skyDarkest.toFixed(1)}, so the ring is lighter than the air in front of it and reads as a stain rather than a shape`,
+  )
+  assert.ok(
+    hazed < skyLow * 0.85,
+    `the hazed silhouette is luma ${hazed.toFixed(1)} against a ${skyLow.toFixed(1)} sky — that is not enough separation to read as a skyline`,
+  )
+  // The window on the haze itself. Below 0.2 the ring is a hard black cut-out
+  // pasted on the sky; above 0.45 the shapes dissolve into a band. Both are
+  // failures of the same kind and the value has to stay between them.
+  assert.ok(SKY_NUMBERS.haze > 0.2, `HORIZON_HAZE is ${SKY_NUMBERS.haze}, so the ring is a hard cut-out and not a distant shape`)
+  assert.ok(SKY_NUMBERS.haze < 0.45, `HORIZON_HAZE is ${SKY_NUMBERS.haze}, so the ring dissolves into a band of slightly-darker sky`)
+  // PROFILE. Three kinds, and a ring of one profile is a fence. The claim is that
+  // all three are BUILT, not merely named — a kind with no branch in
+  // `_horizonParts` would render a tower's legs for every silhouette on the ring.
+  for (const kind of ['tower', 'mast', 'crane']) {
+    assert.ok(
+      SKY_VIEW_SOURCE.includes(`'${kind}'`),
+      `HORIZON_SHAPES has a ${kind} recipe but \`_horizonParts\` never names it, so the ring is missing a profile`,
+    )
+  }
+  // And the crane is not a FALL-THROUGH. It was one until this gate found it: the
+  // first version of `_horizonParts` had branches for `tower` and `mast` and let
+  // `crane` be "whatever is left", which renders correctly right up until a
+  // fourth kind is added to `HORIZON_KINDS` and silently draws as a crane. The
+  // throw is the fix and the presence of the throw is the claim.
+  assert.match(
+    SKY_VIEW_SOURCE,
+    /if \(kind !== 'crane'\) \{\s*\n\s*throw new Error\(`no horizon shape for kind/,
+    "the crane is a fall-through return again, so an unknown kind draws as a crane instead of failing",
+  )
+  // A crane's jib is what breaks the vertical, and without it all three kinds are
+  // upright. It is the one claim about the ring that is about SHAPE rather than
+  // about colour, and it is the difference between a skyline and a fence.
+  assert.match(SKY_VIEW_SOURCE, /jib: 15/, 'the crane has no jib, so it is a mast and the ring is a fence')
+  // EXACTLY THREE sky materials are unfogged — the moon, the ring and the ash —
+  // and each for its own reason: the first two are at 232+ m where the fog is
+  // opaque, and the ash is 2-15 m away where fogging it would ADD the whole fog
+  // colour to an additive quad. The count is exact rather than a floor because the
+  // FOURTH is the bug: a band set to `fog: false` would be a stratum that does not
+  // thicken with the dusk, and `skyClaims` mutation 8 is what catches that.
+  assert.equal(
+    (stripProse(SKY_VIEW_SOURCE).match(/fog: false/g) ?? []).length,
+    3,
+    'the moon, the horizon and the ash are the only three unfogged sky materials, and the count has moved',
+  )
+  console.log(`\n  silhouette: horizonShape luma ${relLuma(shape).toFixed(1)} hazed ${(SKY_NUMBERS.haze * 100).toFixed(0)}% toward skyStops[0] = ${hazed.toFixed(1)}, against a darkest sky of ${skyDarkest.toFixed(1)}`)
+})
+
+test('the sky is procedural, camera-relative, and driven by the clock', () => {
+  // D10 and the determinism contract, as source. This module is not a rule
+  // module, so `verify.mjs` cannot import it (§15.1's seam) and these three are
+  // the claims only a source read can make.
+  //
+  // NO RANDOM. A mote that drifted by `Math.random()` would be a mote a capture
+  // cannot reproduce, and §16.5's gallery is fourteen frames that must each be
+  // the same frame twice.
+  assert.equal(
+    /Math\.random/.test(stripProse(SKY_VIEW_SOURCE)),
+    false,
+    'the sky draws from Math.random, so a capture of it is not reproducible',
+  )
+  // NO CLOCK. `this._time` accumulated from `dt` is the same clock the rest of
+  // the world uses; `performance.now()` would be a second one, and a second clock
+  // is how the canal shimmer's "drifts against the clock" bug is born again.
+  assert.equal(
+    /performance\.now|Date\.now|new Date/.test(stripProse(SKY_VIEW_SOURCE)),
+    false,
+    'the sky reads a wall clock, so it cannot be stepped to a known time by a capture',
+  )
+  // NO ACCUMULATOR on the animated values. The whole of `update` is a pure
+  // function of `this._time`, and the gate drives the world to the same time
+  // twice in verify-world. An accumulator would satisfy a screenshot and fail that.
+  assert.match(
+    SKY_VIEW_SOURCE,
+    /update\(dt\) \{\s*\n\s*this\._time \+= dt\s*\n\s*const t = this\._time/,
+    'the sky does not accumulate its own clock the way streetView does, so the gate cannot step it to a known time',
+  )
+  // NO SECOND RENDER PASS. Pass 8's claims table makes "the reflection is drawn,
+  // not sampled" a headline for exactly this reason, and a sky is the temptation:
+  // a gradient dome is trivially done with a second camera. One pass, one camera.
+  assert.equal(/setRenderTarget|WebGLRenderTarget/.test(stripProse(SKY_VIEW_SOURCE)), false, 'the sky renders to a target, so the world is drawn twice')
+  // NO EXTERNAL ASSET. Both textures are canvas-built through `createImageData`,
+  // which is also what lets the headless 2D stub construct them.
+  assert.match(SKY_VIEW_SOURCE, /ctx\.createImageData\(size, size\)/, 'the sky textures are not written per-pixel, so the headless canvas stub cannot build them')
+  assert.equal(/new THREE\.TextureLoader|TextureLoader|\.png|\.jpg|\.hdr/.test(SKY_VIEW_SOURCE), false, 'the sky loads an external asset')
+  // And the root copies the camera in X and Z and pins Y, which is the wrap
+  // immunity stated in the header. A root that followed the camera in Y would put
+  // a skyline at eye level and the ash through the road.
+  assert.match(
+    SKY_VIEW_SOURCE,
+    /this\.root\.position\.set\(this\.camera\.position\.x, 0, this\.camera\.position\.z\)/,
+    'the sky root does not copy the camera in X and Z with Y pinned to zero, so it is either wrapped or floating',
+  )
+})
+
+/**
+ * `skyClaims` — the source contracts, as a table with a mutation per claim.
+ *
+ * The same shape and the same purpose as `waterClaims`: a gate that has never
+ * been shown to fail on a broken world is a gate that looks green on the one
+ * artifact nobody re-examined, which is the failure REVIEW-pass-1 found in the
+ * creature gate. Each mutation below is a real edit to `skyView.js` that a
+ * future pass could plausibly make, and each has to be caught by the test above.
+ *
+ * @param {string} source `skyView.js`, comments NOT yet stripped
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function skyClaims(source) {
+  const code = stripProse(source)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+
+  // 1. THE HEADLINE, and the only one that is a whole-file negative. The words
+  // are unique to this technique: pass 3's portal is geometry, pass 6's wire is a
+  // `ShaderMaterial`, and neither has a render target — but a gradient sky dome
+  // is *classically* done with a second camera and a second pass, and it is the
+  // one thing in this pass that could double the frame cost.
+  claim(
+    'the sky is drawn in the world\'s own pass, with no second camera and no render target',
+    !/setRenderTarget|WebGLRenderTarget|renderTarget/.test(code) && !/new THREE\.PerspectiveCamera/.test(code),
+    'a sky dome wants a second camera, and a second camera is a second pass over every draw call in §17\'s budget',
+  )
+  // 2. THE RENDER ORDER IS THE SAFETY ARGUMENT, so it is a claim about numbers
+  // rather than about a string: the four constants must exist and all be
+  // negative. `verify-world` reads them back off the BUILT scene; this is the
+  // cheap half that says they were never positive in the first place.
+  claim(
+    'every sky render order is negative, so the world always paints over the sky',
+    /const MOON_RENDER_ORDER = -\d/.test(code)
+      && /const HORIZON_RENDER_ORDER = -\d/.test(code)
+      && /const ASH_RENDER_ORDER = -\d/.test(code)
+      && /const BAND_RENDER_ORDER_BASE = -\d/.test(code),
+    'a sky element with a positive render order is drawn after the world and can appear in front of a portal',
+  )
+  // 3. THE MOON IS VEILED, not brightened. The moon has to be the FIRST of the
+  // sky, because the brief's "occluded by haze" is only true if the bands are
+  // drawn over the disc.
+  // The DERIVATION is in this claim, not only the two constants, because the sign
+  // of `+ index` is what the constants cannot see. The first version asserted
+  // `-100` and `-98` and its mutation for the reversed sign passed green — a claim
+  // that cannot be broken by the bug it names is not a claim.
+  claim(
+    'the moon is drawn before the haze bands that veil it',
+    /const MOON_RENDER_ORDER = -100/.test(code)
+      && /const BAND_RENDER_ORDER_BASE = -98/.test(code)
+      && /BAND_RENDER_ORDER_BASE \+ index/.test(code)
+      && !/BAND_RENDER_ORDER_BASE - index/.test(code),
+    'a moon drawn after the bands is a sticker on the sky, and a band run built by SUBTRACTING reaches -100 and ties with it — a tie is ordered by material id, not by this file',
+  )
+  // 4. THE ASH EXCLUSION IS A HEIGHT. The pupil gate is a measurement OF THE HOLE
+  // and a mote in the stand-off invalidates it; the fix has to be geometric
+  // because a brightness budget is retuned by the next pass that wants a brighter
+  // sky.
+  claim(
+    'the ash is held above the eye, so it cannot cross the portal gate ray',
+    /const ASH_MIN_Y = 2\.2/.test(code) && /y: ASH_MIN_Y \+ 1\.6/.test(code),
+    'the ash is no longer pinned above the eye, so a mote can drift into the §16.5.5 pupil stand-off and break the pass-3 luma gate',
+  )
+  // 5. THE HORIZON IS UNFOGGED, and for the one reason that is true of all three
+  // unfogged materials in this game: at 232 m the fog is opaque. A fogged ring is
+  // a ring nobody can see.
+  claim(
+    'the moon, the horizon and the ash are unfogged, and the bands are not',
+    (code.match(/fog: false/g) ?? []).length === 3 && /fog: true,/.test(code),
+    'a fogged horizon at 232 m is a 0.0003%-opacity shape, a fogged moon at 236 m is worse, and a fogged additive band adds the whole fog colour to itself',
+  )
+  // 6. D10 AND THE DETERMINISM CONTRACT, in one claim because they are the same
+  // claim: a sky that cannot be reproduced cannot be photographed.
+  claim(
+    'the sky is seeded and clock-driven, so a capture of it is reproducible',
+    !/Math\.random|performance\.now|Date\.now/.test(code)
+      && /this\._time \+= dt/.test(code)
+      && /hash32\(seed, index/.test(code),
+    'an unseeded or wall-clocked sky is a frame no capture can reproduce, and §16.5 is fourteen frames that must each be the same frame twice',
+  )
+  // 7. THE HAZE IS A FOG-AFFECTED STRATUM, not a decal. `fog: true` on an
+  // additive band is the whole of why the bands thin as the world closes.
+  claim(
+    'the haze bands are fog-affected, so they are eaten as the dusk advances',
+    /blending: THREE\.AdditiveBlending,\s*\n\s*fog: true,/.test(code),
+    'an unfogged haze band does not thicken with the dusk, so it is a texture pasted over the sky and §3.7\'s clock loses a limb',
+  )
+  return claims
+}
+
+test('the sky claims are the source contracts, and each one fails when its code is broken', () => {
+  const claims = skyClaims(SKY_VIEW_SOURCE)
+  assert.ok(claims.length >= 7, `only ${claims.length} claims, so the table is short`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name} — ${entry.why}`)
+  }
+
+  // THE MUTATIONS, and the reason this test exists. Each row is a real edit a
+  // future pass could make, each must be caught, and the expected hit count is
+  // declared because `replace` rewrites the FIRST match: a fragment quoted in
+  // this file's own doc comments is a mutation that changes nothing and a claim
+  // that then reports the broken build as clean. `waterClaims` hit exactly that
+  // and the expected-count column is how it was caught.
+  const mutations = [
+    ['a second camera for the dome', 'the frame is drawn twice and §17\'s budget is gone',
+      'the sky is drawn in the world\'s own pass, with no second camera and no render target',
+      '    this.root = new THREE.Group()',
+      '    this._domeCamera = new THREE.PerspectiveCamera(72, 1, 1, 900)\n    this.root = new THREE.Group()'],
+    ['a positive render order', 'a sky element lands in front of a portal',
+      'every sky render order is negative, so the world always paints over the sky',
+      'const ASH_RENDER_ORDER = -95', 'const ASH_RENDER_ORDER = 5'],
+    ['the moon drawn last', 'the moon no longer has its own slot before the strata',
+      'the moon is drawn before the haze bands that veil it',
+      'const MOON_RENDER_ORDER = -100', 'const MOON_RENDER_ORDER = -94'],
+    ['the bands run the wrong way', 'the third band lands on the moon\'s render order and the two are ordered by material id',
+      'the moon is drawn before the haze bands that veil it',
+      '      mesh.renderOrder = BAND_RENDER_ORDER_BASE + index',
+      '      mesh.renderOrder = BAND_RENDER_ORDER_BASE - index'],
+    ['the ash at knee height', 'a mote drifts into the §16.5.5 pupil stand-off',
+      'the ash is held above the eye, so it cannot cross the portal gate ray',
+      'const ASH_MIN_Y = 2.2', 'const ASH_MIN_Y = 0.2'],
+    ['a fogged horizon', 'the ring is a 0.0003%-opacity shape and reads as an empty sky',
+      'the moon, the horizon and the ash are unfogged, and the bands are not',
+      '      fog: false,\n    })\n\n    this.horizonCount', '      fog: true,\n    })\n\n    this.horizonCount'],
+    ['an unseeded mote', 'a capture of the ash is not reproducible',
+      'the sky is seeded and clock-driven, so a capture of it is reproducible',
+      'const mix = hash32(seed, index, 0x5f3a)', 'const mix = Math.random() * 0xffffffff'],
+    ['a wall clock', 'the sky cannot be stepped to a known time by a capture',
+      'the sky is seeded and clock-driven, so a capture of it is reproducible',
+      'this._time += dt', 'this._time = performance.now() / 1000'],
+    ['unfogged haze', 'the bands stop thickening with the dusk and the clock loses a limb',
+      'the haze bands are fog-affected, so they are eaten as the dusk advances',
+      '        blending: THREE.AdditiveBlending,\n        fog: true,', '        blending: THREE.AdditiveBlending,\n        fog: false,'],
+  ]
+  for (const [label, why, claimName, from, to] of mutations) {
+    assert.ok(SKY_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches skyView.js, so it is not testing anything`)
+    const mutated = SKY_VIEW_SOURCE.replace(from, to)
+    assert.notEqual(mutated, SKY_VIEW_SOURCE, `the mutation "${label}" was a no-op`)
+    const broken = skyClaims(mutated)
+    const survivor = broken.find((entry) => entry.name === claimName)
+    assert.ok(survivor, `the mutation "${label}" removed the claim "${claimName}" instead of breaking it`)
+    assert.equal(
+      survivor.ok,
+      false,
+      `the mutation "${label}" left "${claimName}" green — ${why}`,
+    )
+  }
+  console.log(`\n  sky claims: ${claims.length} source contracts, ${mutations.length} mutations, every one caught`)
+})
 
 // ---------------------------------------------------------------------------
 // report
