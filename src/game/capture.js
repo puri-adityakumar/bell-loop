@@ -187,6 +187,38 @@ export const CAPTURE_MIN_LIT = 0.06
 export const TITLE_MIN_LIT = 0.035
 
 // ---------------------------------------------------------------------------
+// ITERATION 2, PASS 16 — THE HARNESS'S OWN FRAME RATE
+// ---------------------------------------------------------------------------
+
+/**
+ * CAPTURE_SIM_DT — the step the capture page hands the world, in seconds: 1/60.
+ *
+ * It used to be a constant local to `capture/main.jsx` (named `SIM_DT`), which
+ * made it the one number in the capture contract that `verify.mjs` could not
+ * read: the module's own rule is that the thing which decides what a frame is
+ * supposed to show has to be checkable in node, without a browser. It is here for
+ * that reason and no other — the value did not move.
+ *
+ * WHY THE PAGE NEEDS A FRAME RATE AT ALL, given `world.js` has one
+ * -------------------------------------------------------------------
+ * Because `world.js` clamps the delta it reads off `THREE.Clock` to 0.05 s, and
+ * a clamped frame is a function of the MACHINE, not of the design. On this
+ * repository's software rasteriser a frame is about a second of wall clock, so
+ * every frame the world drew while the page was taking a photograph was worth
+ * exactly that clamp — 0.05 s of world time per rendered frame, and a count of
+ * rendered frames nobody controls. §16.5's beats are facts about the design
+ * ("0.8 s into a 1.2 s hold"), so they are measured in the world's own units and
+ * driven at the rate a 60 Hz display would have handed it.
+ *
+ * PASS 16 made that the ONLY clock. The page hands the world this step, and
+ * `world.js`'s own loop is given a zero delta (see `anchorClock` in
+ * `capture/main.jsx`), so the world time in a frame is a sum of these and
+ * nothing else. Before this pass it was these PLUS an unknown number of 0.05 s
+ * frames, which is the whole of REVIEW-pass-15's reproducibility finding.
+ */
+export const CAPTURE_SIM_DT = 1 / 60
+
+// ---------------------------------------------------------------------------
 // ITERATION 2, PASS 7 — the furniture floor
 // ---------------------------------------------------------------------------
 

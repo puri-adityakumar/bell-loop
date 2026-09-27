@@ -16415,6 +16415,514 @@ test('the page projects the head the probe is measured against, and the two agre
   }
 })
 
+// ---------------------------------------------------------------------------
+// PASS 16 — THE CLOCK A CAPTURE RUN OWNS
+// ---------------------------------------------------------------------------
+//
+// REVIEW-pass-15 left one NOT-DONE finding that was explicitly a capture pass's
+// work rather than a review's: "the probe is not reproducible run-to-run", and
+// the mechanism is in the source. `animTime` is the sum of clamped frame deltas
+// SINCE PAGE LOAD, so a page that booted in a different time — or a machine that
+// managed a different NUMBER of frames while the steps were being taken, each
+// worth up to the 0.05 s `world.js` clamps to — started every view at a different
+// point of §9.3's 11 Hz lamp dread. The review measured the consequence on the
+// probe: the same twelve steps read 14.70% / 15.58% / 22.46% lit, one of them
+// resolving no eye at all, and `telegraph-2` and `stalk-2` came back at 0.11% and
+// 2.24% lit — under the floor.
+//
+// The fix is `anchorClock` in `capture/main.jsx`: `animTime = 0` and
+// `clock.getDelta = () => 0`, called at the top of every `run`. The claim that
+// buys is a NUMERICAL one, so these gates are numerical. The snapshot publishes
+// what the steps asked for (`clock.budget`) beside what the world reached
+// (`clock.at`), and on a running frame those are the same number, whatever the
+// host did while the steps ran. That is "a set of steps is worth the same
+// picture twice" written where a machine can check it instead of where a comment
+// asserts it.
+
+// The page is browser code, so it is READ rather than imported — the same seam
+// `skyView.js` is (§15.1) and for the same reason. It is also the only place the
+// hidden costs below are written down, so the readers are the reason the numbers
+// are not restatements: `pageVerb` and `pageCase` slice the page's own text and
+// the model prices what is actually in there.
+const CAPTURE_PAGE = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+
+/** The page with its comments and string literals gone — `stripProse`, §11.2. */
+const CAPTURE_CODE = stripProse(CAPTURE_PAGE)
+
+/**
+ * pageVerb / pageCase — one function or one `switch` arm of the page, as CODE.
+ *
+ * Sliced on the RAW text and stripped afterwards, in that order, and the order is
+ * load-bearing: `stripProse` replaces every block comment with a single space, so a
+ * stripped page has no docblock markers left to slice an arm on. The other way
+ * round returns the whole rest of the file for every verb, which then prices every
+ * op as though the entire page ran inside it — a number too large to fail loudly
+ * and too plausible to fail on purpose.
+ */
+function pageVerb(name) {
+  // matched on `function NAME(` and not `async function NAME(` because the two are
+  // the same substring: `stepWorld` and `run`'s helpers are sync, `wait` and the
+  // verbs are not, and a reader that only understood one of them would price a
+  // whole file as empty the first time it met the other.
+  const found = new RegExp(`(^|[^A-Za-z0-9_$])function ${name}\\(`).exec(CAPTURE_PAGE)
+  if (!found) throw new Error(`capture/main.jsx has no function ${name}( — the clock model cannot price it`)
+  const start = found.index + found[1].length
+  const end = CAPTURE_PAGE.indexOf('\n/**', start)
+  return stripProse(CAPTURE_PAGE.slice(start, end < 0 ? undefined : end))
+}
+
+function pageCase(op) {
+  const start = CAPTURE_PAGE.indexOf(`case '${op}':`)
+  if (start < 0) throw new Error(`capture/main.jsx has no case '${op}': — the clock model cannot price it`)
+  const next = CAPTURE_PAGE.indexOf('\n    case ', start + 1)
+  const end = next < 0 ? CAPTURE_PAGE.indexOf('\n    default:', start) : next
+  return stripProse(CAPTURE_PAGE.slice(start, end < 0 ? undefined : end))
+}
+
+/**
+ * pageFrames — the world frames a body of the page spends, counted from it.
+ *
+ * `frames(n)` costs `n`; `stepWorld(SIM_DT)` costs the one step it names; and
+ * `stepWorld(0)` costs nothing — which is how the baseline's deliberate zero-step
+ * frame is priced, and why the two are told apart by their ARGUMENT rather than
+ * counted alike.
+ */
+function pageFrames(body) {
+  let frames = 0
+  for (const match of body.matchAll(/frames\((\d+)\)/g)) frames += Number(match[1])
+  for (const match of body.matchAll(/stepWorld\((\d+)\)/g)) frames += match[1] === '0' ? 0 : 1
+  return frames
+}
+
+/**
+ * The three durations the hidden ops hold for, each read out of the page's own
+ * expression rather than written here. `BEGIN_SETTLE_SECONDS` is a page constant;
+ * the two holds are `rules.PORTAL_SHUT_SECONDS` plus the page's own margin, and
+ * the design's number is the one that comes from `rules.js` — so retuning §5.2's
+ * shutdown re-prices the gate instead of quietly leaving a stale ceiling in it.
+ * That was the first version's real defect: it charged `2 * PORTAL_SHUT_SECONDS`
+ * as a flat allowance, which is a guess about the shape of `shut` and about
+ * nothing else.
+ */
+const CAPTURE_BEGIN_SETTLE = Number(/const BEGIN_SETTLE_SECONDS = ([\d.]+)/.exec(CAPTURE_CODE)[1])
+const CAPTURE_HAMMER_HOLD =
+  rules.PORTAL_SHUT_SECONDS + Number(/hold\(rules\.PORTAL_SHUT_SECONDS \+ ([\d.]+)\)/.exec(pageVerb('takeHammer'))[1])
+const CAPTURE_PORTAL_HOLD =
+  rules.PORTAL_SHUT_SECONDS + Number(/hold\(rules\.PORTAL_SHUT_SECONDS \+ ([\d.]+)\)/.exec(pageVerb('shutPortal'))[1])
+
+/** The frame `run` draws after the steps, from which the PNG is read. */
+const CAPTURE_SHUTTER_FRAMES = pageFrames(pageVerb('run'))
+
+/**
+ * CLOCK_OPS — every op a view may name, and what it actually costs the world.
+ *
+ * WHY A LIST OF STEPS AND NOT A NUMBER
+ * -----------------------------------
+ * The first version of this table priced each op with a single scalar and the gate
+ * carried a ceiling built out of them, and it was WRONG on the one op that matters:
+ * `hammer-awakening` reads a 3.4333 s step budget against that ceiling's 2.783 s,
+ * and the gate failed a capture that was correct. The reason is that an op's cost
+ * is not a duration. It is a SEQUENCE, and the sequence costs the number of steps
+ * the loop is still short by at the end — `begin` is one frame and a 1.5 s settle,
+ * so it costs 90 steps and not 1.5; `takeHammer` is a 1.55 s hold and a frame; and
+ * `shut` is three of those, one per `hood.PORTAL_IDS`, not a flat three.
+ *
+ * So each op carries a `plan`: a short list of `frames` and `wait` tokens, walked by
+ * `worldCost` below. A `wait` is deliberately not rounded to a whole number of
+ * steps, because `wait(1.9)` at 1/60 is 114 exact steps and one overshoot, and a
+ * model that said 114 would be wrong in the eleventh decimal place — which is
+ * where §9.3's 11 Hz lamp dread puts a dropout.
+ *
+ * `kind` is the other, separate claim: whether the step list NAMES this op's time
+ * (`listed`), hides it inside the op (`hidden`), or spends none at all (`free`).
+ */
+const draws = (n) => ['frames', n]
+const waits = (seconds) => ['wait', seconds]
+
+const CLOCK_OPS = new Map([
+  // `start()` hands the phase over in an `update` of its own, then the world waits
+  // out the opening dissolve.
+  ['begin', { kind: 'hidden', plan: () => [draws(1), waits(CAPTURE_BEGIN_SETTLE)] }],
+  // three bodies of state, each of which settles in drawn frames
+  ['caught', { kind: 'hidden', plan: () => [draws(pageFrames(pageVerb('caught')))] }],
+  ['swing', { kind: 'hidden', plan: () => [draws(pageFrames(pageVerb('swing')))] }],
+  ['win', { kind: 'hidden', plan: () => [draws(pageFrames(pageVerb('win')))] }],
+  // the pickup: §5.2's hammer hold, then the frame the pickup is read back in
+  ['takeHammer', { kind: 'hidden', plan: () => [waits(CAPTURE_HAMMER_HOLD), draws(pageFrames(pageVerb('takeHammer')))] }],
+  // every portal, in `neighborhood.js`'s own order and its own count
+  ['shut', { kind: 'hidden', plan: () => hood.PORTAL_IDS.flatMap(() => [draws(1), waits(CAPTURE_PORTAL_HOLD), draws(1)]) }],
+  // `applyStep`'s own `hold` case takes its stand-off frame before the verb runs
+  ['hold', { kind: 'listed', plan: (step) => [draws(pageFrames(pageCase('hold'))), waits(step.seconds)] }],
+  ['wait', { kind: 'listed', plan: (step) => [waits(step.seconds)] }],
+  ['frames', { kind: 'listed', plan: (step) => [draws(step.count)] }],
+  // placements and flags. A placement that moved the world would be a clock the
+  // step list does not show, which is the one thing this table exists to catch.
+  ['creature', { kind: 'free', plan: () => [] }],
+  ['goto', { kind: 'free', plan: () => [] }],
+  ['motion', { kind: 'free', plan: () => [] }],
+  ['pause', { kind: 'free', plan: () => [] }],
+])
+
+/**
+ * worldCost — what a view's step list costs the world, in seconds and in steps.
+ *
+ * A SIMULATION and not a sum, and the difference is the whole point: it walks the
+ * same tokens in the same order the page does, and counts a `wait` by the loop the
+ * page's own loop runs — `while (animTime - started < seconds)`, one `SIM_DT` a
+ * turn — so the overshoot falls out of the arithmetic instead of being an allowance
+ * a future pass widens to make a gate go green.
+ *
+ * The arithmetic is FLOAT and is meant to be. `at` accumulates `SIM_DT` a step here
+ * exactly as `world.js` accumulates it there, so the two agree to the last bit rather
+ * than to a tolerance, and the gate can assert equality instead of a band.
+ *
+ * `budget` is what the page handed the world and `at` is what the world reached;
+ * they differ ONLY on a paused view, where §14.3 freezes `animTime` while the page
+ * keeps spending steps. `frozen` is that gap as a count rather than a suspicion.
+ */
+function worldCost(view) {
+  let at = 0
+  let budget = 0
+  let steps = 0
+  let frozen = 0
+  let paused = false
+  const stepOnce = () => {
+    steps += 1
+    budget += capture.CAPTURE_SIM_DT
+    if (paused) frozen += 1
+    else at += capture.CAPTURE_SIM_DT
+  }
+  for (const viewStep of view.steps) {
+    const entry = CLOCK_OPS.get(viewStep.op)
+    // an op with no plan is never silently free: the throw is the guard, and the
+    // table-completeness test below asserts the same thing from the other side
+    if (!entry) throw new Error(`worldCost has no plan for the op '${viewStep.op}'`)
+    for (const [kind, value] of entry.plan(viewStep)) {
+      if (kind === 'frames') {
+        for (let index = 0; index < value; index += 1) stepOnce()
+      } else {
+        const started = at
+        while (at - started < value) stepOnce()
+      }
+    }
+    // §14.3 takes effect at the pause, so every step AFTER it is one the world
+    // refuses — which is why `pause` is the one op whose position matters.
+    if (viewStep.op === 'pause') paused = true
+  }
+  for (let index = 0; index < CAPTURE_SHUTTER_FRAMES; index += 1) stepOnce()
+  return { at, budget, steps, frozen }
+}
+
+/** The world time a view's OWN step list asks for BY NAME, in seconds. */
+function listedTime(view) {
+  let seconds = 0
+  for (const step of view.steps) {
+    if (step.op === 'wait' || step.op === 'hold') seconds += step.seconds
+    else if (step.op === 'frames') seconds += step.count * capture.CAPTURE_SIM_DT
+  }
+  return seconds
+}
+
+test('every captured frame was taken at exactly the world time its step list asked for', () => {
+  const parsed = captureReport()
+  const frozen = []
+  for (const entry of parsed.captures) {
+    const clock = entry.state?.clock
+    assert.ok(
+      clock && Number.isFinite(clock.at) && Number.isFinite(clock.budget) && Number.isFinite(clock.steps),
+      `${entry.id} carries no clock record (origin / at / budget / steps) — re-run npm run capture with the pass-16 harness`,
+    )
+    assert.equal(clock.origin, 0, `${entry.id} was stepped from world time ${clock.origin} rather than from the origin`)
+    assert.ok(clock.steps > 0, `${entry.id} reports ${clock.steps} steps, so its clock never moved`)
+    // the world can never be AHEAD of the steps: nothing outside `stepWorld` is
+    // supposed to hand it time at all, and a frame that got some is a frame
+    // photographed with the machine in it.
+    assert.ok(
+      clock.at <= clock.budget + 1e-6,
+      `${entry.id} reached world time ${clock.at} against a step budget of ${clock.budget} — something moved the world ` +
+        'outside stepWorld, which is the one thing pass 16 exists to make impossible',
+    )
+    const view = capture.viewById(entry.id)
+    assert.ok(view, `${entry.id} is in the report but not in the view table — the report and the table have drifted apart`)
+    if (view.steps.some((step) => step.op === 'pause')) frozen.push(entry.id)
+  }
+  // ...and it is only ever BEHIND on a view that paused, because §14.3 freezes
+  // the clock and a step handed to a frozen world is worth nothing. That is the
+  // whole exception list, and it is DERIVED from the step lists rather than
+  // named, so a second frozen frame cannot arrive quietly.
+  assert.deepEqual(
+    frozen,
+    capture.CAPTURE_IDS.filter((id) => capture.viewById(id).steps.some((step) => step.op === 'pause')),
+    'the frames whose clock is behind their step budget are not exactly the views that pause',
+  )
+  for (const entry of parsed.captures) {
+    const view = capture.viewById(entry.id)
+    const clock = entry.state.clock
+    const model = worldCost(view)
+    // THE EXACT FIGURE, NOT A BAND. The previous version compared the budget
+    // against a ceiling assembled from `listed + overshoot + 2 * PORTAL_SHUT_SECONDS`
+    // and it failed a capture that was right, because the ceiling was a guess: it
+    // had no `begin` settle, no per-portal count, and no idea what `takeHammer`
+    // actually holds. `worldCost` above has all three, read from the page, so the
+    // budget can be compared to the number the step list really costs instead of
+    // to a number a future pass would widen to make the gate go green.
+    //
+    // The comparison is EXACT, in steps, because the model accumulates `SIM_DT` in
+    // the same order the page does and the report rounds to four places — so a
+    // difference here is a real disagreement about the steps and not a float.
+    assert.equal(
+      clock.steps,
+      model.steps,
+      `${entry.id} took ${clock.steps} step(s) and its step list costs ${model.steps} — the page spent world time the ` +
+        'step list never asked for, or the clock table has mispriced an op. Its list names ' +
+        `${listedTime(view).toFixed(3)} s directly; the rest is inside the ops.`,
+    )
+    assert.ok(
+      Math.abs(clock.budget - model.budget) <= 1e-4,
+      `${entry.id} reports a step budget of ${clock.budget} s against the ${model.budget.toFixed(4)} s its own step list ` +
+        'costs — the page and this model disagree about the same steps',
+    )
+    // and the world can be BEHIND the budget by exactly the frozen steps and not by
+    // one step more, which is the claim the old ceiling could not make at all.
+    assert.equal(
+      Math.round((clock.budget - clock.at) / capture.CAPTURE_SIM_DT),
+      model.frozen,
+      `${entry.id} is ${(clock.budget - clock.at).toFixed(4)} s (${Math.round((clock.budget - clock.at) / capture.CAPTURE_SIM_DT)} step(s)) ` +
+        `behind its step budget, and its step list says ${model.frozen} step(s) should be refused — the gap between what the ` +
+        'page spent and what the world accepted is not the one the steps ask for',
+    )
+    if (frozen.includes(entry.id)) {
+      assert.ok(
+        clock.at < clock.budget,
+        `${entry.id} pauses and its clock still reached its budget — §14.3 did not freeze the world this frame claims to photograph`,
+      )
+      assert.equal(entry.state.simFrozen, true, `${entry.id} pauses and its snapshot does not report a frozen simulation`)
+      continue
+    }
+    assert.equal(
+      clock.at,
+      clock.budget,
+      `${entry.id}'s world reached ${clock.at} s against a step budget of ${clock.budget} s. A running frame whose clock is ` +
+        'behind its steps is a frame photographed with the machine in it (REVIEW-pass-15, finding 1).',
+    )
+    assert.equal(entry.state.simFrozen, false, `${entry.id} is a running frame and claims a frozen simulation`)
+  }
+})
+
+test('the capture page has one door for world time, and it reads no delta', () => {
+  // Browser code, so it is read as text — the same seam `skyView.js` is (§15.1)
+  // and for the same reason: a claim about a function node cannot call is a
+  // claim about a comment.
+  //
+  // COUNTED ON `stripProse(source)`, NOT ON `source`, and that is the whole fix
+  // for a gate that was reading two doors where there is one. The page's header
+  // explains the design in prose that names `game.update(SIM_DT)` to describe the
+  // stepped wait, so the raw text held two matches — the docblock's and the real
+  // one in `stepWorld` — and a gate counting prose as a call is a gate that
+  // fails on a comment and, worse, one whose fix is to reword a comment until it
+  // stops. Comments are stripped, not obeyed: the number is about code, and the
+  // only way to change it is to add a second door.
+  const source = CAPTURE_PAGE
+  const code = CAPTURE_CODE
+  const updates = code.match(/game\.update\(/g) ?? []
+  assert.equal(
+    updates.length,
+    1,
+    `capture/main.jsx calls game.update( ${updates.length} times in its CODE. stepWorld is meant to be the only door world time ` +
+      'comes through, and a second call is a second clock.',
+  )
+  // the match is inside `stepWorld` and nowhere else, which is the stronger form
+  // of the same claim: a count of one is also what a single call in the WRONG
+  // function would produce, and "one door" means `stepWorld` is it.
+  const stepWorldBody = pageVerb('stepWorld')
+  assert.ok(
+    /game\.update\(/.test(stepWorldBody),
+    'the page calls game.update( somewhere other than stepWorld — a door that does not count its own steps',
+  )
+  assert.ok(/function stepWorld\(/.test(source), 'capture/main.jsx has no stepWorld, so nothing is counting the steps')
+  assert.ok(
+    /const SIM_DT = CAPTURE_SIM_DT/.test(source),
+    "the page no longer steps the world at the contract's own rate, so the number this file reads is not the one the page uses",
+  )
+  // the anchor is two statements and both are load-bearing: the first puts the
+  // run at the origin, the second takes the machine out of the render loop that
+  // is still compositing the page.
+  assert.ok(/function anchorClock\(/.test(source), 'capture/main.jsx no longer anchors the clock, so every run starts at page-load time')
+  const anchor = source.slice(source.indexOf('function anchorClock('), source.indexOf('function anchorClock(') + 400)
+  assert.ok(/animTime = 0/.test(anchor), 'anchorClock() does not put animTime back to 0')
+  assert.ok(/getDelta = \(\) => 0/.test(anchor), 'anchorClock() does not take the machine out of the clock, so the render loop still moves the world')
+  const runAt = source.indexOf('async function run(')
+  assert.ok(
+    runAt >= 0 && /anchorClock\(\)/.test(source.slice(runAt)),
+    'run() does not anchor the clock before its first step, so the run begins at whatever animTime the page reached while it booted',
+  )
+  // and nothing has reintroduced the wall clock the pass removed
+  assert.ok(!/clock\.oldTime/.test(source), 'capture/main.jsx writes clock.oldTime again, which is a second way to move the world')
+  // A wait is stepped, so its own cost is arithmetic — unless the renderer is left
+  // running in front of the timers it yields to, which is what it was. This is the
+  // last machine-dependent number the pass took out, and it took a real run down
+  // with it: a 12 ms wait with a 16 s guard on it, failing whenever the machine was
+  // busy.
+  const waitAt = source.indexOf('async function wait(')
+  const waitEnd = source.indexOf('\n/**', waitAt)
+  const waitBody = source.slice(waitAt, waitEnd < 0 ? undefined : waitEnd)
+  assert.ok(
+    /holdLoop\(\)/.test(waitBody),
+    'wait() does not hold the page render loop, so the wall clock it is guarded by is a function of how fast this machine ' +
+      'can draw the street — a 0.238 ms step behind a 1 fps render loop is not a stepped wait, it is a lottery',
+  )
+  assert.ok(
+    /finally \{[\s\S]*releaseLoop\(\)/.test(waitBody),
+    'wait() does not release the render loop in a finally, so a view that throws out of a wait leaves the page with a stopped world',
+  )
+  // the snapshot is where the claim becomes checkable
+  assert.ok(/clock: \{ origin: 0, at:/.test(source), 'the capture snapshot no longer publishes the clock, so the gate above has nothing to read')
+})
+
+test('the capture page builds one world and keeps it, so no view is ever stepped in a replacement', () => {
+  // The same seam as the gate above, for the same reason, and this is the bug
+  // that took a real run's `portal-shutdown` down. `Shell`'s world-building effect
+  // listed `onReady` in its dependency array; `onReady` is an inline arrow at the
+  // `createRoot` call and is therefore a NEW function on every render; and
+  // `Shell` re-renders on every store publish, because the subscription is
+  // `setHud`. So every publish disposed the world and built a new one MID-VIEW,
+  // at `animTime` 0, and the `wait` holding a clock from the old one could never
+  // reach its target — a clock reading 1.8333 s of steps against a `started` of
+  // 1.55, reported for sixteen seconds of spinning as a clock not advancing.
+  //
+  // A HOLD made it certain rather than unlucky: `_updateVerbs` publishes the hold
+  // fraction every step, so a re-render was queued for each of the sixteen steps
+  // between two yields and the teardown landed inside the wait every time.
+  const source = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+  const buildEffect = source.match(/useEffect\(\(\) => \{[\s\S]*?new LongQuietGame\([\s\S]*?\}, (\[[^\]]*\])\)/)
+  assert.ok(
+    buildEffect,
+    'capture/main.jsx no longer builds its world inside a useEffect with a dependency array, so the deps cannot be read',
+  )
+  const deps = buildEffect[1]
+  assert.ok(
+    !/\bonReady\b/.test(deps),
+    `capture/main.jsx builds the world in an effect that depends on onReady (${deps}), and onReady is a new function on ` +
+      'every render — so every store publish disposes the world and constructs a new one mid-view, at animTime 0, and the ' +
+      'view is then stepped in a world the run never started',
+  )
+  assert.ok(
+    /onReadyRef\.current/.test(buildEffect[0]),
+    'the world-building effect calls onReady directly instead of through the ref, so dropping the dep would hand it a stale closure',
+  )
+  assert.ok(
+    /const onReadyRef = useRef\(onReady\)/.test(source),
+    'capture/main.jsx has no onReadyRef, so the stable callback this fix depends on is not there',
+  )
+  // and the page can still NAME the failure if it ever comes back, which is the
+  // half that cost this pass a run: a replacement reported as a frozen clock is
+  // a sixteen-second wait and a wrong explanation.
+  assert.ok(
+    /if \(game !== world\)/.test(source),
+    'the wait loop no longer checks the world it is stepping BY IDENTITY, so a mid-view rebuild would once again be ' +
+      'reported as a clock that is not advancing',
+  )
+})
+
+test('CAPTURE_SIM_DT is the rate the capture contract publishes, and it is finer than the world clamp', () => {
+  // The reason the constant moved out of the page at all: this file could not
+  // read a number the page declared for itself, and that number is what "a set
+  // of steps is worth the same picture twice" is measured against.
+  assert.equal(capture.CAPTURE_SIM_DT, 1 / 60, 'CAPTURE_SIM_DT is no longer a 60 Hz step')
+  // ...and the reason it exists at all: `world.js` clamps a real delta to 0.05 s,
+  // so a step coarser than that is a frame whose world time is a property of the
+  // machine. A page that handed the world 0.05 s steps would have a reproducible
+  // clock only in the sense of reliably reproducing the clamp.
+  const WORLD_CLAMP = 0.05
+  assert.ok(
+    capture.CAPTURE_SIM_DT < WORLD_CLAMP,
+    `CAPTURE_SIM_DT (${capture.CAPTURE_SIM_DT}) is not finer than the ${WORLD_CLAMP} s clamp world.js puts on a real delta, so a ` +
+      "capture frame is still measured in the machine's units",
+  )
+  // and it is a RATE, not a duration somebody tuned: a whole second of it is a
+  // round number of steps, which is what makes a `wait`'s overshoot less than
+  // one step rather than an arbitrary fraction of one.
+  assert.equal(Math.round(1 / capture.CAPTURE_SIM_DT), 60, 'a second is not a whole number of capture steps')
+})
+
+test('every op a view names is one the clock gate knows the cost of', () => {
+  // The guard on `worldCost` itself. An op added to a view and not to
+  // `CLOCK_OPS` would cost the gate nothing measurable — `worldCost` throws, but
+  // only if it is ever asked about that view — so the ops the tables use are
+  // asserted to BE the ops the gate can price, in both directions.
+  const seen = new Set()
+  for (const id of [...capture.CAPTURE_IDS, ...capture.CREATURE_PROBE_IDS]) {
+    const view = capture.viewById(id)
+    assert.ok(view, `viewById cannot resolve ${id}`)
+    for (const step of view.steps) {
+      assert.ok(CLOCK_OPS.has(step.op), `${id} names the op '${step.op}', which the clock gate has no plan for — add it to CLOCK_OPS`)
+      seen.add(step.op)
+    }
+  }
+  for (const [op, entry] of CLOCK_OPS) {
+    assert.ok(
+      ['listed', 'hidden', 'free'].includes(entry.kind),
+      `CLOCK_OPS classifies ${op} as '${entry.kind}', which is not one of its three kinds`,
+    )
+    assert.equal(typeof entry.plan, 'function', `CLOCK_OPS has no plan for ${op}, so worldCost would throw rather than price it`)
+    assert.ok(seen.has(op) || entry.kind === 'free', `CLOCK_OPS accounts for '${op}' and no view uses it`)
+    // a plan is a list of two-token instructions, and an instruction this model
+    // cannot walk would be a silently-skipped cost
+    const probe = { op, seconds: 0, count: 0, target: 'lamp' }
+    for (const token of entry.plan(probe)) {
+      assert.ok(
+        Array.isArray(token) && (token[0] === 'frames' || token[0] === 'wait') && Number.isFinite(token[1]),
+        `CLOCK_OPS plans ${op} as [${JSON.stringify(token)}], which is not a frames/waits instruction worldCost can walk`,
+      )
+    }
+  }
+  // a `free` op really is free: it is a placement or a flag, and one of those that
+  // moved the world would be a clock the step list does not show. The plan being
+  // EMPTY is the assertion — it used to be a word in a map, which a future pass
+  // could have kept while giving the op a hold.
+  for (const op of ['goto', 'creature', 'motion', 'pause']) {
+    assert.equal(CLOCK_OPS.get(op).kind, 'free', `${op} is a placement or a flag, and the clock gate is charging it for time it does not spend`)
+    assert.deepEqual(
+      CLOCK_OPS.get(op).plan({ op, seconds: 1, count: 4 }),
+      [],
+      `${op} is still a placement or a flag, and the clock gate now prices it as spending time — which means either the ` +
+        'page moved the world in a step the list does not name, or the classification is stale',
+    )
+  }
+  // ...and a `hidden` op is one whose cost the step list cannot be read off, which
+  // is the reason `listedTime` exists beside this table at all. The two together are
+  // the property the old ceiling got wrong, and this is the regression for it: the
+  // whole allowance that version carried for every hidden op in a view was
+  // `2 * PORTAL_SHUT_SECONDS`, and `hammer-awakening` costs more than that over its
+  // listed time. Stated as a number rather than left in the review.
+  assert.equal(listedTime({ steps: [{ op: 'begin' }] }), 0, 'begin names no time in the step, so listedTime reads 0 and only the plan knows the rest')
+  const awakening = capture.viewById('hammer-awakening')
+  const awakeningListed = listedTime(awakening)
+  const awakeningCost = worldCost(awakening).steps * capture.CAPTURE_SIM_DT
+  assert.ok(
+    awakeningCost > awakeningListed,
+    `the plan costs ${awakeningCost.toFixed(3)} s and the step list names ${awakeningListed.toFixed(3)} s — a model that reads ` +
+      'nothing but the list would price this view as if `begin` and `takeHammer` were free',
+  )
+  assert.ok(
+    awakeningCost > awakeningListed + 2 * rules.PORTAL_SHUT_SECONDS,
+    `hammer-awakening costs ${awakeningCost.toFixed(3)} s, which the old flat allowance of 2 * PORTAL_SHUT_SECONDS ` +
+      `(${awakeningListed.toFixed(3)} + ${(2 * rules.PORTAL_SHUT_SECONDS).toFixed(3)}) no longer covers — if this view got ` +
+      'cheaper, check that `begin` and `takeHammer` really are still holding the key',
+  )
+  // and the direction that matters everywhere else: the plan can never cost LESS
+  // than the list names, on any view, because every op spends at least what it says.
+  for (const id of [...capture.CAPTURE_IDS, ...capture.CREATURE_PROBE_IDS]) {
+    const view = capture.viewById(id)
+    const cost = worldCost(view).steps * capture.CAPTURE_SIM_DT
+    assert.ok(
+      cost >= listedTime(view) - 1e-9,
+      `${id} costs ${cost.toFixed(4)} s to run and its own list names ${listedTime(view).toFixed(4)} s — the model is cheaper than ` +
+        'the step list, so it is not counting something the page runs',
+    )
+  }
+})
+
 // PASS12_SECTION
 
 // ---------------------------------------------------------------------------

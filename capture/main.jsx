@@ -59,6 +59,47 @@
  * If a step cannot be taken, this throws. There is no fallback state and no
  * "close enough" — a view that fails is a hole in the gallery, and the harness
  * records the hole instead of covering it.
+ *
+ * THE CLOCK IS ANCHORED, AND IT IS THE ONLY CLOCK (PASS 16)
+ * ---------------------------------------------------------
+ * A stepped wait is not the same thing as a fixed clock, and the difference was
+ * REVIEW-pass-15's reproducibility finding.
+ *
+ * `world.js` does not read a clock from anywhere but its own render loop:
+ * `_animate` hands `update` `Math.min(clock.getDelta(), 0.05)`. Between the page
+ * being built and the shutter being pressed — and then again, at ~1 fps, for as
+ * long as the page is standing there — that loop is running, and every frame it
+ * draws is worth up to 0.05 s of world time depending on how long the previous
+ * render took. So the world time in a photograph was
+ *
+ *     the steps the view asked for  +  0.05 x (however many frames the machine
+ *                                             managed while the steps ran)
+ *
+ * and the second term is a property of the host, not of the design. It is not a
+ * small term: `lampDread` and `flickerAt` are step functions on `animTime` at
+ * 11 Hz, so 0.05 s of drift is half a dropout tick — a lamp pool is either lit
+ * or drodded, and which one it was depended on how fast the page was drawing.
+ * The probe measured the consequence (same steps, three runs: 14.7% / 15.6% /
+ * 22.5% lit, one of them resolving no eye at all) and a re-run of the gallery
+ * could move a frame's margin by a level of luma.
+ *
+ * So there is now exactly one clock, and the page owns it:
+ *
+ *   1. `anchorClock()` puts `animTime` back to 0 and replaces
+ *      `game.clock.getDelta` with a stub that returns 0. The world's own loop
+ *      still runs — it still renders, still composites, still lets the page's
+ *      CSS animations and React scheduler have their turns — but a frame it
+ *      draws is now worth no world time at all, which is what "cosmetic" means.
+ *   2. Every step the page takes is `CAPTURE_SIM_DT` through `stepWorld`, and
+ *      `stepWorld` keeps the running total. The snapshot reports the total, and
+ *      `verify.mjs` asserts the world's own `animTime` equals it — so "the clock
+ *      is the step list" is a number in `benchmark/captures.json` rather than a
+ *      promise in a comment. If anything ever moves the world outside
+ *      `stepWorld`, that check fails on the next run.
+ *
+ * §6.5's contract is that a set of steps is worth the same picture twice. Before
+ * this pass the set of steps was worth the same picture once, at whatever phase
+ * of §9.3's lamp dread the page happened to have been born in.
  */
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -78,6 +119,11 @@ import {
   FURNITURE_FAMILIES,
   FURNITURE_POOLS,
   FURNITURE_MIN_LEGIBLE_PX,
+  // pass 16. The frame rate the page steps the world at, read from the same module
+  // the probe's floors come from rather than declared here. It is the capture
+  // contract's own number — `CAPTURE_SIM_DT` — and `verify.mjs` reads it in node,
+  // which it could not do while it was a local `SIM_DT` on this page.
+  CAPTURE_SIM_DT,
   // pass 15. The probe's two box geometries, read from the same table the steps
   // come from: the rows the shimmer is measured over, and the reference band the
   // creature's own effect on the street lighting is divided out against. A page
@@ -105,8 +151,12 @@ import '../src/ui/styles.css'
  * capture harness to inherit. §16.5's beats are wall-clock facts about the design
  * ("0.8 s into a 1.2 s hold"), so they are measured in the world's own units and
  * driven at the rate the design assumes.
+ *
+ * PASS 16: this is `CAPTURE_SIM_DT` in `src/game/capture.js` and the name here
+ * follows it, because the value is now the one number in the capture contract
+ * that a check reads from outside a browser. Nothing else about it changed.
  */
-const SIM_DT = 1 / 60
+const SIM_DT = CAPTURE_SIM_DT
 
 /**
  * How long `begin` waits for the world to finish its opening dissolve, in world
@@ -157,17 +207,49 @@ function Shell({ worldRef, onReady }) {
   const [store] = useState(() => createStartStore())
   const [hud, setHud] = useState(() => hudSnapshot(store.get()))
 
+  // PASS 16. `onReady` is read through a ref, and it is NOT a dependency of the
+  // build effect below. It was, and that is the bug this page spent a capture run
+  // failing on.
+  //
+  // `onReady` is an inline arrow at the `createRoot` call, so it is a NEW function
+  // on every render — and `Shell` re-renders on every store publish, because the
+  // subscription is `setHud`. Listing it in the deps therefore re-ran the build
+  // effect on every publish: the old world was disposed and a new one
+  // constructed, and the harness was handed the new one MID-VIEW.
+  //
+  // A new world's `animTime` is 0, so a `wait` holding a `started` from the old
+  // one was reading a clock that had gone BACKWARDS and could never reach its
+  // target. That is the "the world's clock is not advancing" which took
+  // `portal-shutdown` down, and it was a rebuild, not a freeze — the clock was
+  // moving perfectly well, in a world nobody asked for.
+  //
+  // What made it certain rather than unlucky is the HOLD. `_updateVerbs`
+  // publishes the hold fraction and the prompt on every step that changes them,
+  // so during a `hold` a re-render was already queued for each of the sixteen
+  // steps between two yields, and the teardown landed inside the wait every
+  // single time. The other views survived on the yields that happened to fall on
+  // a step where the HUD had nothing new to say.
+  //
+  // The ref is assigned in its own effect, declared FIRST, so the build effect
+  // that follows has a current callback on the very first commit. What `onReady`
+  // does must not matter here — it writes three module bindings, and the same
+  // function every time is the whole of the fix.
+  const onReadyRef = useRef(onReady)
+  useEffect(() => {
+    onReadyRef.current = onReady
+  })
+
   useEffect(() => {
     const built = new LongQuietGame(containerRef.current, { store })
     worldRef.current = built
-    onReady(built, store)
+    onReadyRef.current(built, store)
     const unsubscribe = store.subscribe((state) => setHud(hudSnapshot(state)))
     return () => {
       unsubscribe()
       built.dispose()
       worldRef.current = null
     }
-  }, [store, onReady, worldRef])
+  }, [store, worldRef])
 
   // the same three overlay conditions as `App.jsx`, and the only thing in this
   // file that duplicates rather than shares
@@ -202,13 +284,66 @@ createRoot(document.getElementById('root')).render(
   />,
 )
 
-/** One rendered frame. Everything here is paced on the world's own clock. */
+/** One COMPOSITOR frame, and nothing else: no world step, no render. */
 function frame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()))
 }
 
+/**
+ * stepWorld — the ONE door through which world time enters this page. PASS 16.
+ *
+ * `game.update` is called from three places in this file (a wait, a rendered
+ * frame, and the baseline) and every one of them comes through here, so the sum
+ * of the `dt` this page has handed the world is a number rather than a claim.
+ * `run` reports it as `clock.budget`, and `verify.mjs` asserts the world's own
+ * `animTime` at the shutter is equal to it. Anything that moves the world by
+ * another route — `world.js`'s own render loop, a future second `update` call —
+ * shows up as a frame whose clock is ahead of its steps, which fails the gate on
+ * the next capture run instead of quietly making every frame unrepeatable.
+ */
+let clockBudget = 0
+let clockCalls = 0
+
+function stepWorld(dt) {
+  clockBudget += dt
+  clockCalls += 1
+  game.update(dt)
+}
+
+/**
+ * drawFrame — one world frame: the world's own `update` and its own renderer,
+ * on a step this page chose rather than one a wall clock handed it.
+ *
+ * PASS 15 let the world's render loop draw the shutter frame and inherited its
+ * delta; PASS 16 does the same two calls `_animate` makes, in the same order
+ * and inside the same `requestAnimationFrame`, with the delta supplied rather
+ * than read. The difference is that this frame is worth `SIM_DT` on every
+ * machine and in every run, which is what lets `simFrozen` below still be a
+ * measurement: a live world advances by exactly one step, and §14.3's paused
+ * world advances by nothing because `update` returns before the clock moves.
+ */
+function drawFrame(dt = SIM_DT) {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      stepWorld(dt)
+      game.renderer.render(game.scene, game.camera)
+      resolve()
+    })
+  })
+}
+
+/**
+ * frames — `count` world frames, drawn.
+ *
+ * BEFORE pass 16 this was `count` bare compositor frames and the world's own
+ * loop drew each one, so "let it settle" also meant "let up to 0.05 s of world
+ * time pass per frame, as many times as the machine could manage". That is the
+ * second half of the reproducibility finding: three views differ from each other
+ * by a `frames` step and nothing else, and the difference was a machine's
+ * opinion. AFTER: each one is exactly `SIM_DT`.
+ */
 async function frames(count) {
-  for (let index = 0; index < count; index += 1) await frame()
+  for (let index = 0; index < count; index += 1) await drawFrame()
 }
 
 /**
@@ -230,6 +365,20 @@ async function frames(count) {
  * calls it at the TOP rather than leaving a run responsible for putting it back.
  * A run handed a held loop that does not notice would draw its first frames from
  * a stopped world and the picture would be right by accident.
+ *
+ * PASS 16: the note above is about the SECOND shutter, and it is still true —
+ * but the loop can no longer move the world at all, so holding it is now a
+ * belt-and-braces on the probe's control rather than the only thing standing
+ * between a frame and its baseline. The delta it used to contribute is zero, and
+ * that is `anchorClock`'s doing, below.
+ *
+ * PASS 16, THE OTHER HALF, and this is the half that turned out to matter: a wait
+ * holds it too, for the whole of the wait. The loop cannot move the world any
+ * more, so holding it there buys no reproducibility — what it buys is a wait whose
+ * COST is not a function of how fast this machine can draw the street, because a
+ * loop left running is a long task in front of every timer the wait yields to.
+ * That was the last machine-dependent number in a pass whose entire subject was
+ * taking them out, and it is why `wait` now brackets itself.
  */
 let loopHeld = false
 // the world clock of the last frame a probe frame was drawn in, carried from
@@ -247,11 +396,55 @@ function holdLoop() {
 function releaseLoop() {
   if (!loopHeld) return
   loopHeld = false
-  // measured from now and not from the frame that was held: the world gets the
-  // first frame it would have had if the loop had never been stopped, rather
-  // than 0.05 s of shutter time it did not live through.
-  game.clock.oldTime = performance.now()
+  // PASS 16: the `oldTime` reset this used to do is gone, because the world no
+  // longer reads a delta — `anchorClock` has replaced `clock.getDelta` with a
+  // stub. What comes back is a RENDERER and nothing else, which is the whole of
+  // what a released loop is for on this page.
   game.rafId = requestAnimationFrame(game._animate)
+}
+
+/**
+ * anchorClock — put the world's clock at the origin, and take the machine out of
+ * it. ITERATION 2, PASS 16, and the fix for REVIEW-pass-15's reproducibility
+ * finding.
+ *
+ * WHAT IT DOES, IN TWO LINES
+ * --------------------------
+ *   `game.animTime = 0` and `game.clock.getDelta = () => 0`.
+ *
+ * WHY BOTH, AND WHY NOT INSTEAD
+ * -----------------------------
+ * `animTime` is the sum of clamped frame deltas SINCE PAGE LOAD, so a page that
+ * took a second longer to boot — or a machine that rendered three more frames
+ * while the steps ran — starts the view at a different point in §9.3's 11 Hz lamp
+ * dread. A drodded pool is a nearly black road, which is how the same twelve
+ * steps measured 14.7% / 15.6% / 22.5% lit across three runs of the probe, one of
+ * them with no eye to find at all.
+ *
+ * Zeroing the clock alone is not enough, and this is the part worth writing down:
+ * the page's own render loop is still running while the steps are being taken (it
+ * has to be — it is what composites the page, flushes React and lets `.title-veil`
+ * fade in over its 1.6 s), and every frame it draws was worth `min(delta, 0.05)`
+ * of world time. Anchoring and then rendering for four seconds would drift the
+ * clock 0.2 s past the origin, which is two whole dropout ticks — the same
+ * failure, smaller. Zeroing the delta closes that second door WITHOUT touching
+ * anything about how the page draws: the loop still runs, still renders, still
+ * animates the DOM. It just cannot move the world.
+ *
+ * What is left as a clock is `stepWorld`, and its only caller outside this
+ * function is a `wait` or a `frames` — so the world time in a photograph is the
+ * sum of the steps in `src/game/capture.js` and nothing else. `run` reports that
+ * sum and `verify.mjs` checks the world's own number against it.
+ *
+ * The FPS counter stops counting, which is the one visible consequence and the
+ * right one: `showFps` is never set on this page, and a frame-rate window
+ * measured over a clock that is no longer read would be a fiction.
+ */
+function anchorClock() {
+  game.animTime = 0
+  game.clock.getDelta = () => 0
+  clockBudget = 0
+  clockCalls = 0
 }
 
 /**
@@ -275,29 +468,134 @@ function releaseLoop() {
  * rather than hanging the harness. §14.3's pause is the case that matters: it
  * returns from `update` before the clock moves, so a wait on a paused world can
  * never finish and is rejected up front instead of discovering the freeze the
- * slow way.
+ * slow way. And the third way a wait cannot finish is a world REPLACED under it,
+ * which is a page bug and not a world's — the loop steps the world it was handed
+ * and says so by identity, every step, because the failure it used to produce was
+ * indistinguishable from a slow machine.
+ *
+ * PASS 16: the steps go through `stepWorld`, so they are counted. The loop
+ * condition still reads the world's own `animTime` — that is the point of a
+ * stepped wait, the clock is the world's and not the harness's arithmetic — and
+ * the budget it accumulates is what proves afterwards that nothing else moved
+ * it. The trailing `frame()` is a compositor frame, not a world frame: this wait
+ * is over simulation, not over a picture, and a world that is about to be
+ * photographed draws itself when it is asked to.
+ *
+ * PASS 16: it holds the page's render loop while it does that, which is the same
+ * claim as the paragraph above seen from the other side — nothing is drawn during a
+ * wait, so the loop that draws has nothing to contribute and a great deal to take
+ * away from the wall clock. The body says why, and the error at the bottom says
+ * what is left if it is still too slow.
  */
 async function wait(seconds) {
   if (!(seconds > 0)) return
   if (game.paused) throw new Error('wait: the world is paused, and §14.3 freezes its clock')
-  const started = game.animTime
+  // The world this wait is stepping, BY IDENTITY, and it is worth a local because
+  // of what it caught. A page that rebuilds its world mid-view hands this loop a
+  // clock that has gone backwards — a new world's `animTime` is 0 — and a loop
+  // reading a clock that starts behind it can never finish, so the old code spent
+  // its entire ceiling calling that a clock which would not advance. It was a
+  // replacement, not a freeze.
+  //
+  // Checked here rather than in `stepWorld`, which is the ONE door and therefore
+  // also the one place a throw would be swallowed: a throw inside `drawFrame`'s
+  // `requestAnimationFrame` callback never settles its promise, so the run would
+  // hang instead of failing. This loop is synchronous, so a throw here is a
+  // failure the harness records.
+  //
+  // A rebuild OUTSIDE a wait is already covered, by the `clock.at === clock.budget`
+  // gate: the budget is this page's own arithmetic and a fresh world's `animTime`
+  // is nowhere near it. Between the two, the page cannot quietly photograph a
+  // world it did not step.
+  const world = game
+  const started = world.animTime
   const wallStart = performance.now()
+  const stepsAtEntry = clockCalls
+  let yields = 0
   const ceiling = Math.min(WAIT_CEILING_SECONDS, seconds * WAIT_SLOWDOWN_ALLOWANCE) * 1000
   let sinceYield = 0
-  while (game.animTime - started < seconds) {
-    game.update(SIM_DT)
-    if (performance.now() - wallStart > ceiling) {
-      throw new Error(`wait(${seconds}) never completed: the world's clock is not advancing`)
+  // PASS 16. The page's own render loop is HELD for the length of the wait, and
+  // this is the last place it was free to run.
+  //
+  // A wait steps the world by hand, so a loop whose only remaining job is to draw
+  // that world is pure interference — and interference with a stopwatch, because
+  // the guard above is wall time. The loop's frame is a LONG TASK on a software
+  // rasteriser (a street at 1280x720 is about a second of it), so every one of
+  // the three or four times a wait hands the page back, the timer behind that hand
+  // back waited for a picture nobody had asked for. Measured: 0.238 ms a step and
+  // 327 ms a step, the difference being entirely in the yields.
+  //
+  // So `wait(0.8)` was a 12 ms piece of work with a 16 s guard on it, and it
+  // failed whenever the machine was unluckily busy — which is a guard that reports
+  // a healthy world as a frozen one, and a gallery whose views are coin flips. It
+  // is the same claim the rest of this pass makes, reached from the other side:
+  // the world time in a photograph is the sum of the steps and nothing else, and
+  // so is the wall time it costs.
+  //
+  // `releaseLoop` in the `finally` is what makes this safe to interrupt: a view
+  // that throws out of a wait leaves the page exactly as `run` found it, and a
+  // wait nested inside another would still be balanced.
+  // `holdLoop` is idempotent, so a wait entered while the loop was ALREADY held
+  // must not be the thing that releases it: `heldHere` is this wait's own claim on
+  // the loop and the `finally` gives back exactly that. Nothing waits with the loop
+  // held today — `__captureBaseline` steps and frames without waiting — and this is
+  // the line that stops that being an accident.
+  const heldHere = !loopHeld
+  holdLoop()
+  try {
+    while (world.animTime - started < seconds) {
+      if (game !== world) {
+        throw new Error(
+          `wait(${seconds}) never completed: the world was rebuilt mid-view, and the clock this wait ` +
+            `holds belongs to a world that is no longer on the page (its clock stopped at ${round(world.animTime)})`,
+        )
+      }
+      stepWorld(SIM_DT)
+      // A pause can arrive BETWEEN two steps, and this loop is where it arrives:
+      // §14.3's pointer-lock auto-pause lands on an event, and this is the only
+      // place the page hands events a turn between steps (`STEPS_PER_YIELD`).
+      // `update` then returns before the clock moves, forever, so the wait cannot
+      // finish — which it is entitled to say at once, on the first step that sees
+      // it, rather than after spending its whole ceiling spinning against a frozen
+      // world. The entry check above catches a pause that was already there; this
+      // catches the one that arrives underneath it, and the two are different bugs.
+      if (world.paused) {
+        throw new Error(
+          `wait(${seconds}) never completed: the world is paused, and §14.3 freezes its clock ` +
+            `(phase ${world.phase}, lock ${document.pointerLockElement === world.canvas ? 'held' : 'lost'}, ` +
+            `grace until ${round(world._lockGraceUntil)}, clock ${round(world.animTime)} from ${round(started)})`,
+        )
+      }
+      if (performance.now() - wallStart > ceiling) {
+        // The slow-machine case, and the numbers that say WHICH slow: a wait this
+        // page drives by hand is CPU-bound and cheap, so wall time here is almost
+        // never the arithmetic — and with the loop held above it is now the
+        // machine's whole load rather than a renderer this page asked for. Steps,
+        // yields and elapsed separate the two in one line, because the previous
+        // version of this error named none of them and so reported a clock that
+        // was moving perfectly well as one that was not advancing.
+        const wall = performance.now() - wallStart
+        throw new Error(
+          `wait(${seconds}) never completed: the world's clock is not advancing ` +
+            `(clock ${round(world.animTime)} from ${round(started)}, so it moved; ${clockCalls - stepsAtEntry} step(s) ` +
+            `and ${yields} yield(s) in ${Math.round(wall)} ms, ` +
+            `${(wall / Math.max(1, clockCalls - stepsAtEntry)).toFixed(1)} ms a step, ` +
+            `${yields ? Math.round(wall / yields) : 0} ms a yield, against a ${Math.round(ceiling)} ms ceiling)`,
+        )
+      }
+      // hand the page back every so often, so a long wait cannot starve React's
+      // scheduler or the store's subscribers of the frames they mirror from
+      sinceYield += 1
+      if (sinceYield >= STEPS_PER_YIELD) {
+        sinceYield = 0
+        yields += 1
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
     }
-    // hand the page back every so often, so a long wait cannot starve React's
-    // scheduler or the store's subscribers of the frames they mirror from
-    sinceYield += 1
-    if (sinceYield >= STEPS_PER_YIELD) {
-      sinceYield = 0
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await frame()
+  } finally {
+    if (heldHere) releaseLoop()
   }
-  await frame()
 }
 
 /** The copy of a canonical anchor that is currently drawn around the player. */
@@ -777,7 +1075,10 @@ async function applyStep(step) {
       // waiting for the render loop to notice — which on a software rasteriser is
       // a race this page should never be in, and which cost the previous run a
       // fade of 0.405 under every single view.
-      game.update(SIM_DT)
+      //
+      // PASS 16: through `stepWorld`, like every other step on this page, so this
+      // hand-off's one frame of world time is in the budget the report publishes.
+      stepWorld(SIM_DT)
       if (store.get().phase !== PHASE.PLAYING) {
         throw new Error('begin: the world did not enter PLAYING')
       }
@@ -1028,6 +1329,14 @@ function sightline() {
  * world's own clock on either side of the frames that were rendered and report
  * whether it moved. Every other view must report `false` — a live world that
  * claims to be frozen is a broken world, and `verify.mjs` fails on it.
+ *
+ * AND `clock` IS THE SAME IDEA APPLIED TO THE WHOLE RUN. ITERATION 2, PASS 16:
+ * the snapshot publishes the world time the steps asked for (`budget`, counted by
+ * `stepWorld`) beside the world time the world actually reached (`at`), and
+ * `verify.mjs` requires them to be equal. The origin is published with them. A
+ * frame whose clock is ahead of its steps is a frame photographed with the
+ * machine's frame rate in it, and the gate says so on the next run rather than a
+ * reader wondering whether two runs of the same view are the same picture.
  */
 async function run(id) {
   const view = viewById(id)
@@ -1037,6 +1346,11 @@ async function run(id) {
   // Put it back before a single step is taken, so no frame of this run is drawn
   // from a stopped world. `run` holds it again at the end, for every view.
   releaseLoop()
+  // PASS 16. THE ANCHOR, before the first step and after the loop is released, so
+  // the run begins at world time zero on a page that has been alive for however
+  // long it took to build. Order matters in one direction only: releasing first
+  // means the first cosmetic frame the loop draws is already worth nothing.
+  anchorClock()
   const started = performance.now()
   for (const step of view.steps) await applyStep(step)
   // the clock either side of the frames the PNG is taken from
@@ -1045,9 +1359,12 @@ async function run(id) {
   // Pass 15. THE HELD LOOP, and it starts HERE for EVERY view rather than only for the
   // probe's.
   //
-  // `frames(1)` resolves inside the very frame whose `_animate` drew the picture, and
+  // `frames(1)` resolves inside the very frame whose draw produced the picture, and
   // at that moment `game.rafId` names the NEXT one — so cancelling it stops the world
-  // on the frame the snapshot below is about to describe.
+  // on the frame the snapshot below is about to describe. PASS 16: `frames(1)` is now
+  // this page's own `drawFrame` rather than a frame the world's loop drew, so the
+  // picture is of the state the steps left behind and the world is one `SIM_DT` step
+  // further on, which is what `simFrozen` below measures.
   //
   // For a probe frame this is load-bearing, because its baseline is a subtraction
   // against a second shutter taken a second of wall clock later. For a GALLERY frame it
@@ -1070,6 +1387,13 @@ async function run(id) {
   // "is there a creature in this picture" depended on when the shutter was pressed.
   // A gallery whose creature frames are a coin flip is not a gallery, and §6.5's
   // contract is that a set of steps is worth the same picture twice.
+  //
+  // PASS 16: the hold is now belt-and-braces rather than load-bearing, because
+  // `anchorClock` took the world clock away from the loop entirely. It stays
+  // because it costs one line and the probe's control depends on the world being
+  // still in the strict sense — one `_animate` between the two shutters is a frame
+  // nobody asked for, and a frame nobody asked for is the thing this pass exists
+  // to stop.
   holdLoop()
   shutterTime = game.animTime
   const state = store.get()
@@ -1086,6 +1410,12 @@ async function run(id) {
     // was taken at — the loop is held from here to the shutter — and the clock a
     // probe frame's baseline is measured against.
     shutterTime: round(shutterTime),
+    // pass 16. The clock, in full: where it was anchored, what the steps asked for,
+    // what the world reached, and how many steps were taken to get there. `budget`
+    // and `at` are the same number or the gate fails — that equality is the whole
+    // of "a set of steps is worth the same picture twice", expressed so a machine
+    // can read it out of the report instead of taking a comment's word for it.
+    clock: { origin: 0, at: round(game.animTime), budget: round(clockBudget), steps: clockCalls },
     loop: state.loop ?? null,
     portals: { ...(state.portals ?? {}) },
     finale: game.state.finale === true,
@@ -1147,10 +1477,12 @@ window.__captureRun = run
  *     which is what §9.3 and §10.4 use and what a world with no creature in it
  *     looks like.
  *  3. **The clock must not move.** §6.5's contract is the whole reason a capture
- *     set is reproducible, and the render loop is the one thing here that can move
- *     the world between two shutters. It is ALREADY held: `run` holds it the
+ *     set is reproducible, and the render loop is the one thing here that could
+ *     move the world between two shutters. It is ALREADY held: `run` holds it the
  *     moment the creature's last frame is drawn, so the world is standing on the
  *     frame this baseline is a control for, and nothing re-arms it in between.
+ *     (PASS 16: since `anchorClock` the loop could not move the world anyway, so
+ *     this is now the second line of defence rather than the only one.)
  *  4. **And the drawing buffer has to survive to the shutter.** One frame is
  *     stepped with `dt` 0, the frame is drawn, and then ONE COMPOSITOR frame is
  *     waited for — a bare `requestAnimationFrame`, with no `_animate` behind it,
@@ -1170,6 +1502,17 @@ window.__captureRun = run
  * same fix at the other end: the picture the baseline is compared against is the
  * one the creature was drawn in, and the loop is off for the whole of it.
  *
+ * PASS 16. The drift above was the loop's; the clock's ORIGIN was the other half
+ * of the same finding, and this is where it shows up. A control taken at world
+ * time T is only a control for a frame taken at world time T if the world time
+ * means the same thing in both — and before this pass it did not, because T was
+ * counted from page load and two runs of the same steps started their own control
+ * at whatever `animTime` their page had reached. `anchorClock` is the fix and it
+ * is in `run`, not here: this call still measures the same thing it always did,
+ * and the `drift` below is now 0 by arithmetic rather than by a held loop.
+ * `stepWorld(0)` is used rather than a bare `update(0)` so the budget the report
+ * publishes counts this frame too — it is worth zero, which is the point.
+ *
  * @returns the clock either side, what is still on screen, and the lamp record
  */
 window.__captureBaseline = async () => {
@@ -1187,7 +1530,7 @@ window.__captureBaseline = async () => {
   game.dismissing = false
   game.dismissElapsed = 0
   game.spotElapsed = null
-  game.update(0)
+  stepWorld(0)
   // 2. ...and the lamps go back to what a world with nothing in it looks like
   game._writeLampDread(null)
   game.renderer.render(game.scene, game.camera)
