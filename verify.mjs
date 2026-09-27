@@ -16490,8 +16490,57 @@ function pageCase(op) {
 function pageFrames(body) {
   let frames = 0
   for (const match of body.matchAll(/frames\((\d+)\)/g)) frames += Number(match[1])
-  for (const match of body.matchAll(/stepWorld\((\d+)\)/g)) frames += match[1] === '0' ? 0 : 1
+  // The two other ways this page spends a frame, priced BY THEIR ARGUMENT. A
+  // reader that prices `frames(n)` and not these is a reader with a hole in it the
+  // size of every frame a verb takes that way — and because the committed report
+  // was captured from the same page, a hole here is a hole the gate cannot see:
+  // the model and the report agree with each other about a frame that is not
+  // there. Measured, pass 16's review, three separate ways:
+  //   - one `stepWorld(SIM_DT)` added to `caught()`   -> `npm run verify` exit 0
+  //   - `begin`'s hand-off `stepWorld` doubled        -> `npm run verify` exit 0
+  //   - one `await frames(1)` added to `shutPortal()` -> `npm run verify` exit 0
+  // All three are now priced from the page's own text, and an argument this
+  // reader cannot resolve is an ERROR rather than a zero: a step nobody counts is
+  // a step nothing checks.
+  for (const match of body.matchAll(/drawFrame\(([^()]*)\)/g)) {
+    const arg = match[1].trim()
+    if (arg !== '' && arg !== 'SIM_DT') {
+      throw new Error(`pageFrames cannot price \`drawFrame(${arg})\` — name the argument (SIM_DT, or none).`)
+    }
+    frames += 1
+  }
+  for (const match of body.matchAll(/stepWorld\(([^()]*)\)/g)) {
+    const arg = match[1].trim()
+    if (arg === '0') continue // the baseline's deliberate zero-step frame
+    if (arg === 'SIM_DT' || /^\d+$/.test(arg)) {
+      frames += 1
+      continue
+    }
+    throw new Error(
+      `pageFrames cannot price \`stepWorld(${arg})\` — a step the reader cannot resolve is a step it ` +
+        'would not count, and a step it does not count is a step nothing checks. Name the argument ' +
+        '(SIM_DT, a literal, or 0 for the deliberate zero-step frame).',
+    )
+  }
   return frames
+}
+
+/**
+ * pageFramesAroundHold — the frames a verb draws either side of its hold, in order.
+ *
+ * `shutPortal` is one `frames(1)`, a hold, and another `frames(1)`, and the `shut`
+ * plan has to keep that ORDER rather than collapse it to a total, because `pause`
+ * is the one op whose position decides what is charged and what is refused. This
+ * is the reader that makes `shut`'s two frame counts come from the page — they
+ * were literals, and the measurement above is what they cost.
+ *
+ * A body with no hold in it is all "before": a verb that only draws frames is
+ * priced by `pageFrames` and stops, which is the same number.
+ */
+function pageFramesAroundHold(body) {
+  const at = body.search(/\b(?:hold|wait)\(/)
+  if (at < 0) return [pageFrames(body), 0]
+  return [pageFrames(body.slice(0, at)), pageFrames(body.slice(at))]
 }
 
 /**
@@ -16541,16 +16590,31 @@ const waits = (seconds) => ['wait', seconds]
 
 const CLOCK_OPS = new Map([
   // `start()` hands the phase over in an `update` of its own, then the world waits
-  // out the opening dissolve.
-  ['begin', { kind: 'hidden', plan: () => [draws(1), waits(CAPTURE_BEGIN_SETTLE)] }],
+  // out the opening dissolve. The one frame is READ out of the page's `begin` arm
+  // and not written here, for the reason `pageFrames` gives: a literal the reader
+  // cannot see is a step the committed report and the model agree about without
+  // either of them counting it.
+  ['begin', { kind: 'hidden', plan: () => [draws(pageFrames(pageCase('begin'))), waits(CAPTURE_BEGIN_SETTLE)] }],
   // three bodies of state, each of which settles in drawn frames
   ['caught', { kind: 'hidden', plan: () => [draws(pageFrames(pageVerb('caught')))] }],
   ['swing', { kind: 'hidden', plan: () => [draws(pageFrames(pageVerb('swing')))] }],
   ['win', { kind: 'hidden', plan: () => [draws(pageFrames(pageVerb('win')))] }],
   // the pickup: §5.2's hammer hold, then the frame the pickup is read back in
   ['takeHammer', { kind: 'hidden', plan: () => [waits(CAPTURE_HAMMER_HOLD), draws(pageFrames(pageVerb('takeHammer')))] }],
-  // every portal, in `neighborhood.js`'s own order and its own count
-  ['shut', { kind: 'hidden', plan: () => hood.PORTAL_IDS.flatMap(() => [draws(1), waits(CAPTURE_PORTAL_HOLD), draws(1)]) }],
+  // every portal, in `neighborhood.js`'s own order and its own count — and its two
+  // frame counts out of `shutPortal`'s own text, again for `pageFrames`' reason.
+  // `win` and `finale-headlights` are the only two views that pay for this op, and
+  // between them they pay for it three times.
+  [
+    'shut',
+    {
+      kind: 'hidden',
+      plan: () => {
+        const [stand, read] = pageFramesAroundHold(pageVerb('shutPortal'))
+        return hood.PORTAL_IDS.flatMap(() => [draws(stand), waits(CAPTURE_PORTAL_HOLD), draws(read)])
+      },
+    },
+  ],
   // `applyStep`'s own `hold` case takes its stand-off frame before the verb runs
   ['hold', { kind: 'listed', plan: (step) => [draws(pageFrames(pageCase('hold'))), waits(step.seconds)] }],
   ['wait', { kind: 'listed', plan: (step) => [waits(step.seconds)] }],
@@ -16601,8 +16665,33 @@ function worldCost(view) {
       if (kind === 'frames') {
         for (let index = 0; index < value; index += 1) stepOnce()
       } else {
+        // A `wait` is counted BY THE LOOP THE PAGE'S OWN LOOP RUNS, and that loop
+        // is `while (animTime - started < seconds)`. The one step list in which it
+        // cannot finish is one that has already frozen the world: §14.3 stops `at`,
+        // so the condition is never met. Unbounded, this model SPUN — not slowly,
+        // not with a failing check, but with `npm run check` never returning and no
+        // output at all, on a view `capture/main.jsx` itself refuses at run time
+        // (`wait: the world is paused, and §14.3 freezes its clock`).
+        //
+        // So the loop is bounded by what the wait could possibly cost — a wait can
+        // never need more steps than its own duration at the step rate — and going
+        // past that is a named failure. Silence, or a hang, is the one answer a gate
+        // may not give when it cannot finish.
         const started = at
-        while (at - started < value) stepOnce()
+        const limit = Math.ceil(value / capture.CAPTURE_SIM_DT) + 2
+        let taken = 0
+        while (at - started < value) {
+          if (taken >= limit) {
+            throw new Error(
+              `worldCost: '${viewStep.op}' holds for ${value}s on a world this step list has already ` +
+                `frozen with a pause, and walked ${limit} step(s) without reaching it. capture/main.jsx ` +
+                'refuses this view at run time — §14.3 freezes animTime, so a wait on a paused world can ' +
+                'never finish — and this model refuses it by name rather than hanging.',
+            )
+          }
+          stepOnce()
+          taken += 1
+        }
       }
     }
     // §14.3 takes effect at the pause, so every step AFTER it is one the world
@@ -16755,6 +16844,25 @@ test('the capture page has one door for world time, and it reads no delta', () =
   assert.ok(
     runAt >= 0 && /anchorClock\(\)/.test(source.slice(runAt)),
     'run() does not anchor the clock before its first step, so the run begins at whatever animTime the page reached while it booted',
+  )
+  // ...and `run` holds the loop before it shutters. Since `anchorClock` the world
+  // clock cannot move whatever the loop does, so this is no longer the difference
+  // between a reproducible frame and an unrepeatable one — but the probe's CONTROL
+  // still depends on the world being still in the stricter sense, one `_animate`
+  // between the two shutters. Pass 16's review took `holdLoop()` out of `run` and
+  // the pure suite stayed green, which is a gap this file should not have: the
+  // capture harness does catch it, by name, at run time
+  // (`__captureBaseline`: "the render loop is not held, so the clock moves under
+  // the shutter and this is a second world") — but a claim the whole gallery rests
+  // on belongs in the suite that runs on every commit, not only in a capture run
+  // somebody has to remember to make.
+  assert.ok(
+    runAt >= 0 && /holdLoop\(\)/.test(source.slice(runAt)),
+    "run() does not hold the page's render loop before the shutter, so the probe's control is a subtraction against a world that went on drawing itself",
+  )
+  assert.ok(
+    /if \(!loopHeld\)/.test(CAPTURE_PAGE),
+    '__captureBaseline no longer refuses a control taken against a running loop, so nothing downstream would notice',
   )
   // and nothing has reintroduced the wall clock the pass removed
   assert.ok(!/clock\.oldTime/.test(source), 'capture/main.jsx writes clock.oldTime again, which is a second way to move the world')
@@ -16909,6 +17017,72 @@ test('every op a view names is one the clock gate knows the cost of', () => {
     `hammer-awakening costs ${awakeningCost.toFixed(3)} s, which the old flat allowance of 2 * PORTAL_SHUT_SECONDS ` +
       `(${awakeningListed.toFixed(3)} + ${(2 * rules.PORTAL_SHUT_SECONDS).toFixed(3)}) no longer covers — if this view got ` +
       'cheaper, check that `begin` and `takeHammer` really are still holding the key',
+  )
+
+  // ---------------------------------------------------------------------------
+  // PASS 16'S REVIEW — the three ways this table read GREEN on a page that had
+  // stopped agreeing with it. Each was measured against the real page, and each
+  // exited 0 (or, for the first, hung) before the fix it guards. They live in
+  // this test rather than in three new ones so the check count is unchanged.
+  // ---------------------------------------------------------------------------
+
+  // (1) the reader prices every form the page spends a frame in, and REFUSES one
+  // it cannot resolve. `stepWorld(SIM_DT)` is the form `applyStep`'s own begin arm
+  // uses, and the first reader's `/stepWorld\((\d+)\)/` did not match it at all.
+  assert.equal(pageFrames('await frames(2)'), 2, 'frames(n) is priced as n')
+  assert.equal(pageFrames('stepWorld(0)'), 0, "the baseline's deliberate zero-step frame is priced as nothing")
+  assert.equal(pageFrames('stepWorld(SIM_DT)'), 1, 'stepWorld(SIM_DT) is the one step it names')
+  assert.equal(pageFrames('drawFrame()'), 1, 'drawFrame() is frames(1) reached directly')
+  assert.throws(
+    () => pageFrames('stepWorld(SOME_RATE)'),
+    /cannot price/,
+    'a stepWorld argument the reader cannot resolve is being charged as zero, which is the hole this closes',
+  )
+  assert.throws(
+    () => pageFrames('drawFrame(2)'),
+    /cannot price/,
+    'a drawFrame argument the reader cannot resolve is being charged as one frame',
+  )
+
+  // (2) the two ops whose frame counts were literals are read from the page now.
+  // This is a wiring check and not a restatement of the model: it compares the
+  // plan against what the page's own text says TODAY, so a page that gains or
+  // loses a frame moves this too — and the report comparison is what then fails,
+  // which is the whole arrangement the two of them exist to make.
+  assert.deepEqual(
+    CLOCK_OPS.get('begin').plan({ op: 'begin' }).slice(0, 1),
+    [draws(pageFrames(pageCase('begin')))],
+    "begin's frame is a literal again — it has to be read out of the page's own `case 'begin':` arm",
+  )
+  const shutPlan = CLOCK_OPS.get('shut').plan({ op: 'shut' })
+  assert.equal(shutPlan.length, hood.PORTAL_IDS.length * 3, 'shut is a stand-off, a hold and a read-back per portal')
+  assert.deepEqual(
+    shutPlan.filter((token) => token[0] === 'frames'),
+    hood.PORTAL_IDS.flatMap(() => pageFramesAroundHold(pageVerb('shutPortal')).flatMap((n) => [['frames', n]])),
+    "shut's two frame counts are literals again — they have to be read out of shutPortal's own text",
+  )
+  // ...and the split itself, because a reader that put both frames on one side of
+  // the hold would still total the same number and would be wrong about order.
+  assert.deepEqual(pageFramesAroundHold('await frames(1)\nawait hold(1)\nawait frames(2)'), [1, 2], 'the frames either side of a hold are counted in order')
+  assert.deepEqual(pageFramesAroundHold('await frames(3)'), [3, 0], 'a body with no hold in it is all before the hold')
+
+  // (3) a wait the step list has already frozen is a NAMED FAILURE, not a hang.
+  assert.throws(
+    () => worldCost({ steps: [{ op: 'pause' }, { op: 'wait', seconds: 0.1 }] }),
+    /frozen with a pause/,
+    'a wait after a pause can never finish, and a model that cannot finish a step list has to say so',
+  )
+  // ...and the bound is above what a wait costs rather than at it: wait(0.25) walks
+  // 16 steps at 1/60 and the shutter frame every view pays is the seventeenth.
+  assert.equal(
+    worldCost({ steps: [{ op: 'wait', seconds: 0.25 }] }).steps,
+    17,
+    'the bound is above what a wait costs, not at it',
+  )
+  assert.equal(
+    worldCost({ steps: [{ op: 'pause' }, { op: 'frames', count: 2 }] }).frozen,
+    3,
+    'the pause exception still holds: two frames plus the shutter frame are spent and refused',
   )
   // and the direction that matters everywhere else: the plan can never cost LESS
   // than the list names, on any view, because every op spends at least what it says.
