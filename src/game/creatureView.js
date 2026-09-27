@@ -282,6 +282,10 @@ export class CreatureView {
     // obvious in a frame budget.
     this._puffRight = new THREE.Vector3()
     this._puffUp = new THREE.Vector3()
+    // ITERATION 2, PASS 15. The column's own descriptors for the frame last drawn, kept
+    // so the pass-15 probe can project where the shimmer actually is instead of
+    // guessing it from a constant. `null` until a frame with a shimmer on sets it.
+    this.hazeLayers = null
   }
 
   /** Geometry constructors, pooled so `dispose` has one list to walk. */
@@ -666,6 +670,9 @@ export class CreatureView {
       // figure goes, which is also the frame `pose.haze` is 0.
       this.haze.visible = false
       this.puffs.visible = false
+      // ...and the stashed column with them, for the same reason: a probe that read a
+      // previous frame's bands would be measuring a shimmer that is not on the screen.
+      this.hazeLayers = null
       return
     }
     this.root.visible = true
@@ -885,6 +892,22 @@ export class CreatureView {
     const amount = pose && Number.isFinite(pose.haze) ? pose.haze : 0
     const on = pose?.present === true && amount > 0
     this.haze.visible = on
+    // ITERATION 2, PASS 15. The six descriptors this frame drew, kept for the probe,
+    // and `null` when there is nothing to draw. A STASH and not a decision: the numbers
+    // are `hazeLayers`' own and the radii the loop below writes are read back out of
+    // them, so nothing here computes anything.
+    //
+    // It exists because pass 15's probe has to know where the column IS in the
+    // picture, and the two obvious answers are both wrong. Asking the pure module for
+    // `hazeLayers` again at the same inputs would be a second call that can disagree
+    // with the one that drew, and asking the CAPTURE for `HAZE_HALF_WIDTH` as a
+    // fraction — which is what the first version of the probe did — measures a cylinder
+    // when the column is a cone (0.72 of the base width at the floor, 1.28 at the top)
+    // and a figure that is `stagger`ing has been thrown 0.64 m backwards and pitched
+    // 0.43 rad, which puts its HEAD over a metre from the axis the column stands on.
+    // A box placed off the head is a box in empty air, and an empty-air box measures
+    // nothing, which is exactly what the stagger's three samples reported.
+    this.hazeLayers = null
     if (!on) return
     const position = context.position
     if (position) this.haze.position.set(position.x, 0, position.z)
@@ -892,6 +915,16 @@ export class CreatureView {
     const time = Number.isFinite(context.time) ? context.time : 0
     const scale = Number.isFinite(pose.scale) && pose.scale > 0 ? pose.scale : 1
     const layers = hazeLayers({ time, offset: this.flickerOffset, amount, scale })
+    // ...and the six bands AS DRAWN, which is `layers` with the inner radius this loop
+    // is about to write beside the outer one. The pair is what the geometry actually
+    // is, and the probe projects it rather than re-deriving a fraction of a constant.
+    this.hazeLayers = layers.map((layer) => ({
+      y: layer.y,
+      halfHeight: HAZE_BAND_FILL * HAZE_BAND_HEIGHT * scale,
+      inner: layer.halfWidth * HAZE_INNER_FRACTION,
+      outer: layer.halfWidth,
+      alpha: layer.alpha,
+    }))
     const positions = this._hazePositions
     const colours = this._hazeColours
     for (let band = 0; band < HAZE_LAYERS; band += 1) {

@@ -623,6 +623,481 @@ export const CAPTURE_VIEWS = Object.freeze(VIEWS)
 /** Every id, §16.5's twelve first. What `tools/capture.mjs` iterates. */
 export const CAPTURE_IDS = Object.freeze([...TWELVE_CAPTURE_IDS, ...EXTRA_CAPTURE_IDS])
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 15 — THE PER-STATE LIGHT PROBE
+//
+// WHAT THIS IS
+// ------------
+// Passes 1, 9 and 11 made the world warmer and brighter: the sky and fog stops
+// went sodium-amber, the hemisphere rose, the haze bands and the pale moon went
+// in. §12.1's promise that the creature "should read as a hole in the fog" is a
+// claim about a RELATIONSHIP between a subject and the air in front of it, and a
+// relationship is exactly what a change of air quietly invalidates.
+//
+// The gallery can answer that for the three frames that happen to hold a
+// creature (`creature-stalking`, `creature-chasing`, `banish` — which is a
+// `stagger`), and it cannot answer it for the other two rows in
+// `CREATURE_PRESENTATION`. So the probe is a second, smaller set: the SAME
+// camera, the SAME light, the SAME distance, one view per presentation row.
+//
+// WHY IT IS NOT PART OF THE GALLERY
+// ---------------------------------
+// `CAPTURE_VIEWS` is §16.5's fourteen and `verify.mjs` holds that number, the
+// order and the ids. Fourteen photographs of a game is the deliverable; a
+// thirteen-frame lighting rig is instrumentation, it belongs with the commit
+// that reads it, and it must never be able to pad the gallery count. The probe
+// therefore has its own list, its own ids, its own output directory and its own
+// report, and the gallery does not know it exists.
+//
+// ONE STAND-OFF, FIVE ROWS, AND WHY THAT IS THE MEASUREMENT
+// -----------------------------------------------------------
+// Every view here stands at `CREATURE_PROBE_STANDOFF`: the camera 25 m back
+// from the same sodium lamp `creature-stalking` uses, the figure 17 m from the
+// camera at 6 degrees off the road axis, so the pool lights the road the figure
+// is standing on and the pool lies BETWEEN the lens and the subject. That is
+// `creature-stalking`'s staging, chosen once and reused, and the reuse is
+// structural — every view is built from the one table below, so "the five rows
+// were photographed in the same light" cannot rot the way a hand-copied stand-off
+// in five separate view blocks would.
+//
+// 17 m is also where the measurement works. `creatureContrast` compares the
+// trunk against the pixels 10-30 px either side of the eye, so the figure has to
+// be NARROWER than that window for the sides to be anything but more creature:
+// at 17 m the shoulder is ~17 px across and the window is clear of it, and at the
+// 1.9 m of `banish` the window is entirely inside the figure and the ratio is a
+// measurement of the body against itself. One stand-off for all five rows also
+// means the frames are comparable to each other, which is the claim: not "the
+// creature reads somewhere" but "of the five ways it can be presented, these are
+// the ones the new fog washes out".
+//
+// DUSK 0 FOR ALL FIVE, AND WHY
+// ---------------------------
+// The finale (§10.2) is where `enraged` is actually reached, and it runs at dusk
+// 1. Every row is therefore staged at dusk 0, which is the BRIGHTER and so the
+// HARDER test: a brighter surround is a smaller contrast ratio and a hotter eye
+// wash, and a row that reads at dusk 0 is not thereby claimed to read at dusk 1.
+// The finale's own lighting is in the gallery already (`finale-headlights` and
+// `win` are both dusk 1) and its reachability is §10.2's own gate, not a
+// presentation question.
+//
+// WHY MORE THAN ONE FRAME PER ROW
+// -------------------------------
+// Two of the five rows FLICKER — `telegraph` at `apparitionFlicker`'s 5.4 Hz and
+// `stagger` at 7.7 Hz — and a single photograph of a flickering row is a
+// photograph of one phase of it. A row is therefore sampled at waits spaced
+// across its own period (`CREATURE_PROBE_ROWS`), and the report holds every
+// sample, so "the apparition's eye clears the floor" is a claim about its
+// loudest beat and "the apparition is a rumour" is a claim about the gap between
+// its samples rather than about one lucky frame. The steady rows are sampled
+// twice for the same reason: a read that holds on one frame of a walk is not a
+// read.
+//
+// WHAT THE SAMPLES MAY NOT BE ASKED TO PROVE
+// -----------------------------------------
+// "The apparition is a rumour" used to be gated here, as a spread between the
+// row's loudest and quietest sample. It cannot be, and the run that motivated this
+// pass is the reason: all three `telegraph` samples landed inside ONE trough of
+// `apparitionFlicker` (a beat whose 2.2 exponent makes a trough wide and flat), so
+// the spread came out at 0.99 of peak and the gate would have failed a row that
+// flickers correctly. Three frames at three arbitrary phases of a 5.4 Hz beat are
+// not a measurement of the beat. The claim is made in `verify.mjs` instead, over a
+// WHOLE period at 240 Hz a beat, which is the same number and cannot be luck — and
+// the observed spread is still reported here, as a measurement rather than a gate.
+// ---------------------------------------------------------------------------
+
+/**
+ * CREATURE_PROBE_STANDOFF — the one camera the whole probe is taken from.
+ *
+ * BEFORE (pass 15): nothing; the three creature views each carried their own
+ * stand-off, which is right for a gallery and wrong for a comparison. AFTER:
+ * these three numbers, read by every probe view and asserted by `verify.mjs`,
+ * so "the five rows were photographed in the same light" is a fact about one
+ * table instead of a promise in five comments.
+ *
+ * `back: 25` and `metres: 17` are `creature-stalking`'s, measured: that frame
+ * puts the pool between the lens and the figure and lands at a contrast ratio
+ * of 0.607 against a 0.62 floor. `bearing: 6` keeps the figure off the exact
+ * road axis without pushing it into the kerb.
+ */
+export const CREATURE_PROBE_STANDOFF = Object.freeze({ back: 25, metres: 17, bearing: 6 })
+
+/**
+ * CREATURE_PROBE_ROWS — the five §6.1-presentable rows, and how each is sampled.
+ *
+ * `state` is the row of `CREATURE_PRESENTATION` the frame is there to measure;
+ * `hammer` is whether the pickup is in the view, which is §8.1 rather than
+ * taste: a `telegraph` is Act I's apparition and Act I has no hammer, and every
+ * other row is Act II and must have one;
+ *
+ * `waits` are the world-seconds after the placement, one per sample.
+ *
+ * AND THE SPACING IS NOT A WHOLE NUMBER OF PERIODS, which the first version of this
+ * table got exactly backwards. It claimed the spacing was "each row's own flicker
+ * period crossed two or three times over, so the samples see the row at more than one
+ * phase of itself" — and crossing a period is the ONE spacing that sees the SAME
+ * phase. The telegraph's steps of 0.18 s were 0.972 of `apparitionFlicker`'s 5.4 Hz
+ * period (0.1852 s), so its three samples sat 0.028 of a period — 5 ms of phase —
+ * apart, and the probe measured it: `pose.haze` 0.6966 / 0.6971 / 0.6940 for waits
+ * 0.18 s apart, which is three samples of one point. All three landed in the same
+ * trough of the apparition's beat and not one of them had an eye for the finder to
+ * anchor on. The steps are now 0.11 s, which is 0.594 of the period: three phases
+ * 0.594 and 0.188 of a cycle apart, and no pair of them can coincide whatever the
+ * row's hashed `offset` turns out to be, because a step that is not a whole number
+ * of periods cannot land twice in the same place. `verify.mjs` gates that.
+ *
+ * `stagger` is the exception and it is not an oversight. Its spacing is spent on
+ * §7.4's RECOIL, which is a different clock and the thing the row is there to sample
+ * — the three waits walk `staggerRecoil` from 0.47 down to 0.23 — and its steps of
+ * 0.13 s are one whole 7.7 Hz period, which is what walking a recoil costs. The row
+ * still has its beat running and `probeGates` gates that row's LOUDEST sample, which
+ * is the peak of the beat, so the phase being fixed costs the row nothing that was
+ * being measured.
+ *
+ * `staggerSeconds` is the §7.4 recoil clock, and it exists because a `stagger`
+ * with none is not a stagger: `creatureStep` sees `staggerSeconds` at 0, ends
+ * the banish on the next frame and the figure is `dormant` before the shutter.
+ * 1.1 of `STAGGER_SECONDS` 1.6 is a mid-recoil pose (`staggerRecoil` 0.47), and
+ * the three samples then walk it down to 0.23, which is three different points
+ * of the same throw.
+ */
+export const CREATURE_PROBE_ROWS = Object.freeze([
+  Object.freeze({ state: 'telegraph', hammer: false, staggerSeconds: 0, waits: Object.freeze([0.1, 0.21, 0.32]) }),
+  Object.freeze({ state: 'stalk', hammer: true, staggerSeconds: 0, waits: Object.freeze([0.18, 0.42]) }),
+  Object.freeze({ state: 'chase', hammer: true, staggerSeconds: 0, waits: Object.freeze([0.18, 0.42]) }),
+  Object.freeze({ state: 'stagger', hammer: true, staggerSeconds: 1.1, waits: Object.freeze([0.08, 0.21, 0.34]) }),
+  Object.freeze({ state: 'enraged', hammer: true, staggerSeconds: 0, waits: Object.freeze([0.18, 0.42]) }),
+])
+
+/**
+ * probeRowOf — the row a probe id belongs to, or `null` for nonsense.
+ *
+ * BEFORE pass 15: `null` also meant the control view. AFTER: every probe view is a
+ * row, because the control is no longer a VIEW — it is the same page with the
+ * figure taken out of it after the shutter (`capture/main.jsx`'s
+ * `__captureBaseline`), which is the only way the baseline can be the same world at
+ * the same clock. A `null` here is a bug in a caller or a typo in an `--only`, and
+ * the harness says so instead of quietly measuring a control.
+ */
+export function probeRowOf(id) {
+  const match = /^creature-probe-([a-z]+)-\d+$/.exec(String(id))
+  return match ? CREATURE_PROBE_ROWS.find((row) => row.state === match[1]) ?? null : null
+}
+
+/** The id one sample of one row is filed under. `sample` is 1-based. */
+export function probeId(state, sample) {
+  return `creature-probe-${state}-${sample}`
+}
+
+/**
+ * The steps for one probe view, and the one function every probe view is built
+ * through — so the stand-off, the lamp, the act and the framing cannot differ
+ * between two rows by accident.
+ *
+ * BEFORE this pass it also built the control view, which is `stalk`'s first sample
+ * with the `creature` step removed, and that derivation was the whole reason the
+ * probe had a control at all: the shimmer differential is this frame minus that
+ * one, so the two have to have run the same world for the same time with the same
+ * camera. They did — as two page loads, which is the same world to within a frame,
+ * and this measurement is worth one level of luma. The control is now taken inside
+ * the same page after the shutter, which is the same picture with one thing taken
+ * out of it, so there is no control VIEW to derive and nothing here to keep in step.
+ *
+ * `staggerSeconds` is written on EVERY creature step rather than only on the
+ * stagger's, so the step's shape is one shape: a number that is present for four
+ * rows and absent for one is a step whose contract depends on which row is being
+ * photographed, and `verify.mjs` would then have two shapes to check instead of
+ * one. `placeCreature` treats 0 as "leave the clock alone", which is the same
+ * answer for the four rows that never read it.
+ */
+function probeSteps(row, wait) {
+  const S = CREATURE_PROBE_STANDOFF
+  const steps = [{ op: 'begin' }]
+  if (row.hammer) steps.push({ op: 'takeHammer' })
+  steps.push({ op: 'goto', target: 'lamp', back: S.back })
+  steps.push({
+    op: 'creature',
+    state: row.state,
+    metres: S.metres,
+    bearing: S.bearing,
+    staggerSeconds: row.staggerSeconds,
+  })
+  steps.push({ op: 'wait', seconds: wait })
+  steps.push({ op: 'frames', count: 2 })
+  return Object.freeze(steps)
+}
+
+/**
+ * Every probe view, in row order: `{id, row, sample, wait, viewport, steps}`.
+ *
+ * BEFORE pass 15: the control view led this list. AFTER: twelve views, one per
+ * sample of the five rows, and the baseline is not among them because it is not a
+ * view — `capture/main.jsx` takes it in the same page after the shutter. That is
+ * why the ids are the rows' own and nothing else: a name here is a row sample, and
+ * anything that is not one has no business being photographed as a gallery frame.
+ */
+export const CREATURE_PROBE_VIEWS = Object.freeze(
+  CREATURE_PROBE_ROWS.flatMap((row) =>
+    row.waits.map((wait, index) =>
+      Object.freeze({
+        id: probeId(row.state, index + 1),
+        row,
+        sample: index + 1,
+        wait,
+        viewport: CAPTURE_VIEWPORT,
+        steps: probeSteps(row, wait),
+      }),
+    ),
+  ),
+)
+
+/** Every probe id, in row order. What `tools/capture.mjs` iterates in `--probe`. */
+export const CREATURE_PROBE_IDS = Object.freeze(CREATURE_PROBE_VIEWS.map((view) => view.id))
+
+/**
+ * probeView — one probe view by id, or `null`.
+ *
+ * The same contract as `captureView` and for the same reason: the harness asks
+ * this for an `--only` argument typed by a human, and a typo should read as "no
+ * such view" in the report rather than as a stack trace.
+ */
+export function probeView(id) {
+  return CREATURE_PROBE_VIEWS.find((view) => view.id === id) ?? null
+}
+
+/** Every step of every probe view, tagged — what the pass-15 contract check walks. */
+export function allProbeSteps() {
+  return CREATURE_PROBE_VIEWS.flatMap((view) => view.steps.map((step) => ({ view: view.id, step })))
+}
+
+/**
+ * PROBE_MIN_LIT — the probe's own lit floor, and it is the street's.
+ *
+ * BEFORE: n/a. AFTER `CAPTURE_MIN_LIT` (0.06), by reference rather than by a
+ * second number.
+ *
+ * A probe frame is a lighting measurement and not a composition one, so the
+ * thing that must not happen to it is a black rectangle; the luma floor is the
+ * gate for that and it is the same gate, at the same value, for the same reason
+ * the fourteen gallery views use it. A probe that let a darker frame through on
+ * the argument that it is "only instrumentation" would be measuring a different
+ * world from the one the gallery describes.
+ */
+export const PROBE_MIN_LIT = CAPTURE_MIN_LIT
+
+/**
+ * PROBE_ANCHOR_MAX_PX — how far the eye finder may be from the creature's own
+ * projected head, in pixels. 24.
+ *
+ * BEFORE: nothing could check this, which is how a 12x6 lit window in
+ * `hammer-located.png` came to satisfy every one of `findEyes`'s tests. AFTER:
+ * every probe frame carries the head's pixel position out of the world it was
+ * drawn in, and the harness fails the frame when the anchor it found is further
+ * away than this.
+ *
+ * 24 px is roughly two eye widths at the 17 m this probe stands at, and the
+ * figure's own head never moves that far from its own eyes: the eyes are 3 cm
+ * above the head's centre, `lean` swings the crown about 6 px and §6.1's
+ * edge-of-vision roll about 4. A blob 200 px away in a house window is not a
+ * tight tolerance being tight — it is a different subject, and this is the number
+ * that says so. A probe frame whose head is off the picture entirely cannot pass
+ * it either, which is the point: the finder is trusted only where it has been
+ * shown to be right.
+ */
+export const PROBE_ANCHOR_MAX_PX = 24
+
+/**
+ * PROBE_BASELINE_MAX_DRIFT — how far the world's own clock may move between a probe
+ * frame and the baseline taken out of the same page after it, in seconds. 0.02.
+ *
+ * BEFORE pass 15: there was no bound, because the baseline was a second run of the
+ * same steps and the two runs' clocks differed by the sampling delay — tens of
+ * milliseconds, uncontrolled, and different for every row because every row waits a
+ * different length of time. AFTER: `run` holds the render loop the moment the
+ * creature's last frame is drawn and `__captureBaseline` never re-arms it, so the
+ * two shutters are a second of wall clock apart and no world time at all. The
+ * movement is still measured and still gated here, because a hold is a claim and a
+ * claim with no number is a comment.
+ *
+ * THE FIRST VERSION OF THE FIX WAS WORTH 0.05, ON EVERY ROW
+ * ---------------------------------------------------------
+ * The page held the loop at the top of `__captureBaseline` and handed it BACK
+ * before the shutter, so the frame that came back was worth `world.js`'s own 0.05 s
+ * clamp every run: the delta it was handed was the second the software renderer
+ * had spent drawing the frame underneath it. Twelve of twelve rows failed this
+ * ceiling with the same number to three places, which is the signature of a
+ * harness fault and not of a lamp dropout. Holding the loop across BOTH shutters is
+ * the same fix at the other end, and the ceiling is left where it was: it is
+ * smaller than the thing it has to be smaller than, and a tighter one would only
+ * be tighter.
+ *
+ * 0.02 s is `world.js`'s own 0.05 s frame clamp divided by two and a half, and it is
+ * chosen from what it has to be smaller than rather than from taste: `flickerAt` — the
+ * hashed lamp dropout behind `lampDread` — ticks on `animTime` at
+ * `LAMP_DREAD_HZ` 11 Hz, so a tenth of a tick is the number below which a dropout
+ * cannot land between the two frames. At 0.02 s the worst case is a 20% chance of
+ * straddling a tick, and the reference boxes divide a lamp's level change out anyway;
+ * the bound is here so that a page which stops holding the loop fails loudly instead
+ * of quietly measuring two different worlds.
+ */
+export const PROBE_BASELINE_MAX_DRIFT = 0.02
+
+/**
+ * PROBE_BAND_ROWS — how many rows either side of the head's own row the shimmer is
+ * measured over. 2, a five-row window.
+ *
+ * Head height is 2.68 m, where pass 11's six bands put two of them, and nothing else
+ * in the creature's kit is there: the trail and the dust puffs are at the feet,
+ * which at 17 m is 90 px below the eye. A five-row window here is the shimmer and
+ * nothing else, which is what makes the differential a measurement of one effect
+ * rather than of the whole figure.
+ *
+ * BEFORE pass 15 this number sat beside `PROBE_BAND_INNER` 0.65 and
+ * `PROBE_BAND_OUTER` 0.95, fractions of `HAZE_HALF_WIDTH` that placed the boxes
+ * 0.40-0.59 m either side of the HEAD. Both are gone, and the reason is in
+ * `capture/main.jsx`'s `column`: the column is a cone standing on the creature's
+ * ground position, and a staggering figure's head is a metre off that axis. The
+ * radii now come from the band the frame actually drew (`creatureView.hazeLayers`),
+ * so this file keeps the one number that is a property of the framing rather than
+ * of the geometry — the rows — and the geometry is read rather than re-derived.
+ */
+export const PROBE_BAND_ROWS = 2
+
+/**
+ * PROBE_REFERENCE_INNER / PROBE_REFERENCE_OUTER — the reference band's own two
+ * edges in METRES off the figure's axis: 1.3 and 1.8.
+ *
+ * The reference is what the creature's SECOND effect on the light is divided out
+ * against, and pass 11 built that effect deliberately: `lampPulse` scales the
+ * sodium lamps within `LAMP_DREAD_RADIUS` by the eye-flare envelope, and a figure
+ * the harness has just placed has its flare at the peak. Measured over the whole
+ * picture that is worth +7.6 luma on a chase frame and +5.6 on an enraged one —
+ * eight times the shimmer the same frames were claimed to be showing. The first
+ * version of this measurement reported those numbers as `shimmer`, and the three
+ * `stagger` samples (which were taken at waits the control's wait did not share, so
+ * the lamp's hashed 11 Hz dropout landed differently in the two frames) came out at
+ * -0.31, -0.31 and +0.05: a report about the lamps, wearing the shimmer's name.
+ *
+ * 1.3 m is clear of the widest band the table can draw. `HAZE_HALF_WIDTH` is 0.62 m,
+ * the cone reaches 1.28 of it at the crown, and `enraged` scales the whole rig by
+ * 1.08: 0.62 x 1.28 x 1.08 = 0.857 m. 1.3 is half as far again, so no band can put
+ * a pixel inside the reference on any row of any state, and `verify.mjs` asserts
+ * that inequality from the same constants rather than trusting the arithmetic here.
+ *
+ * 1.8 m is the other end, and it is bounded by the frame rather than by the column:
+ * at the 17 m stand-off and 30 px to the metre these are 39 to 54 px either side of
+ * the axis, which at 1280 wide leaves the reference on the same fog the band is
+ * standing in front of rather than out on the kerb. Same rows, same depth, same
+ * light, no shimmer — which is the entire point of a reference.
+ */
+export const PROBE_REFERENCE_INNER = 1.3
+export const PROBE_REFERENCE_OUTER = 1.8
+
+/**
+ * PROBE_EYE_MARGIN — the luma a row's LOUDEST sample has to clear `EYE_MIN` by.
+ * 10.
+ *
+ * The same number pass 2's eye gate already holds the gallery's three creature
+ * frames to, and for the same reason: a ten-level margin is a frame that passes
+ * by rounding, and a pass-11 note that quotes only the comfortable frames is how
+ * a 21-level margin became an unstated 4-level one.
+ *
+ * It applies to the loudest sample of a row and not to all of them, because two
+ * of the five rows are SUPPOSED to go dark: §6.1's telegraph is "a thing that is
+ * there, then is not, then is", and a gate that held its floor on every sample
+ * would be asking the design to stop flickering. The floor is on the beat where
+ * the apparition is present, and `PROBE_FLICKER_SPREAD` is what holds the rest.
+ */
+export const PROBE_EYE_MARGIN = 10
+
+/**
+ * PROBE_FLICKER_SPREAD — how much quieter a flickering row's quietest beat is than
+ * its loudest, as a ratio of the eye. 0.45.
+ *
+ * A row that flickers and a row that is simply dim are different things, and only
+ * one of them is §6.1. A single frame cannot tell them apart — a telegraph caught at
+ * the bottom of its beat looks exactly like a telegraph that is permanently faint —
+ * so the claim has to be made ACROSS a beat rather than in one of them.
+ *
+ * WHERE IT IS GATED, AND WHY IT MOVED
+ * -----------------------------------
+ * BEFORE pass 15: here, as a ratio between the loudest and quietest of a row's three
+ * sampled frames. AFTER: in `verify.mjs`, over a whole period of the row's own beat
+ * at 240 samples a period. The first version of this gate could not be passed by a
+ * correct row, and the run that found that out is the same run this pass is built
+ * on: all three `telegraph` samples landed inside ONE trough of `apparitionFlicker`
+ * (whose 2.2 exponent makes a trough wide and flat), so the observed spread was
+ * 0.99 of peak where the floor is 0.45. Three frames at three arbitrary phases of
+ * a 5.4 Hz beat are not a measurement of that beat; the pure module has all of it
+ * and costs nothing to walk.
+ *
+ * The number stays HERE, and the pure gate imports it, because "how quiet does a
+ * flickering row go" is one design threshold and the probe still reports what it
+ * observed. What changed is that a measurement of luck is reported and a
+ * measurement of the thing is gated.
+ *
+ * The steady rows are not asked this at all: `stalk`, `chase` and `enraged` have no
+ * `flicker` in `CREATURE_PRESENTATION`, and `verify.mjs` holds that the set of rows
+ * with a flicker is exactly the set gated here.
+ */
+export const PROBE_FLICKER_SPREAD = 0.45
+
+/**
+ * PROBE_SHIMMER_MIN — the luma the shimmer's curtain bands have to gain over the
+ * same pixels of the same frame with the figure taken out of it, once the creature's
+ * own effect on the street lighting is divided out against `PROBE_REFERENCE_*`.
+ * 0.60.
+ *
+ * BEFORE pass 15: 0.20, against a control frame that was a second page load of the
+ * same steps. The number was not the problem. The problem was what it was measuring,
+ * and the first run of this probe found it: with the boxes on the head and the
+ * baseline a frame away in world time, `chase` read +9.9 and `enraged` +11.6 — and
+ * both of those are `lampPulse`, pass 11's own effect, which is +7.6 luma over the
+ * WHOLE picture on a freshly placed figure. Against the reference the same frames
+ * read +1.10 and +4.06, and `stalk` read -0.40. The 0.20 floor was being cleared by
+ * the lamps.
+ *
+ * WHY 0.60. It is a floor against a MEASURED noise, not a preference. The scatter
+ * between two samples of the same row — the two `stalk` samples, one of them at the
+ * same world time as the baseline and one of them not — was 0.7 luma on the
+ * uncorrected boxes, and a floor under a number that noisy is a gate on the noise.
+ * 0.60 is three times the per-pixel noise of a same-clock pair (1.3 levels over
+ * 43 000 pixels is 0.006 per pixel, and a 65-pixel box averages it away), it is
+ * 0.7% of the luma-90 fog the bands stand in, and it is a fifth of what the doubled
+ * `HAZE_PEAK` is expected to deliver. A shimmer worth less than 0.7% of the fog is
+ * not a shimmer; that is the claim, and it is the same claim pass 11's own [2, 12]
+ * budget made against the fog of the day.
+ *
+ * It is a floor and not a target. The measured lifts are in the report beside it and
+ * a retune that pushes them up is not required to preserve them, because the property
+ * being claimed is "the shimmer reaches the screen" and visibility has no upper bound
+ * worth defending.
+ */
+export const PROBE_SHIMMER_MIN = 0.6
+
+/**
+ * PROBE_FLICKER_ROWS — the two rows whose presentation flickers, read off
+ * `CREATURE_PRESENTATION` rather than typed as a second list.
+ *
+ * `verify.mjs` holds that this is exactly the set of rows with a `flicker`, so
+ * a retune that gave a third row a flicker without a third row of samples fails
+ * the gate instead of quietly going unmeasured.
+ */
+export const PROBE_FLICKER_ROWS = Object.freeze(
+  CREATURE_PROBE_ROWS.filter((row) => row.waits.length > 2).map((row) => row.state),
+)
+
+/**
+ * `viewById` — the gallery first, then the probe. What the page asks for.
+ *
+ * Two lists and one lookup, rather than one list, because the two sets have
+ * different owners: the gallery is §16.5's deliverable and `verify.mjs` pins its
+ * fourteen ids, and the probe is this pass's instrument. Merging them would let
+ * a probe view be photographed into the gallery and counted in it.
+ */
+export function viewById(id) {
+  return captureView(id) ?? probeView(id)
+}
+
 /**
  * captureView — the one view, by id, or `null`.
  *

@@ -486,6 +486,25 @@ function findEyes(width, height, at) {
 }
 
 /**
+ * SILHOUETTE_MAX — the body-to-surround luma ratio a creature may have and still
+ * read as a hole in the fog. 0.62.
+ *
+ * BEFORE pass 15: the number lived in `verify.mjs`, written out at the one
+ * assertion that used it, and the capture harness had no way to enforce it at
+ * all. AFTER: it is here, beside the measure that produces the ratio, and both
+ * the pure gate and the capture harness read it — one value, so a retune cannot
+ * leave the two disagreeing about what "washed out" means.
+ *
+ * 0.62 is thin on purpose and the thinness is the point: the subject is a
+ * 17 m figure about 17 px wide standing in a graded sodium pool, its trunk is
+ * translucent by design (§6.1's apparition is a hole in the fog, not an object
+ * in it), and a loose threshold here would be the decorative gate pass 2's review
+ * caught with a better formula. The measured value on the shipped
+ * `creature-stalking.png` is 0.607.
+ */
+export const SILHOUETTE_MAX = 0.62
+
+/**
  * creatureContrast — is the creature a HOLE in the fog, where "the fog" is the
  * few hundred pixels immediately around it?
  *
@@ -738,6 +757,221 @@ export function repaintBody(buffer, measured, luma) {
     }
   }
   return encodePng(width, height, rgb)
+}
+
+// ---------------------------------------------------------------------------
+// The shimmer's own measurement: what a creature standing in a frame did to the
+// air a hand's width either side of it.
+//
+// WHY A DIFFERENTIAL AND NOT A PIXEL
+// ---------------------------------
+// Pass 11 gated the heat haze twice: a luma BUDGET in the renderer's own colour
+// space, in `verify.mjs`, and a PROJECTION in `verify-world.mjs` that reports the
+// band corners in pixels. Both are right about the effect and neither of them can
+// see it. The budget is arithmetic on a colour and an alpha, the projection is
+// geometry, and "can the player see it" is a third thing.
+//
+// So this is the third thing, and it is a subtraction rather than a reading: the
+// creature frame and a baseline of the SAME world, at the SAME camera, after the SAME
+// world-time, differing only by the creature. The baseline is NOT a second run of the
+// same steps — the first version of this probe used one, and two runs are the same
+// world only to the order of a frame, which is worth seven levels here. It is the same
+// page with the figure taken out of it after the shutter (`capture/main.jsx`), and
+// every source of light in the picture — the sodium pool, the fog, the sky, the grain,
+// the awakening flash — is in both, so what is left over is the shimmer.
+//
+// ...and the creature is not the only thing left over, because pass 11 also gave it
+// `lampPulse`: a figure brightens the sodium pool it is standing in, and a figure the
+// harness has just placed does that at +7.6 luma over the WHOLE picture. That is
+// eight times the shimmer the same frames appeared to be showing, so `shimmerLift`
+// divides it out against a reference at the same rows before it reports anything.
+//
+// THE BOXES ARE NOT THIS MODULE'S BUSINESS
+// ----------------------------------------
+// A band is an annulus around a figure's axis at a known depth, and which pixels
+// that is depends on the camera AND on what §7.4's recoil did to the figure's head —
+// which is why the first version of this probe, anchoring its boxes on the head,
+// measured empty air for the stagger. The page projects the band the frame actually
+// drew and hands the rectangles in. A box hard-coded here would be a second copy of
+// the geometry that `creatureView.js` and `creature.js` already own, and it would be
+// right until either of them moved.
+// ---------------------------------------------------------------------------
+
+/**
+ * The mean luma of one rectangle, with the pixel count that produced it.
+ *
+ * `found: false` rather than a NaN for a box that falls off the frame, because a
+ * band half outside the picture is a staging mistake and a staging mistake should
+ * be a sentence, not a number that quietly compares false.
+ */
+export function regionMean(buffer, box) {
+  const { width, height, channels, data } = decodePng(Buffer.from(buffer))
+  const at = (x, y) => lumaAt(data, (y * width + x) * channels, channels)
+  const x0 = Math.max(0, Math.floor(box.x0))
+  const x1 = Math.min(width - 1, Math.ceil(box.x1))
+  const y0 = Math.max(0, Math.floor(box.y0))
+  const y1 = Math.min(height - 1, Math.ceil(box.y1))
+  if (x1 < x0 || y1 < y0 || x0 >= width || y1 >= height + 1 || y0 >= height) {
+    return { found: false, reason: `the box (${x0},${y0})-(${x1},${y1}) is not inside a ${width}x${height} frame` }
+  }
+  let sum = 0
+  let count = 0
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      sum += at(x, y)
+      count += 1
+    }
+  }
+  if (count === 0) return { found: false, reason: 'the box has no pixels in it' }
+  return { found: true, mean: sum / count, n: count }
+}
+
+/**
+ * `shimmerLift` — how much brighter the creature's shimmer made its two curtain
+ * bands than the same pixels of the SAME FRAME with the figure taken out of it,
+ * once the figure's own effect on the street lighting is divided out.
+ *
+ * WHY A DIFFERENTIAL, AND WHY TWO OF THEM
+ * ---------------------------------------
+ * Pass 11 gated the heat haze twice: a luma BUDGET in the renderer's own colour
+ * space, in `verify.mjs`, and a PROJECTION in `verify-world.mjs` that reports the band
+ * corners in pixels. Both are right about the effect and neither of them can see it.
+ * The budget is arithmetic on a colour and an alpha, the projection is geometry, and
+ * "can the player see it" is a third thing.
+ *
+ * So this is the third thing, and it is a subtraction rather than a reading: the
+ * creature frame and a baseline of the SAME world, at the SAME camera, after the SAME
+ * world-time, differing only by the creature. The baseline is taken in the same page
+ * after the shutter (`capture/main.jsx`'s `__captureBaseline`) rather than as a
+ * second run of the same steps, because a second run is the same world only to the
+ * order of a frame and this measurement is worth one level of luma.
+ *
+ * AND THEN A SECOND ONE, because the creature is not the only thing in the
+ * subtraction. Pass 11 also gave it `lampPulse`, which scales the sodium lamps near
+ * it by the eye-flare envelope — worth +7.6 luma over the whole picture on a
+ * figure that has just been placed, which is eight times the shimmer the same
+ * frames appeared to be showing. The `reference` boxes are at the same rows, at the
+ * same depth, inside the same pool, with no band over them, and their lift is
+ * subtracted from the band's. What is left is the claim: the air beside the figure
+ * got brighter by more than the street's own lighting moved.
+ *
+ * THE BOXES ARE NOT THIS MODULE'S BUSINESS
+ * ----------------------------------------
+ * A band is an annulus around a figure's axis at a known depth, and which pixels
+ * that is depends on the camera AND on what the figure's own recoil did to its head.
+ * The page projects the band the frame actually drew and hands the rectangles in
+ * (`capture/main.jsx`'s `column`). A box hard-coded here would be a second copy of
+ * the geometry `creatureView.js` and `creature.js` already own, and it would be
+ * right until either of them moved.
+ *
+ * @param {Buffer} creature a PNG with the figure in it
+ * @param {Buffer} baseline a PNG of the same frame with the figure removed
+ * @param {{x0: number, y0: number, x1: number, y1: number}[]} bands the two
+ *   curtain rectangles, in pixels
+ * @param {{x0: number, y0: number, x1: number, y1: number}[]} [reference] the two
+ *   rectangles the street's own light change is read over
+ * @returns {{found: boolean, reason?: string, creature?: number, baseline?: number,
+ *   reference?: number, lift?: number, n?: number, perBand?: object[]}}
+ */
+export function shimmerLift(creature, baseline, bands, reference) {
+  const list = Array.isArray(bands) ? bands : []
+  if (list.length === 0) {
+    return { found: false, reason: 'no bands were handed in, so there is nowhere to look for the shimmer' }
+  }
+  const control = Array.isArray(reference) ? reference : []
+  if (control.length === 0) {
+    return {
+      found: false,
+      reason:
+        'no reference boxes were handed in, so the figure\'s own effect on the street lighting ' +
+        '(pass 11\'s lampPulse) would be counted as shimmer — which is how the first run of this ' +
+        'probe reported +9.9 luma of lamps as a shimmer',
+    }
+  }
+  const perBand = []
+  let bandLift = 0
+  let bandSum = 0
+  let spillSum = 0
+  let creatureSum = 0
+  let baselineSum = 0
+  let referenceSum = 0
+  let count = 0
+  for (let index = 0; index < list.length; index += 1) {
+    const box = list[index]
+    const ref = control[index] ?? control[0]
+    const withCreature = regionMean(creature, box)
+    const without = regionMean(baseline, box)
+    const refWith = regionMean(creature, ref)
+    const refWithout = regionMean(baseline, ref)
+    if (!withCreature.found) return { found: false, reason: withCreature.reason }
+    if (!without.found) return { found: false, reason: `baseline frame: ${without.reason}` }
+    if (!refWith.found) return { found: false, reason: `reference: ${refWith.reason}` }
+    if (!refWithout.found) return { found: false, reason: `reference baseline: ${refWithout.reason}` }
+    const band = withCreature.mean - without.mean
+    const spill = refWith.mean - refWithout.mean
+    // The reference box's own two LEVELS as well as their difference, because the
+    // difference alone cannot be read. A uniform change in the street's lighting
+    // moves a box by an amount proportional to how bright that box is, so
+    // subtracting the reference's absolute change from the band's subtracts two
+    // different fractions of two different things — and the fraction is the whole
+    // question when the two boxes differ by 20 levels, as the curtain bands and
+    // their reference do. These four numbers are what settle it.
+    perBand.push({
+      box,
+      ref,
+      creature: withCreature.mean,
+      baseline: without.mean,
+      refCreature: refWith.mean,
+      refBaseline: refWithout.mean,
+      band,
+      spill,
+      lift: band - spill,
+    })
+    creatureSum += withCreature.mean
+    baselineSum += without.mean
+    referenceSum += (refWith.mean + refWithout.mean) / 2
+    bandSum += band
+    spillSum += spill
+    bandLift += band - spill
+    count += withCreature.n
+  }
+  // `bands` was the obvious name and it is the parameter's, so the two bands the
+  // caller handed in and the count of them cannot both be `bands` in one scope.
+  // `taken` is the number of bands this average is over; `count` above is the
+  // number of PIXELS in them, which is the other thing `n` reports.
+  const taken = list.length
+  return {
+    found: true,
+    creature: creatureSum / taken,
+    baseline: baselineSum / taken,
+    reference: referenceSum / taken,
+    // `band` and `spill` are MOVEMENTS — the same boxes in the two frames, each
+    // against itself — and they are what the lift is the difference of. They are
+    // reported as means over the bands, not as the differences of the two means
+    // above: the curtain bands sit about 60 levels up and the reference boxes
+    // about 50, so the difference of the levels is a number about WHERE the boxes
+    // are in the picture and not a number about anything that moved. The first
+    // version of this return called the level differences `band` and `spill`, and
+    // the failure sentence printed them as "the whole picture's light moving",
+    // which is a claim about a change of light over a region that is not the one
+    // the light changed in.
+    band: bandSum / taken,
+    spill: spillSum / taken,
+    lift: bandLift / taken,
+    n: count,
+    perBand,
+  }
+}
+
+/** One sentence about a `shimmerLift`, in the house voice. */
+export function describeShimmerLift(measured) {
+  if (!measured.found) return `no shimmer measurement: ${measured.reason}`
+  const signed = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(2)}`
+  return (
+    `the curtain bands read ${signed(measured.lift)} luma over the same pixels of the same frame with the ` +
+    `figure taken out of it (${measured.n} px; the bands themselves moved ${signed(measured.band)}, of which ` +
+    `${signed(measured.spill)} is the street's own light moving with the figure taken out of it)`
+  )
 }
 
 /**

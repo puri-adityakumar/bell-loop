@@ -94,7 +94,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 // decoding and the lower-scene crop. It is imported here rather than
 // reimplemented because a second decoder would be a second set of numbers for
 // the same file, and the two would eventually disagree in a comment.
-import { creatureContrast, describeCreatureContrast, repaintBody, luma, EYE_MIN, EYE_MAX_SPAN, EYE_MIN_AREA, LIT_LUMA } from './tools/png-luma.mjs'
+import { creatureContrast, describeCreatureContrast, repaintBody, luma, EYE_MIN, EYE_MAX_SPAN, EYE_MIN_AREA, LIT_LUMA, SILHOUETTE_MAX } from './tools/png-luma.mjs'
 // The swirl-structure gate added in "Portal swirl (iteration 2, pass 3)" measures
 // a *rendered* frame for the same reason the creature gate above does, and it is
 // imported from the same module so the two can never disagree about what a pixel
@@ -3969,10 +3969,21 @@ test('the five states do not read as one state — the tells are separated', () 
     }
   }
   // and the ordering the brief asks for is a strict one, not a set of near-ties
+  //
+  // ITERATION 2, PASS 15. BEFORE: `telegraph < stalk < chase <= enraged` on presence.
+  // AFTER: the ladder starts at `stalk`, and the apparition is on it by a different
+  // column. The reason is measured and it is in `CREATURE_PRESENTATION.telegraph`:
+  // pass 1's lighter fog put the apparition's body at 0.90 of its own background where
+  // §12.1's hole is 0.62, and no amount of fog made a 0.3-alpha near-black figure a
+  // hole. So the apparition's BODY moved up — 0.78, between a stalk and a chase — and
+  // what still makes it an apparition is that its eye runs the full beat down to 0.06
+  // while its body does not, which is the only row in the table whose two halves of
+  // the same beat disagree. The pairwise check above is what holds the five apart, and
+  // it holds them further apart than before.
   const presence = states.map((s) => beast.presentationFor(s).presence)
   assert.ok(
-    presence[0] < presence[1] && presence[1] < presence[2] && presence[2] <= presence[4],
-    `presence must rise telegraph < stalk < chase <= enraged: ${presence.join(', ')}`,
+    presence[1] < presence[2] && presence[2] <= presence[4],
+    `presence must rise stalk < chase <= enraged: ${presence.join(', ')}`,
   )
   assert.equal(beast.presentationFor('chase').presence, 1, 'a chase is the full form')
   assert.equal(beast.presentationFor('chase').flicker, null, 'and it never flickers')
@@ -8941,9 +8952,16 @@ test('the creature still reads darker than its background (§12.1)', () => {
   // and a loose threshold here would be the same decorative gate again, just
   // with a better formula. Both sides of the number are reported in the failure
   // message so a retune starts from the measurement rather than from a guess.
+  // BEFORE pass 15: `0.62`, written out here, with the capture harness holding no
+  // threshold at all. AFTER: `SILHOUETTE_MAX`, the same constant
+  // `tools/png-luma.mjs` exports beside the measure that produces the ratio and
+  // `tools/capture.mjs --probe` gates all five presentation rows on. One value, so
+  // a retune cannot leave the pure harness and the capture harness disagreeing
+  // about what "washed out" means — which is the failure this file's own
+  // pass-2 review caught in a different formula.
   assert.ok(
-    measured.ratio < 0.62,
-    `the creature is not a hole in the frame: ${describeCreatureContrast(measured)} (needs under 0.62)`,
+    measured.ratio < SILHOUETTE_MAX,
+    `the creature is not a hole in the frame: ${describeCreatureContrast(measured)} (needs under ${SILHOUETTE_MAX})`,
   )
   // and the background it is a hole IN is actually lit. Without this half a
   // black shape on an unlit wall scores a perfect 0.0 and the test above is
@@ -8981,6 +8999,150 @@ test('the creature gate cannot be satisfied by a frame with no creature in it', 
   )
 })
 
+// ---------------------------------------------------------------------------
+// PASS 15 — WHICH GALLERY FRAMES OWE THE EYE FINDER AN EYE
+// ---------------------------------------------------------------------------
+//
+// The three §16.5 frames that stage a creature, in §16.5's own order.
+const CREATURE_FRAMES = ['creature-stalking', 'creature-chasing', 'banish']
+
+/**
+ * captureReport — §16.5's own record of the run, parsed.
+ *
+ * Read from the report rather than from the view definitions for the reason the
+ * pass-12 guard below already gives: a floor, a clock and a head's position in
+ * pixels are properties of what was MEASURED, and not of what was ASKED FOR.
+ */
+function captureReport() {
+  const file = new URL('./benchmark/captures.json', import.meta.url)
+  assert.equal(existsSync(file), true, 'benchmark/captures.json is missing — run npm run capture')
+  return JSON.parse(readFileSync(file, 'utf8'))
+}
+
+/**
+ * stagedHead — where a gallery frame's creature put its HEAD, in that frame's own
+ * pixels, and whether the head is inside the picture at all.
+ *
+ * ITERATION 2, PASS 15, and it is the answer to a question two of this file's
+ * gates had been answering with a lie.
+ *
+ * THE LIE
+ * ////////
+ * Both the gate below and the pass-12 guard read an "eye" out of `banish.png`,
+ * and the blob they read was never the creature's. §16.5.9 stages the banish at
+ * 1.9 m — inside §7.4's `BANISH_RANGE` of 2.6 m, because the swing has to
+ * connect — and a 2.7 m figure at 1.9 m from a 1.6 m eye puts its head 1.1 m
+ * above the lens. The capture report has been carrying that head's projected
+ * position since pass 15's page added it, and for `banish` it reads y = -446 on
+ * a 720 px frame: the creature's face is EIGHT HUNDRED PIXELS above the top of
+ * its own picture. The figure's trunk is in the frame, from y 0 to y 366, and
+ * nothing else of it is.
+ *
+ * So the blob the finder was anchoring on was a lit window in a house behind the
+ * creature. The measurements say so plainly and had been saying so since the
+ * frame shipped: 54 px at luma 171, five by nine, centred at (638.5, 200.5) —
+ * 650 px from the head, and a "body" underneath it at luma 29.7 against a local
+ * background of 30.3. That is a ratio of 0.98, where §12.1's hole in the fog is
+ * `SILHOUETTE_MAX` 0.62 and a real one measures 0.57 and 0.27. A house window is
+ * not a hole in anything. The pass-10 review tabulated the same frame's ratio at
+ * 1.057 — brighter than its surround — and read the eye and the silhouette as
+ * real, with the number that contradicts it sitting in its own table.
+ *
+ * AND WHY THE ASSERTION BELOW IS NOT A COIN FLIP
+ * ----------------------------------------------
+ * The excused frame still has to resolve nothing, and the obvious worry is that a
+ * window near the threshold will cross it on some run and fail the gate for a
+ * reason that has nothing to do with the pass. It will not, and the reason is the
+ * same argument `png-luma.mjs` has been making since pass 2: brightness is not
+ * what rejects scenery. In the current gallery the window's lit edge is a 2 x 9
+ * sliver at 153-155 — three luma over `EYE_MIN`, and rejected at 18 px against a
+ * 24 px area floor and at an aspect of 4.5 against a ceiling of 2. Brighten it as
+ * far as it will go and it is still a sliver: the shape tests, not the threshold,
+ * are what hold this line, which is the one thing the stale comment above them
+ * kept getting wrong.
+ *
+ * WHY IT WAS NEVER CAUGHT
+ * ////////////////////////
+ * Because nothing asked where the subject was. `findEyes` takes the brightest
+ * compact blob and every number downstream is a statement about WHENEVER THAT
+ * BLOB IS — which is stated in this file at `capture/main.jsx`'s own `where()`,
+ * and was true of the gallery for three passes before anybody applied it there.
+ * The probe got the anchor check because the probe needed a stand-off it could
+ * name; the gallery had a hardcoded list of three frames and a threshold on the
+ * blob, and a hardcoded list is an assertion the finder cannot argue with.
+ *
+ * WHAT THIS DOES
+ * //////////////
+ * The list of frames that owe an eye is DERIVED from the report rather than
+ * written down, so a frame whose creature's head is out of the picture is
+ * excluded by a measurement and a frame whose head has drifted out of it is
+ * noticed. And the frames that are excluded are not simply dropped: the same
+ * claim `street.png` gets above — a frame with no creature in it must resolve
+ * nothing — is applied to them, which is what stops the next lit window from
+ * being reported as a creature.
+ *
+ * @param {object} parsed the capture report
+ * @param {string} id a §16.5 view id
+ */
+function stagedHead(parsed, id) {
+  const entry = parsed.captures.find((row) => row.id === id)
+  assert.ok(entry, `${id} is not in the capture report — re-run npm run capture`)
+  const head = entry.state?.where?.head
+  const viewport = entry.state?.viewport
+  assert.ok(
+    head && viewport && Number.isFinite(head.x) && Number.isFinite(head.y),
+    `${id}.png has no projected head in the capture report, so nothing can say whether the finder was ` +
+      'looking at the creature — re-run npm run capture with the pass-15 harness',
+  )
+  const inside = head.x >= 0 && head.y >= 0 && head.x <= viewport.width && head.y <= viewport.height
+  return { id, head, viewport, inside, over: inside ? 0 : Math.max(0, -head.y, head.y - viewport.height, -head.x, head.x - viewport.width) }
+}
+
+/**
+ * eyeAnchor — how far a resolved eye is from the head the harness staged, in
+ * pixels, and the sentence that says what a number that size means.
+ *
+ * The tolerance is `PROBE_ANCHOR_MAX_PX`, the probe's own, read rather than
+ * restated: it is the same question asked of the same finder, and the two
+ * harnesses must not be able to disagree about how near a blob has to be to
+ * count as a creature's. Its own comment already carries the case this file is
+ * making — "a blob 200 px away in a house window is not a tight tolerance being
+ * tight, it is a different subject" — and 24 px is two eye widths at the probe's
+ * stand-off, where the measured offsets are 0.6 px and 1.1 px.
+ */
+function eyeAnchor(eye, head) {
+  const dx = (eye.minX + eye.maxX) / 2 - head.x
+  const dy = (eye.minY + eye.maxY) / 2 - head.y
+  return { dx, dy, off: Math.hypot(dx, dy) }
+}
+
+/**
+ * noCreatureHere — the sentence for a frame that stages a creature whose face is
+ * out of the picture and must therefore resolve nothing.
+ *
+ * It is a FUNCTION and not a string for the reason this whole block exists:
+ * `creatureContrast` has no `eye` key at all when it finds nothing, so a message
+ * that reads `measured.eye.n` to explain a failure throws the same TypeError the
+ * guard above it was written to remove. The first version of these two gates did
+ * exactly that — the sentence about a missing eye was itself the crash — so the
+ * description branches on `found` and quotes the blob only when there is one.
+ */
+function noCreatureHere(at, measured) {
+  const where = `head is ${at.over.toFixed(0)} px outside a ${at.viewport.width}x${at.viewport.height} frame at (${at.head.x}, ${at.head.y})`
+  if (measured.found) {
+    const eye = measured.eye
+    return (
+      `${at.id}.png stages a creature whose ${where}, so there is no creature in this picture to find — ` +
+      `and the finder resolved a ${eye.n} px blob at ${eye.mean.toFixed(1)} luma, ${eyeAnchor(eye, at.head).off.toFixed(0)} ` +
+      'px from a head that is not in it. That is scenery wearing the creature\'s name.'
+    )
+  }
+  return (
+    `${at.id}.png stages a creature whose ${where}, and it resolves nothing — which is the only correct answer for a ` +
+    'frame with no creature in it.'
+  )
+}
+
 test('the eye-finder\'s own numbers hold on the shipped gallery, and brightness is not what does the work', () => {
   // WHY THIS EXISTS
   // ---------------
@@ -8995,19 +9157,27 @@ test('the eye-finder\'s own numbers hold on the shipped gallery, and brightness 
   //
   // So the comment's three claims are read off the committed PNGs here and asserted:
   //
-  //   1. every creature frame resolves an eye, and that eye clears `EYE_MIN` with
-  //      room rather than by a hair (the pass-11 measurement is `banish` at 171,
-  //      which is 21 luma over the floor — a margin worth stating, because the
-  //      comment previously quoted only the two comfortable frames);
-  //   2. every one of those blobs is inside `EYE_MAX_SPAN`, and the TIGHTEST of
-  //      them is reported, because `banish` is 12 px tall against a 14 px ceiling
-  //      and a re-shot that pushed it to 15 would silently stop resolving a
-  //      creature that is plainly in the picture;
+  //   1. every frame that SHOWS a creature's face resolves an eye, and that eye
+  //      clears `EYE_MIN` with room rather than by a hair;
+  //   2. every one of those blobs is inside `EYE_MAX_SPAN`, the TIGHTEST of them is
+  //      reported, and — new in pass 15 — every one of them sits within
+  //      `PROBE_ANCHOR_MAX_PX` of the head the capture harness staged, so the blob
+  //      being measured is demonstrably the creature's and not a lit window;
   //   3. and `street.png` is BRIGHTER THAN THE FLOOR and still reports no eye —
   //      which is the claim the stale comment made and could not have been
   //      supporting. If that frame's peak ever falls under `EYE_MIN`, the
   //      "brightness is not the discriminator" argument goes untested and this
   //      test fails rather than quietly becoming true again.
+  //
+  // AND WHICH FRAMES ARE IN THE LIST IS NOW A MEASUREMENT, NOT A CONSTANT. It used
+  // to be `['creature-stalking', 'creature-chasing', 'banish']` written out here, and
+  // `banish` does not contain a creature's face at all: §16.5.9's 1.9 m stand-off
+  // puts the head 446 px above the top of a 720 px frame, so the eye this test was
+  // reading there was a house window 650 px away with a body ratio of 0.98. Every
+  // claim above is now made only of frames whose projected head is inside the
+  // picture, and `stagedHead` is what says which those are. A hardcoded list of
+  // frames is an assertion the finder cannot argue with, and this one had been
+  // quietly false since pass 2.
   //
   // The constants are IMPORTED, not restated, for the reason pass 7's gate gives: a
   // check that writes 150 next to a module that owns 150 is a check that will still be
@@ -9023,26 +9193,76 @@ test('the eye-finder\'s own numbers hold on the shipped gallery, and brightness 
   // and a retune has to say so here. A future pass that genuinely wants a different
   // number changes this line and the comment above it in the same commit.
   assert.equal(EYE_MIN, 150, `EYE_MIN is ${EYE_MIN}; the threshold this whole file is calibrated to is 150`)
-  assert.equal(EYE_MAX_SPAN, 14, `EYE_MAX_SPAN is ${EYE_MAX_SPAN}; the banish frame's 12 px eye has 2 px of room and no more`)
+  assert.equal(EYE_MAX_SPAN, 14, `EYE_MAX_SPAN is ${EYE_MAX_SPAN}; the closest frame's 9 px eye has 5 px of room`)
   assert.equal(EYE_MIN_AREA, 24, `EYE_MIN_AREA is ${EYE_MIN_AREA}; the largest square impostor in the gallery is 9 px`)
-  const frames = ['creature-stalking', 'creature-chasing', 'banish']
+  const parsed = captureReport()
   const readings = []
-  for (const id of frames) {
+  const excused = []
+  for (const id of CREATURE_FRAMES) {
+    const at = stagedHead(parsed, id)
     const file = new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)
     assert.equal(existsSync(file), true, `${id}.png is missing — run npm run capture`)
     const measured = creatureContrast(readFileSync(file))
-    assert.ok(measured.found, `${id}.png holds no creature: ${measured.reason}`)
+    if (!at.inside) {
+      // A frame whose creature's face is out of the picture owes the finder
+      // nothing, and owes it the same thing `street.png` owes: nothing found. The
+      // assertion is NOT dropped, because a gate that quietly skips a frame is
+      // how the window this one used to read became a window nobody questioned.
+      assert.equal(
+        measured.found,
+        false,
+        noCreatureHere(at, measured),
+      )
+      excused.push({ id, over: at.over })
+      continue
+    }
+    assert.ok(
+      measured.found,
+      `${id}.png holds no creature: ${measured.reason} — and its head IS in the picture, at (${at.head.x}, ${at.head.y})`,
+    )
     const eye = measured.eye
     const spanX = eye.maxX - eye.minX
     const spanY = eye.maxY - eye.minY
+    // ...and the eye is the CREATURE'S, which is the claim the other two only
+    // assumed. A blob can clear the brightness, span, fill and area tests and
+    // still be a lit window 200 px away, and every number `creatureContrast`
+    // reports is measured under it.
+    const anchor = eyeAnchor(eye, at.head)
+    assert.ok(
+      anchor.off <= capture.PROBE_ANCHOR_MAX_PX,
+      `${id}.png resolves an eye ${anchor.off.toFixed(1)} px from the head the harness staged at (${at.head.x}, ${at.head.y}) — ` +
+        `${anchor.dx.toFixed(1)} across, ${anchor.dy.toFixed(1)} down — and PROBE_ANCHOR_MAX_PX is ${capture.PROBE_ANCHOR_MAX_PX}. ` +
+        'A blob that far away is a different subject, not a badly-aimed eye.',
+    )
     assert.ok(eye.mean >= EYE_MIN, `${id}.png resolves an eye at ${eye.mean.toFixed(1)} mean, under EYE_MIN ${EYE_MIN}`)
     assert.ok(eye.n >= EYE_MIN_AREA, `${id}.png resolves a ${eye.n} px eye, under EYE_MIN_AREA ${EYE_MIN_AREA}`)
+    // ...and there is a HOLE under it, which is the second and independent line, and
+    // the one that does not depend on the head being where the report says it is.
+    // The pass-10 review tabulated this frame's ratio at 1.057 — the blob's "body"
+    // BRIGHTER than the fog around it — and read the eye and the silhouette as
+    // real. A lit window does that; a creature in amber fog cannot, and the
+    // number that says so is §12.1's own.
+    assert.ok(
+      measured.ratio < SILHOUETTE_MAX,
+      `${id}.png resolves an eye ${anchor.off.toFixed(1)} px from its own head, but the body under it is at luma ` +
+        `${measured.body.toFixed(1)} against a surround of ${measured.sides.toFixed(1)} — a ratio of ` +
+        `${measured.ratio.toFixed(2)}, where §12.1's hole in the fog is ${SILHOUETTE_MAX}. A blob with nothing dark under it is a window.`,
+    )
     assert.ok(
       spanX <= EYE_MAX_SPAN && spanY <= EYE_MAX_SPAN,
       `${id}.png resolves a ${spanX}x${spanY} px eye, and EYE_MAX_SPAN is ${EYE_MAX_SPAN} — a creature is in the picture and the finder cannot see it`,
     )
-    readings.push({ id, mean: eye.mean, spanX, spanY, n: eye.n, luma: eye.mean - EYE_MIN })
+    readings.push({ id, mean: eye.mean, spanX, spanY, n: eye.n, off: anchor.off, ratio: measured.ratio, luma: eye.mean - EYE_MIN })
   }
+  // ...and the list cannot quietly empty itself. A gate that measures the eye
+  // finder on one frame and calls it the gallery is the pass-2 percentile gate
+  // again, one level up, and §16.5 stages a creature in three frames on purpose.
+  assert.ok(
+    readings.length >= 2,
+    `only ${readings.length} of ${CREATURE_FRAMES.length} gallery frames have a creature's head inside the picture ` +
+      `(${excused.map((r) => `${r.id} by ${r.over.toFixed(0)} px`).join(', ') || 'none'}) — the eye claims here would be ` +
+      'measured on almost nothing, which calls for a reframe rather than a relaxation',
+  )
   // 1b. THE MARGIN IS A MARGIN. Ten luma under the floor is a frame that passes by
   // rounding, and a pass-11 note that quotes only the comfortable frames is how a
   // 21-luma margin became an unstated 4-luma one.
@@ -9068,9 +9288,11 @@ test('the eye-finder\'s own numbers hold on the shipped gallery, and brightness 
     `street.png peaks at ${peak} — well over EYE_MIN ${EYE_MIN} — and still resolves an eye, so the shape tests are not doing the work`,
   )
   console.log(
-    `\n  eye finder on the shipped gallery: ${readings.map((r) => `${r.id} ${r.mean.toFixed(0)} luma / ${r.spanX}x${r.spanY} px`).join(', ')} ` +
-      `against EYE_MIN ${EYE_MIN} and EYE_MAX_SPAN ${EYE_MAX_SPAN} (tightest ${tightest.id} at +${tightest.luma.toFixed(0)} luma, ` +
-      `${EYE_MAX_SPAN - Math.max(...readings.map((r) => Math.max(r.spanX, r.spanY)))} px of span); ` +
+    `\n  eye finder on the shipped gallery: ${readings.map((r) => `${r.id} ${r.mean.toFixed(0)} luma / ${r.spanX}x${r.spanY} px / ${r.off.toFixed(1)} px off its head / body ratio ${r.ratio.toFixed(2)}`).join(', ')} ` +
+      `against EYE_MIN ${EYE_MIN}, EYE_MAX_SPAN ${EYE_MAX_SPAN} (tightest ${tightest.id} at +${tightest.luma.toFixed(0)} luma, ` +
+      `${EYE_MAX_SPAN - Math.max(...readings.map((r) => Math.max(r.spanX, r.spanY)))} px of span) and an anchor of ` +
+      `${capture.PROBE_ANCHOR_MAX_PX} px; ` +
+      `${excused.length ? `${excused.map((r) => `${r.id}'s head is ${r.over.toFixed(0)} px out of frame and it resolves nothing`).join('; ')}; ` : ''}` +
       `street.png peaks at ${peak} and resolves nothing`,
   )
 })
@@ -13225,6 +13447,19 @@ test('the flare settles, and it cannot cost the creature gate its anchor', () =>
   // 1.2 clamps to 1 whatever the flicker does, which is a property of that row and not
   // of the flare. Sampled across a telegraph's beat so the assertion is about the
   // column being live rather than about one lucky instant.
+  //
+  // ITERATION 2, PASS 15: the telegraph's `eye` column is 0.6, not 0.5, and the ceiling
+  // is therefore stated RELATIVE to the next dimmest row rather than as a literal. The
+  // claim was always "the apparition's eye is the faintest thing in the table", and a
+  // literal would have kept the number 0.55 honest about the old column and dishonest
+  // about the design — the apparition's eye is still the faintest, and it has to be
+  // brighter than it was, because pass 15 moved the apparition's read off the body and
+  // onto the eye (see `CREATURE_PRESENTATION.telegraph`).
+  // the five rows a player can actually be shown, which is the probe's own list —
+  // `dormant` and `dismissing` draw nothing and have no eye to be fainter than
+  const quietestEyeRow = Math.min(
+    ...capture.CREATURE_PROBE_ROWS.filter((row) => row.state !== 'telegraph').map((row) => beast.presentationFor(row.state).eye),
+  )
   let dimmed = 0
   let brightest = 0
   for (let t = 0; t < 6; t += 1 / 240) {
@@ -13233,7 +13468,11 @@ test('the flare settles, and it cannot cost the creature gate its anchor', () =>
     if (value < brightest) dimmed += 1
     brightest = Math.max(brightest, value)
   }
-  assert.ok(dimmed > 100 && brightest < 0.55, 'the flicker no longer scales the eye at all')
+  assert.ok(
+    brightest < quietestEyeRow,
+    `the telegraph's loudest eye is ${brightest.toFixed(3)}, which is not fainter than the next row's ${quietestEyeRow} — the apparition is no longer the faintest thing in the table`,
+  )
+  assert.ok(dimmed > 100, `a telegraph's eye only dips ${dimmed} times in six seconds, so the beat is not running`)
   // ...and the eye's WORLD SIZE is untouched by the flare's brightness, because the
   // two are separate terms: `eyeSize` is the pixel floor's answer and the swell is
   // `EYE_FLARE_GROWTH` on top of it, in the view.
@@ -15359,9 +15598,7 @@ test('pass 12 moved the frame without moving the four gates that measure it', ()
   // number worth reviewing: a pass that ate a third of a gate's margin is a pass
   // that needs a reviewer, and a pass that ate none is a pass that changed nothing
   // a human would notice.
-  const report = new URL('./benchmark/captures.json', import.meta.url)
-  assert.equal(existsSync(report), true, 'benchmark/captures.json is missing — run npm run capture')
-  const parsed = JSON.parse(readFileSync(report, 'utf8'))
+  const parsed = captureReport()
   // `entry.luma` is an OBJECT — `{lit, litPct, mean, max}` — not the number the
   // harness printed, and `entry.minLit` is the floor. A first version of this test
   // read `entry.luma` as a scalar and got `NaN < floor`, which is `false` for every
@@ -15399,13 +15636,44 @@ test('pass 12 moved the frame without moving the four gates that measure it', ()
   // 2. NO FALSE EYE. The debris is dark by construction and the lens is
   //    normal-blended, so neither can manufacture a finder hit on its own — but
   //    the eye finder is the one gate a BRIGHT new object mid-frame can trip, and
-  //    the portal frames are in the gallery too. So the finder runs on the three
-  //    creature frames for pass 2's claim (every creature still resolves an eye)
-  //    and on the two portal frames for pass 12's claim (the ring and the lens are
-  //    not one).
+  //    the portal frames are in the gallery too. So the finder runs on the gallery
+  //    frames that actually SHOW a creature's face (for pass 2's claim) and on the
+  //    two portal frames (for pass 12's claim: the ring and the lens are not one).
+  //
+  //    ITERATION 2, PASS 15. The three-frame list became `CREATURE_FRAMES` filtered
+  //    by `stagedHead`, for the reason that helper carries: `banish` stages a 2.7 m
+  //    creature at 1.9 m, so its head is 446 px above the top of the frame and the
+  //    eye this loop was reading there was a lit window 650 px away. The loop also
+  //    gained the `found` guard it did not have — see below — because that window is
+  //    exactly what a missing guard turns into a TypeError.
   const eyes = []
-  for (const id of ['creature-stalking', 'creature-chasing', 'banish']) {
+  for (const id of CREATURE_FRAMES) {
+    const at = stagedHead(parsed, id)
     const measured = creatureContrast(readFileSync(new URL(`./${capture.CAPTURE_DIR}/${id}.png`, import.meta.url)))
+    if (!at.inside) {
+      // The same claim the portal loop below makes, pointed the other way. A frame
+      // whose creature's face is out of the picture has nothing in it to be found,
+      // and a finder that resolves something there has found scenery.
+      assert.equal(
+        measured.found,
+        false,
+        noCreatureHere(at, measured),
+      )
+      continue
+    }
+    // `creatureContrast` returns `{found: false, reason}` with NO `eye` key at all
+    // when it finds nothing, so the read below is only safe after this. The guard
+    // was missing and the cost was a crash rather than a sentence: when pass 15's
+    // held shutter stopped the window resolving, this loop read `measured.eye` as
+    // `undefined` and died on `maxX` — a failure that looks like a broken harness
+    // rather than a frame that stopped having a creature in it. The portal loop
+    // below already says this about itself; it is written out here too because the
+    // two loops are the two readers of the same field and both need the guard.
+    assert.ok(
+      measured.found,
+      `${id}.png resolves no eye, so the four gates cannot be read from it: ${measured.reason} — and its head is in the ` +
+        `picture, at (${at.head.x}, ${at.head.y})`,
+    )
     const eye = measured.eye
     // The span is the BOUNDING BOX, derived here rather than read off the eye,
     // because `png-luma.mjs` reports the box and pass 2's section derives the
@@ -15415,11 +15683,30 @@ test('pass 12 moved the frame without moving the four gates that measure it', ()
     // that means nothing. Deriving it here is one subtraction and a legible error.
     const spanX = eye.maxX - eye.minX
     const spanY = eye.maxY - eye.minY
+    // ...and the anchor, for pass 2's reason. This loop is a second reader of the
+    // same measurement, and a second reader is exactly how a window came to be
+    // counted as a creature by two gates at once.
+    const anchor = eyeAnchor(eye, at.head)
+    assert.ok(
+      anchor.off <= capture.PROBE_ANCHOR_MAX_PX,
+      `${id}.png resolves an eye ${anchor.off.toFixed(1)} px from the head the harness staged at (${at.head.x}, ${at.head.y}), ` +
+        `against PROBE_ANCHOR_MAX_PX ${capture.PROBE_ANCHOR_MAX_PX}`,
+    )
     assert.ok(eye.mean >= EYE_MIN, `${id}.png resolves an eye at ${eye.mean.toFixed(1)}, under the ${EYE_MIN} floor`)
     assert.ok(eye.n >= EYE_MIN_AREA, `${id}.png resolves a ${eye.n} px eye, under the ${EYE_MIN_AREA} px area floor`)
     assert.ok(spanX <= EYE_MAX_SPAN && spanY <= EYE_MAX_SPAN, `${id}.png resolves a ${spanX}x${spanY} px eye against a ${EYE_MAX_SPAN} px ceiling`)
     eyes.push({ id, mean: eye.mean })
   }
+  // The margin report at the end of this test takes a minimum over `eyes`, and a
+  // `reduce` with no initial value over an empty list is a TypeError — which is how
+  // a gate that has stopped measuring anything ends the run in a crash rather than
+  // in a sentence. The count is also the claim: four gates' margins are worth
+  // reporting against a finder that is anchored on at least two real creatures.
+  assert.ok(
+    eyes.length >= 2,
+    `only ${eyes.length} of ${CREATURE_FRAMES.length} gallery frames gave this test an eye to measure — the margins it ` +
+      'reports would be the margins of one frame called four gates',
+  )
   // The two portal frames, asserted the other way round. `creatureContrast` does
   // not return an `eye` object at all when it finds nothing — it returns
   // `{found: false, reason}`, and there is no `eye` key to read. So the claim is
@@ -15471,6 +15758,570 @@ test('pass 12 moved the frame without moving the four gates that measure it', ()
       `eye ${tightestEye.mean}/${EYE_MIN} (${tightestEye.id}), ` +
       `lit ${(tightest.lit * 100).toFixed(2)}%/${(tightest.floor * 100).toFixed(2)}% (${tightest.id})`,
   )
+})
+
+// ---------------------------------------------------------------------------
+// Creature in the new light (iteration 2, pass 15)
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS SECTION CAN AND CANNOT CHECK
+// --------------------------------------
+// The pass's actual claim — "the silhouette and the eyes read against amber fog
+// in all five of `CREATURE_PRESENTATION`'s rows" — is a claim about RENDERED
+// PIXELS, and only `npm run capture -- --probe` can answer it, in a browser,
+// against a camera. So that is where the measurement lives, and it is not
+// restated here as though node could check it.
+//
+// What IS checkable here is the thing that made the measurement trustworthy in
+// the first place, and it is a real failure surface rather than bookkeeping:
+//
+//   1. `SILHOUETTE_MAX` has to be ONE number. Before this pass it was written out
+//      as a literal `0.62` inside `verify.mjs` and the capture harness had no way
+//      to enforce it at all; it now lives in `png-luma.mjs` beside the measure
+//      that produces the ratio, and BOTH harnesses read it. The section below
+//      proves the pure gate is reading the shared constant rather than a copy —
+//      by re-importing the module, mutating the export in memory, and asking
+//      whether the constant the gate is compared against moved with it.
+//   2. The probe's FIVE ROWS have to be the five rows the design can present, and
+//      the two rows the section calls flickering have to be exactly the two with
+//      a `flicker` in `CREATURE_PRESENTATION`. A retune that added a third
+//      flicker, or dropped `stagger`, would otherwise leave two rows of the game
+//      unmeasured with every check still green.
+//   3. The probe must be UNREACHABLE from the gallery: same ids would mean
+//      `--probe` could overwrite `benchmark/screenshots/`, and a probe frame
+//      wearing a gallery id would be counted in §16.5's fourteen.
+//   4. The control is DERIVED (stalk's first sample minus the `creature` step),
+//      which is the property the whole shimmer differential rests on, and a
+//      hand-written control would break it silently.
+//   5. The step floors the gate quotes (`PROBE_EYE_MARGIN`, `PROBE_SHIMMER_MIN`)
+//      are positive, and `PROBE_ANCHOR_MAX_PX` is wide enough for the figure's own
+//      head-to-eye offset and narrower than the impostor it exists to reject.
+// ---------------------------------------------------------------------------
+
+section('Creature in the new light (iteration 2, pass 15)')
+
+test('SILHOUETTE_MAX is one number, read by the gate and by the capture harness', () => {
+  assert.equal(SILHOUETTE_MAX, 0.62, `SILHOUETTE_MAX is ${SILHOUETTE_MAX}; every threshold this file is calibrated to is 0.62`)
+  // The gate below is the assertion that used to carry a literal. It is read
+  // through a binding that a mutation can move, so the next claim is about the
+  // BINDING rather than about the number.
+  assert.ok(SILHOUETTE_MAX < 1, 'a silhouette ratio ceiling at or above 1.0 is satisfied by a creature brighter than the fog it stands in')
+  assert.ok(SILHOUETTE_MAX > 0, 'a ceiling of 0 is satisfied by an unlit background, which the lit-sides assertion is there to prevent')
+  // and the lit-sides floor is the one that makes the ratio mean something. It
+  // is a BACKGROUND floor — the fog a dark figure is a hole IN — and the eye
+  // finder is looking for pixels at `EYE_MIN` in the same frame, so the two have
+  // to be far enough apart that a lit pool can never be mistaken for the subject
+  // the way a bright window is.
+  assert.ok(
+    LIT_LUMA * 4 < EYE_MIN,
+    `LIT_LUMA is ${LIT_LUMA} and EYE_MIN is ${EYE_MIN}: too close, so a lit background passes the finder's own threshold`,
+  )
+})
+
+test('the probe covers every presentation row the player can be shown, and no others', () => {
+  // §6.1's five names. NOT `PRESENTATION_STATES`, which also carries `dormant`
+  // and `dismissing` (a thing being removed is not a presentation) and
+  // `reposition` (which is `stalk` with a different search origin, so its pose
+  // is the same row and photographing it separately would be a second picture of
+  // the same claim). The exclusion is asserted rather than assumed, so a future
+  // sixth row in `CREATURE_PRESENTATION` cannot join the table unnoticed.
+  const expected = ['telegraph', 'stalk', 'chase', 'stagger', 'enraged']
+  assert.deepEqual(
+    capture.CREATURE_PROBE_ROWS.map((row) => row.state),
+    expected,
+    'the probe rows are not §6.1\'s five, so a presentation the player sees is unmeasured',
+  )
+  for (const state of expected) {
+    assert.ok(beast.PRESENTATION_STATES.includes(state), `${state} is a probe row but not a row of CREATURE_PRESENTATION`)
+  }
+  // and the two that are deliberately NOT rows, with the reason
+  for (const state of ['dormant', 'dismissing', 'reposition']) {
+    assert.ok(
+      !capture.CREATURE_PROBE_ROWS.some((row) => row.state === state),
+      `${state} was added to the probe, and it is not a §6.1 presentation — say why in the table's own comment`,
+    )
+  }
+  // every row samples itself more than once, and the sampling is inside the
+  // 90 s a view may take
+  for (const row of capture.CREATURE_PROBE_ROWS) {
+    assert.ok(row.waits.length >= 2, `the ${row.state} row is sampled once, which is a photograph and not a measurement`)
+    for (const wait of row.waits) assert.ok(wait > 0 && wait < 5, `the ${row.state} row waits ${wait} s, which is outside the flicker periods it is meant to cross`)
+  }
+})
+
+test('the probe samples the flickering rows three times, and those are exactly the rows that flicker', () => {
+  const flickering = beast.PRESENTATION_STATES.filter((state) => beast.CREATURE_PRESENTATION[state].flicker !== null)
+  assert.deepEqual([...flickering].sort(), ['stagger', 'telegraph'], 'CREATURE_PRESENTATION no longer has the two flickering rows this section is calibrated to')
+  assert.deepEqual(
+    [...capture.PROBE_FLICKER_ROWS].sort(),
+    [...flickering].sort(),
+    'the rows the harness treats as flickering are not the rows that flicker, so the spread gate is asking the wrong rows to go quiet',
+  )
+  // three samples, not two: the spread claim is "it falls to under 45% of its
+  // own peak", and two samples cannot distinguish a flicker from a dim row —
+  // either can be the peak
+  for (const state of capture.PROBE_FLICKER_ROWS) {
+    const row = capture.CREATURE_PROBE_ROWS.find((entry) => entry.state === state)
+    assert.equal(row.waits.length, 3, `the ${state} row is sampled ${row.waits.length} time(s), and a two-sample row cannot show a spread`)
+  }
+  // and the steady rows are not asked for a spread they were never designed to have
+  for (const row of capture.CREATURE_PROBE_ROWS) {
+    if (capture.PROBE_FLICKER_ROWS.includes(row.state)) continue
+    assert.ok(
+      beast.CREATURE_PRESENTATION[row.state].flicker === null,
+      `the ${row.state} row is treated as steady and its presentation has a flicker`,
+    )
+  }
+})
+
+test('the probe cannot be mistaken for the gallery, and cannot write into it', () => {
+  const gallery = new Set(capture.CAPTURE_IDS)
+  for (const id of capture.CREATURE_PROBE_IDS) {
+    assert.ok(!gallery.has(id), `${id} is both a gallery id and a probe id, so a probe run could overwrite an approved capture`)
+  }
+  assert.equal(capture.CAPTURE_IDS.length, 14, '§16.5 is fourteen captures, and the probe has not changed that')
+  // the gallery's own list is untouched by the probe existing at all: still
+  // §16.5's twelve, in the design's order, plus the responsive and pause views
+  // §16.5 says are captured IN ADDITION to the twelve rather than instead of them
+  assert.deepEqual(
+    [...capture.CAPTURE_IDS],
+    [...capture.TWELVE_CAPTURE_IDS, ...capture.EXTRA_CAPTURE_IDS],
+    'the fourteen are no longer §16.5\'s twelve plus two',
+  )
+  assert.equal(capture.EXTRA_CAPTURE_IDS.length, 2, '§16.5 adds exactly two views to the twelve, and a probe frame cannot be one of them')
+  // and `viewById` is the only lookup, so the page can reach a probe view and
+  // still resolve a gallery one
+  for (const id of capture.CAPTURE_IDS) assert.ok(capture.viewById(id), `viewById cannot resolve the gallery view ${id}`)
+  for (const id of capture.CREATURE_PROBE_IDS) assert.ok(capture.viewById(id), `viewById cannot resolve the probe view ${id}`)
+  assert.equal(capture.viewById('nope'), null, 'a typo resolves to a view')
+})
+
+test('every probe view is taken from the same stand-off, and the baseline is taken inside it', () => {
+  const S = capture.CREATURE_PROBE_STANDOFF
+  assert.ok(S.back > S.metres, 'the camera is closer to the lamp than the figure is, so the figure would be behind the lens')
+  assert.ok(S.metres >= 15, `${S.metres} m is inside the range where creatureContrast's side window is narrower than the figure's own shoulder`)
+  for (const view of capture.CREATURE_PROBE_VIEWS) {
+    const goto = view.steps.find((step) => step.op === 'goto')
+    assert.ok(goto, `${view.id} never positions the camera`)
+    assert.equal(goto.target, 'lamp', `${view.id} stands off something other than the lamp, so it is not in the same pool as the others`)
+    assert.equal(goto.back, S.back, `${view.id} stands ${goto.back} m back, not the table's ${S.back}`)
+    assert.equal(view.viewport.width, 1280, `${view.id} is not the gallery's width, so a metre is not the same size of pixel in it`)
+    assert.equal(view.viewport.height, 720, `${view.id} is not the gallery's height`)
+    // every step is a verb the interpreter knows — the same vocabulary the
+    // gallery's steps are held to
+    for (const step of view.steps) assert.ok(capture.CAPTURE_OPS.includes(step.op), `${view.id} has a step the interpreter cannot take: ${step.op}`)
+  }
+  // THE BASELINE IS NOT A VIEW, and that is the property the shimmer differential
+  // now rests on. BEFORE: a thirteenth view, `stalk` sample 1 with the `creature`
+  // step removed, run as a second page load — the same world only to the order of a
+  // frame, which at one level of luma is the whole measurement. AFTER: the same page
+  // removes the figure after the shutter, so the two frames differ by one object and
+  // nothing else. What is checkable here is that the view is GONE, and that the page
+  // still has the door it is taken through.
+  assert.equal(capture.probeView('creature-probe-control'), null, 'a control view is back, so the baseline is a second run of the steps again')
+  assert.equal(
+    capture.CREATURE_PROBE_IDS.filter((id) => id === 'creature-probe-control').length,
+    0,
+    'and it is in the id list the harness iterates',
+  )
+  // ...and it is a ROW SAMPLE or nothing. `probeRowOf` returning null used to mean
+  // "this is the control"; now it means a bug, and the harness says so.
+  for (const id of capture.CREATURE_PROBE_IDS) {
+    assert.ok(capture.probeRowOf(id), `${id} resolves to no row, so the probe has nothing to measure about it`)
+  }
+  const page = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+  assert.ok(/__captureBaseline/.test(page), 'the page cannot take a baseline, so the shimmer differential is a second run of the steps again')
+  assert.ok(/cancelAnimationFrame/.test(page), 'the baseline does not hold the render loop, so the world clock moves under the shutter')
+  assert.ok(/_writeLampDread\(null\)/.test(page), 'the baseline leaves the sodium pool drodded and pulsed, so it is not a world with nothing in it')
+  // ...and the loop is held ACROSS BOTH SHUTTERS, which is the whole of the fix.
+  // The version that held it only inside the baseline handed it straight back before
+  // that shutter, and the frame that came back was worth `world.js`'s own 0.05 s
+  // clamp every run — the delta it was handed was the second the software renderer
+  // had spent drawing the frame underneath it. Twelve of twelve rows failed the
+  // ceiling above with the same number to three places, which is the signature of a
+  // harness fault and not of a lamp dropout. ONE place on the page may re-arm the
+  // loop, and counting them is what stops a second one being added back inside the
+  // baseline, which is the only place it can hurt.
+  assert.equal(
+    (page.match(/requestAnimationFrame\(game\._animate\)/g) ?? []).length,
+    1,
+    'the page re-arms the world loop in more than one place, so the clock can be moving again before the baseline shutter',
+  )
+  assert.ok(
+    !/if \(options\.baseline/.test(page),
+    'the hold is conditional on the baseline, so a GALLERY frame is still photographed with the world running and its clock moving under the shutter',
+  )
+  assert.ok(
+    /drift: round\(game\.animTime - shutterTime\)/.test(page),
+    'the baseline measures its drift from when it was taken rather than from the frame it is a control for',
+  )
+  // ...and a control that came back BLACK cannot pass. The page draws the control and
+  // then waits one compositor frame for the canvas to reach the shutter, so a
+  // drawing buffer cleared before the shutter read it is a real failure of the fix —
+  // and a silent one, because a black frame resolves no creature and the shimmer
+  // differential measured against it comes back enormous and green.
+  const harness = readFileSync(new URL('./tools/capture.mjs', import.meta.url), 'utf8')
+  assert.ok(
+    /luma\(baselineShot\)/.test(harness),
+    'the control frame is never measured, so a black one passes as a street with nothing in it',
+  )
+  // ...and the report's own `band` and `spill` are MOVEMENTS — each box against
+  // itself between the two frames — rather than the difference of two boxes' levels.
+  // The curtain bands read about ten levels brighter than the reference boxes simply
+  // by where they are in the picture, so a `spill` computed as
+  // `reference - baseline` is a number about the picture's layout, and printing it
+  // as "the street's own light moving" is a claim about a region the light did not
+  // change in. The first probe report did exactly that, on all twelve frames.
+  assert.ok(
+    /band: Number\(shimmer\.band\.toFixed\(2\)\)/.test(harness) && /spill: Number\(shimmer\.spill\.toFixed\(2\)\)/.test(harness),
+    'the probe report records level differences as though they were movements',
+  )
+  // and the drift it does allow is bounded, because "the clock is held" is a claim
+  // and a claim with no number is a comment
+  assert.ok(capture.PROBE_BASELINE_MAX_DRIFT > 0, 'there is no bound on the clock movement between a frame and its baseline')
+  assert.ok(
+    capture.PROBE_BASELINE_MAX_DRIFT < 1 / beast.LAMP_DREAD_HZ,
+    `${capture.PROBE_BASELINE_MAX_DRIFT} s is longer than a lamp dropout tick (${(1 / beast.LAMP_DREAD_HZ).toFixed(3)} s), so one can land between the two frames`,
+  )
+  // ...and the figure is the ONLY difference between a row and its own baseline,
+  // which is what makes the shimmer a subtraction and not a comparison
+  for (const row of capture.CREATURE_PROBE_ROWS) {
+    const view = capture.CREATURE_PROBE_VIEWS.find((entry) => entry.row === row)
+    const placed = view.steps.filter((step) => step.op === 'creature')
+    assert.equal(placed.length, 1, `${row.state} places ${placed.length} creatures`)
+    assert.equal(placed[0].metres, S.metres, `the ${row.state} row stands the figure at ${placed[0].metres} m, not the table's ${S.metres}`)
+    assert.equal(placed[0].bearing, S.bearing, `the ${row.state} row is at bearing ${placed[0].bearing}, not the table's ${S.bearing}`)
+    assert.equal(placed[0].state, row.state, `the ${row.state} row's creature step stages ${placed[0].state}`)
+    // §8.1 rather than taste: a telegraph is Act I's apparition and Act I has
+    // no hammer; every other row is Act II and must be holding one
+    assert.equal(
+      view.steps.some((step) => step.op === 'takeHammer'),
+      row.hammer,
+      `the ${row.state} row's hammer disagrees with its own table row`,
+    )
+  }
+})
+
+test("a row's samples are not spaced by a whole number of its own flicker periods", () => {
+  // THE ALIASING PROPERTY, and the first version of this table had it exactly
+  // backwards: it spaced its samples by a whole number of the row's own flicker
+  // period and wrote in the comment that this was so "the samples see the row at more
+  // than one phase of itself". Crossing a period is the one spacing that sees the
+  // SAME phase. The telegraph's three samples were 0.972 of a period apart — 5 ms of
+  // phase — and the probe measured the consequence exactly: `pose.haze` 0.6966 /
+  // 0.6971 / 0.6940 on three samples, which is one sample taken three times, all of
+  // it inside the same trough of §6.1's beat, none of it with an eye to find.
+  //
+  // The property is phase-independent, which is why it can be gated here at all: if a
+  // step is not a whole number of periods then no two samples can land in the same
+  // place whatever the row's hashed `offset` is, and that is the whole claim. It does
+  // NOT promise that any particular sample is at the beat's crest — that depends on
+  // the offset, and `probeGates` gates each row's LOUDEST sample for it.
+  //
+  // `stagger` is excluded by name and on purpose, not by a second copy of its rate:
+  // its spacing is spent on §7.4's recoil, which is a different clock and the thing
+  // the row is there to sample. An exclusion that names the row and the reason is a
+  // decision; an exclusion keyed on a number is a second thing to keep in step.
+  const ALIASED = new Set(['stagger'])
+  for (const row of capture.CREATURE_PROBE_ROWS) {
+    const flicker = beast.CREATURE_PRESENTATION[row.state].flicker
+    if (!flicker || ALIASED.has(row.state)) continue
+    assert.ok(row.waits.length > 1, `${row.state} is sampled once, so it cannot be shown at more than one phase`)
+    const period = 1 / flicker.rate
+    for (let index = 1; index < row.waits.length; index += 1) {
+      const step = row.waits[index] - row.waits[index - 1]
+      const periods = step / period
+      const nearest = Math.round(periods)
+      assert.ok(
+        Math.abs(periods - nearest) > 0.05,
+        `${row.state} steps ${step.toFixed(3)} s between its samples, which is ${periods.toFixed(3)} of its ` +
+          `${flicker.rate} Hz period — ${Math.abs(1 - Math.abs(periods - nearest)) < 1e-9 ? 'a whole number of them' : 'within 5% of one'}, ` +
+          'so two of its samples land in the same phase of its own beat',
+      )
+    }
+  }
+  // ...and the telegraph's new spacing, spelled out, because the gate above is a
+  // property and this is the number it is about. 0.11 s against 0.1852 s.
+  const telegraph = capture.CREATURE_PROBE_ROWS.find((row) => row.state === 'telegraph')
+  assert.deepEqual(telegraph.waits, [0.1, 0.21, 0.32], 'the telegraph walks its own beat again')
+})
+
+test('the stagger row is staged with a live recoil clock, and only that row', () => {
+  // §7.4: `creatureStep` reads a spent `staggerSeconds` as a finished banish,
+  // puts the creature `dormant` and forgets it. A `stagger` with no clock is a
+  // photograph of a street with nothing in it, under a filename that says
+  // otherwise, and the `pose.staggerLeft` the report prints would be the number
+  // that caught it.
+  for (const row of capture.CREATURE_PROBE_ROWS) {
+    const view = capture.CREATURE_PROBE_VIEWS.find((entry) => entry.row === row)
+    const placed = view.steps.find((step) => step.op === 'creature')
+    assert.ok(
+      Object.hasOwn(placed, 'staggerSeconds'),
+      `the ${row.state} row's creature step has no staggerSeconds field, and a step whose shape depends on the row is two shapes to keep in step`,
+    )
+    if (row.state !== 'stagger') {
+      assert.equal(placed.staggerSeconds, 0, `the ${row.state} row carries a ${placed.staggerSeconds} s recoil clock it never reads`)
+      continue
+    }
+    assert.ok(
+      placed.staggerSeconds > 0 && placed.staggerSeconds < beast.STAGGER_SECONDS,
+      `the stagger row's ${placed.staggerSeconds} s clock is not inside §7.4's ${beast.STAGGER_SECONDS} s window`,
+    )
+    assert.ok(
+      beast.staggerRecoil({ state: 'stagger', staggerSeconds: placed.staggerSeconds }) > 0,
+      `a recoil clock of ${placed.staggerSeconds} s reads as no recoil at all, so the row would photograph an unthrown figure`,
+    )
+  }
+})
+
+test('the probe floors are floors, and the anchor tolerance separates the head from a window', () => {
+  const S = capture.CREATURE_PROBE_STANDOFF
+  // positive, and stated in the same units as the thing they gate
+  assert.ok(capture.PROBE_EYE_MARGIN >= 10, `PROBE_EYE_MARGIN is ${capture.PROBE_EYE_MARGIN}; a ten-level margin is a frame that passes by rounding, and this number is the pass-2 eye gate's`)
+  assert.equal(capture.PROBE_EYE_MARGIN, 10, 'the probe eye margin is not the same ten the gallery eye gate holds the three creature frames to')
+  assert.ok(capture.PROBE_SHIMMER_MIN > 0, 'a shimmer floor of 0 is satisfied by a haze that is not on the screen')
+  assert.ok(capture.PROBE_SHIMMER_MIN < 1, 'a shimmer floor above 1 luma is not a visibility claim, it is a brightness one')
+  assert.ok(capture.PROBE_FLICKER_SPREAD > 0 && capture.PROBE_FLICKER_SPREAD < 1, `PROBE_FLICKER_SPREAD is ${capture.PROBE_FLICKER_SPREAD}; a row has to be able to go quiet without going out`)
+  // the probe inherits the street's lit floor BY REFERENCE, so a probe frame can
+  // never be measured against a different world from the gallery
+  assert.equal(capture.PROBE_MIN_LIT, capture.CAPTURE_MIN_LIT, 'the probe has its own lit floor, and a lighting rig measured on a different world is measuring something else')
+  // THE ANCHOR, the tolerance that only exists because of this pass. The head the
+  // page projects is the head's own centre and the eye quad sits 3 cm above it,
+  // so the honest distance is that offset projected through the same lens the
+  // probe stands behind. It comes out under a pixel, which is the point: the
+  // tolerance has to clear the figure's own head-to-eye offset and nothing else,
+  // and a lit window in a house is two hundred pixels away.
+  const focal = 720 / 2 / Math.tan((72 * Math.PI) / 360)
+  const eyeOffsetPx = (0.03 * focal) / S.metres
+  assert.ok(
+    eyeOffsetPx < 2,
+    `the eye sits ${eyeOffsetPx.toFixed(2)} px above the projected head at ${S.metres} m, which no ${capture.PROBE_ANCHOR_MAX_PX} px tolerance has to accommodate`,
+  )
+  assert.ok(
+    capture.PROBE_ANCHOR_MAX_PX <= 24,
+    `PROBE_ANCHOR_MAX_PX is ${capture.PROBE_ANCHOR_MAX_PX}, which is loose enough for the impostor it exists to reject (a lit house window, 200 px away)`,
+  )
+  // and it is loose enough for the thing it must accept: `lean` swings the
+  // crown, §6.1's edge-of-vision roll turns the head, and the eye is a quad
+  // whose own span is up to EYE_MAX_SPAN across
+  assert.ok(
+    capture.PROBE_ANCHOR_MAX_PX > EYE_MAX_SPAN,
+    `PROBE_ANCHOR_MAX_PX (${capture.PROBE_ANCHOR_MAX_PX}) is tighter than EYE_MAX_SPAN (${EYE_MAX_SPAN}), so a correctly-found eye can be rejected for being a whole eye away from the head's centre`,
+  )
+})
+
+test('a flickering row really goes quiet, over a whole period and not over three frames', () => {
+  // The claim this file used to delegate to the probe, and cannot. `PROBE_FLICKER_SPREAD`
+  // was a ratio between the loudest and quietest of three sampled frames, and pass 15's
+  // first probe run is what proved it cannot be done that way: all three `telegraph`
+  // samples landed inside one trough of `apparitionFlicker` and a row that flickers
+  // correctly read as one that never goes quiet. A gate that can only be passed by
+  // sampling luck is a gate on the sampler, so the claim moved here, where the whole
+  // period is free.
+  //
+  // The beat's period is not a constant this file can read out of the table — the
+  // flicker is `apparitionFlicker`, two incommensurable sines — so the window is
+  // generous by design: four seconds covers `telegraph`'s 5.4 Hz and 13.7 Hz terms
+  // several times over, and a slower beat than that would be a pulse a player could
+  // time, which §6.1 forbids and which the test above already holds against.
+  for (const state of capture.PROBE_FLICKER_ROWS) {
+    const row = beast.presentationFor(state)
+    let peakEye = 0
+    let quietEye = Infinity
+    let peakPresence = 0
+    let quietPresence = Infinity
+    // dips are counted on BOTH channels, because they are not the same channel: a
+    // row whose `eye` column clamps to 1 (§7.4's stagger, at 1.2) is pinned at the
+    // clamp for most of its beat, and its only visible motion is in the body
+    const dips = { eye: 0, presence: 0 }
+    let lastEye = Infinity
+    let lastPresence = Infinity
+    for (let t = 0; t < 4; t += 1 / 240) {
+      const pose = beast.creaturePose({ state }, { time: t, distance: 17, sinceSpot: null })
+      peakEye = Math.max(peakEye, pose.eye)
+      quietEye = Math.min(quietEye, pose.eye)
+      peakPresence = Math.max(peakPresence, pose.presence)
+      quietPresence = Math.min(quietPresence, pose.presence)
+      if (pose.eye < lastEye) dips.eye += 1
+      if (pose.presence < lastPresence) dips.presence += 1
+      lastEye = pose.eye
+      lastPresence = pose.presence
+    }
+    assert.ok(peakEye > 0, `the ${state} row's eye never comes on`)
+    assert.ok(
+      dips.eye + dips.presence > 20,
+      `the ${state} row's beat dips ${dips.eye} times in the eye and ${dips.presence} in the body over four seconds, so the beat is not running`,
+    )
+    assert.ok(peakPresence > 0 && quietPresence > 0, `the ${state} row's body leaves the frame entirely at some phase`)
+    // WHAT THE BEAT IS FOR, read out of the row's own floor — and this is the second
+    // thing the probe's spread gate got wrong, after the sampling. The two rows it
+    // asked to "go quiet" are not asking for the same thing. §6.1's telegraph is "a
+    // thing that is there, then is not, then is", so its floor is 0.06 and its eye has
+    // to fall to nothing. §7.4's stagger is "a bolt of pain, not the slow uncertainty
+    // of a telegraph": its floor is 0.45, its eye column is 1.2 and clamps to 1 in
+    // every phase of the beat, and its whole tell is a 1.2x dip in the BODY. Asking a
+    // bolt of pain to go dark is asking §7.4 to become §6.1.
+    //
+    // So the gate is conditional on the row's own floor, and BOTH branches are claims:
+    // a deep floor must vanish, and a shallow one must not. A retune that turned
+    // §7.4's stagger into an apparition, or §6.1's apparition into a solid figure,
+    // fails here rather than passing by being a different row.
+    if (row.flicker.floor <= 0.1) {
+      // PREDICTED FIRST, because a check that samples cannot be wrong about luck
+      // while a check that reads the table cannot be wrong about the table. `floor`
+      // is a floor on the beat's own `g`, and `depth` is how far above that floor
+      // the beat can never go: with `f` at 0 the beat is `1 - depth`, so the
+      // reachable minimum of the eye is `eye · (floor + (1 - floor)(1 - depth))`.
+      // For the telegraph that is 0.6 · (0.06 + 0.94 · 0.38) = 0.25, against a
+      // peak of 0.6: the apparition's eye falls to 0.42 of itself, and the floor
+      // says 0.06, which is a gap worth holding open because it is the difference
+      // between §6.1's claim and a row that is merely dim.
+      const reachable = row.eye * (row.flicker.floor + (1 - row.flicker.floor) * (1 - row.flicker.depth))
+      assert.ok(
+        reachable / row.eye <= capture.PROBE_FLICKER_SPREAD,
+        `the ${state} row's floor (${row.flicker.floor}) and depth (${row.flicker.depth}) put its quietest possible eye at ` +
+          `${(reachable / row.eye).toFixed(3)} of its peak, over the ${capture.PROBE_FLICKER_SPREAD} spread — the table cannot produce an absence`,
+      )
+      assert.ok(
+        quietEye / peakEye <= capture.PROBE_FLICKER_SPREAD,
+        `the ${state} row's floor is ${row.flicker.floor}, so its beat is an absence, and its quietest eye is ` +
+          `${(quietEye / peakEye).toFixed(3)} of its own peak — over the ${capture.PROBE_FLICKER_SPREAD} spread, so it is dim rather than flickering`,
+      )
+      // ...and the spread has to be a BEAT and not a fade. Both the peak and the
+      // trough have to be there: a row whose eye rose for four seconds and never
+      // came back would satisfy the ratio above at t = 0 with a quiet of 0.
+      assert.ok(
+        peakEye > quietEye * 2,
+        `the ${state} row's eye moves by a factor of ${(peakEye / quietEye).toFixed(2)} across its beat, which is a step rather than a flicker`,
+      )
+      assert.ok(
+        quietEye >= reachable - 1e-9,
+        `the ${state} row's quietest eye is ${quietEye.toFixed(3)} and its table's own floor says ${reachable.toFixed(3)} — the beat went below the row is built to go`,
+      )
+    } else {
+      assert.ok(
+        quietEye / peakEye > capture.PROBE_FLICKER_SPREAD,
+        `the ${state} row's floor is ${row.flicker.floor} — a bolt, not an absence — and its quietest eye is ` +
+          `${(quietEye / peakEye).toFixed(3)} of its own peak, so it has started going dark`,
+      )
+      // the body is where a bolt of pain is visible, and it has to actually move
+      assert.ok(
+        quietPresence / peakPresence < 0.95,
+        `the ${state} row's body dips by ${((1 - quietPresence / peakPresence) * 100).toFixed(0)}% at the bottom of its beat, which is not visible`,
+      )
+      // ...and the same beat-not-a-fade claim on the channel that carries it, for the
+      // reason above: this row's `eye` column is 1.2 and clamps to 1 in every phase,
+      // so the eye is a flat line and the body is the beat
+      assert.ok(
+        peakPresence > quietPresence * 1.1,
+        `the ${state} row's body moves by a factor of ${(peakPresence / quietPresence).toFixed(2)} across its beat, which is a step rather than a flicker`,
+      )
+    }
+    if (state === 'telegraph') {
+      // ITERATION 2, PASS 15. The apparition's BODY beat is the one thing this pass
+      // changed, and the claim is that it is a beat in the same sense and not a
+      // removal: pass 1's lighter fog put a 0.3-alpha near-black body at 0.90 of its
+      // own background, so `bodyFloor` 0.82 holds the figure's edge in the fog through
+      // the whole beat. The number is not taste — §12.1's hole is 0.62 of the local
+      // surround and the probe measured that surround at luma 78.8 against an opaque
+      // body of 24.6, which puts the alpha a 0.62 ratio needs at 0.56.
+      const floor = row.flicker.bodyFloor
+      assert.ok(Number.isFinite(floor), 'the telegraph row has no bodyFloor, so its body runs the same beat as its eye and washes out of the fog again')
+      assert.ok(floor > row.flicker.floor, `the telegraph's bodyFloor (${floor}) is not above its eye floor (${row.flicker.floor}), so the two halves of its beat do not disagree`)
+      assert.ok(
+        row.presence * floor >= 0.56,
+        `the telegraph's dimmest body is ${(row.presence * floor).toFixed(3)} of the figure, and §12.1's hole in this fog needs 0.56 — it washes out again at the bottom of its beat`,
+      )
+      // ...while the eye still goes all the way down, which is the whole of §6.1
+      assert.ok(
+        row.eye * row.flicker.floor < 0.06,
+        `the telegraph's quietest eye is ${(row.eye * row.flicker.floor).toFixed(3)}, which is not "gone when you look back"`,
+      )
+      // and a row with no bodyFloor gets its floor for both, which is what §7.4's
+      // stagger still wants and is the other half of the split
+      const stagger = beast.presentationFor('stagger')
+      const deep = beast.creaturePose({ state: 'stagger', staggerSeconds: beast.STAGGER_SECONDS }, { time: 0, distance: 17 })
+      assert.ok(
+        deep.presence < stagger.presence,
+        "a staggering figure's body no longer dips with its eye, so §7.4's bolt of pain is a steady pose",
+      )
+    }
+  }
+  // ...and the rows that are not in the flicker set are steady, so the pure gate and
+  // the probe's sampling are describing the same five rows.
+  for (const row of capture.CREATURE_PROBE_ROWS) {
+    if (capture.PROBE_FLICKER_ROWS.includes(row.state)) continue
+    const first = beast.creaturePose({ state: row.state }, { time: 1.7, distance: 17 })
+    const second = beast.creaturePose({ state: row.state }, { time: 2.9, distance: 17 })
+    assert.equal(first.eye, second.eye, `the ${row.state} row is treated as steady and its eye moves between two instants`)
+    assert.equal(first.presence, second.presence, `the ${row.state} row is treated as steady and its presence moves between two instants`)
+  }
+})
+
+test('the shimmer boxes are the shimmer, and the reference is clear of it', () => {
+  // BEFORE pass 15 this check read `PROBE_BAND_INNER` 0.65 and `PROBE_BAND_OUTER`
+  // 0.95 as fractions of `HAZE_HALF_WIDTH` and asserted they landed at 0.40 and
+  // 0.59 m. Both numbers are gone, and this is the replacement for the property
+  // they were standing in for: the boxes are no longer fractions of a constant at
+  // all, they are the radii of the band the frame actually drew, so the thing to
+  // check is that the REFERENCE cannot see any band — on any row, of any state, at
+  // any scale the table can reach.
+  const widest = Math.max(
+    ...beast.PRESENTATION_STATES.map((state) => {
+      const { scale } = beast.presentationFor(state)
+      return Math.max(...beast.hazeLayers({ time: 0, offset: 0, amount: 1, scale }).map((layer) => layer.halfWidth))
+    }),
+  )
+  assert.ok(
+    capture.PROBE_REFERENCE_INNER > widest,
+    `the reference starts at ${capture.PROBE_REFERENCE_INNER} m and the widest band the table can draw reaches ${widest.toFixed(3)} m, so the reference is measuring shimmer`,
+  )
+  // ...and it is not so far out that it has left the pool. A reference that is on the
+  // kerb instead of in the fog is not a control for the band, it is a control for
+  // something else entirely, and the honest way to hold that is against the picture:
+  // at the stand-off and the scale the probe measured, the reference is 39-54 px off
+  // the axis, which is the background the band is standing in front of.
+  const pxPerMetre = 30.1113
+  const off = capture.PROBE_REFERENCE_INNER * pxPerMetre
+  assert.ok(off > 20, `the reference is ${off.toFixed(1)} px off the axis, which is inside the figure's own shoulder`)
+  assert.ok(off < 200, `the reference is ${off.toFixed(1)} px off the axis, which at 1280 wide is a different part of the picture`)
+  assert.ok(capture.PROBE_REFERENCE_OUTER > capture.PROBE_REFERENCE_INNER, 'the reference is inside out')
+  // five rows either side of the head's row: enough to average, few enough that
+  // the trail at the feet cannot leak in
+  assert.equal(capture.PROBE_BAND_ROWS, 2, `PROBE_BAND_ROWS is ${capture.PROBE_BAND_ROWS}`)
+  assert.ok(capture.PROBE_BAND_ROWS * 2 + 1 >= 3, 'a one-row box is the shimmer band\'s own edge and not its middle')
+  // ...and the boxes themselves are read off the drawn geometry rather than computed
+  // here, which is the property the first version got wrong twice.
+  assert.equal(capture.PROBE_BAND_INNER, undefined, 'a band fraction is back, so the boxes are a guess again')
+  assert.equal(capture.PROBE_BAND_OUTER, undefined, 'a band fraction is back, so the boxes are a guess again')
+  const view = readFileSync(new URL('./src/game/creatureView.js', import.meta.url), 'utf8')
+  assert.ok(/this\.hazeLayers = layers\.map/.test(view), 'the view no longer keeps the bands it drew, so the probe has to re-derive them')
+})
+
+test('the page projects the head the probe is measured against, and the two agree on the module', () => {
+  // `where()` in `capture/main.jsx` is what makes the anchor checkable at all,
+  // and it is browser code, so it is read as text here for the same reason
+  // `skyView.js` is (§15.1's seam): node cannot run it, and a claim about a
+  // function nobody can call is a claim about a comment.
+  const source = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+  assert.ok(/function where\(/.test(source), 'capture/main.jsx no longer projects the head; PROBE_ANCHOR_MAX_PX has nothing to compare against')
+  assert.ok(/getWorldPosition/.test(source), 'the head position is no longer read off the scene graph it was drawn in')
+  assert.ok(/pxPerMetre/.test(source), 'a metre is no longer turned into pixels off the real camera, so the shimmer bands would be a fixed guess')
+  // and the page resolves a probe view, which it could not before this pass
+  assert.ok(/viewById/.test(source), 'the page still looks views up in the gallery alone, so a probe view cannot be run')
+  // the snapshot carries the three fields the measurement cannot be read
+  // without. Named explicitly because each one answers a question the probe
+  // asks: WHERE the head landed (the anchor), HOW BIG a metre is (the bands),
+  // and WHAT POSE was drawn (whether the eye was asked for at all).
+  for (const field of ['pose:', 'where:', 'poseReport', 'round(']) {
+    assert.ok(source.includes(field), `the capture snapshot is missing ${field}, and the probe reads it`)
+  }
+  // the pose record itself has to carry the eye's own numbers, or "the eye
+  // cleared the floor" and "the eye was asked for at 0.8" stay two unrelated
+  // claims
+  for (const field of ['eye:', 'presence:', 'present:', 'staggerLeft:']) {
+    assert.ok(source.includes(field), `poseReport() does not report ${field}, so the probe cannot say what the frame was asked for`)
+  }
 })
 
 // PASS12_SECTION

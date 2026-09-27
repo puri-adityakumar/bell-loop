@@ -3,6 +3,7 @@
   "design": "GAMEDESIGN.md §16.5",
   "module": "src/game/capture.js",
   "seed": 1337,
+  "mode": "gallery",
   "lumaFloor": 0.06,
   "viewport": {
     "width": 1280,
@@ -12,8 +13,8 @@
   "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.57 Safari/537.36",
   "browser": "HeadlessChrome/154.0.8037.57",
   "node": "v26.7.0",
-  "started": "2026-09-27T12:20:54.965Z",
-  "ms": 713472,
+  "started": "2026-09-27T19:43:56.574Z",
+  "ms": 651873,
   "captured": 14,
   "failed": 0,
   "captures": [
@@ -27,9 +28,9 @@
       "file": "benchmark/screenshots/title.png",
       "minLit": 0.035,
       "luma": {
-        "lit": 0.47955729166666666,
-        "litPct": 47.96,
-        "mean": 37.258,
+        "lit": 0.4798133680555556,
+        "litPct": 47.98,
+        "mean": 36.986,
         "max": 205
       },
       "furniture": {
@@ -37,7 +38,7 @@
         "onScreen": 131,
         "legible": 3,
         "kinds": 2,
-        "nearest": 64.44,
+        "nearest": 64.47,
         "byKind": {
           "dumpster": {
             "pieces": 12,
@@ -52,7 +53,7 @@
           "vending": {
             "pieces": 12,
             "legible": 1,
-            "maxPx": 3.22
+            "maxPx": 3.21
           },
           "shelter": {
             "pieces": 4,
@@ -85,10 +86,11 @@
           "height": 720
         },
         "steps": 2,
-        "ms": 6756,
+        "ms": 5025,
         "phase": "start",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 2.3667,
         "loop": 1,
         "portals": {
           "A": false,
@@ -100,6 +102,38 @@
         "hold": 0,
         "creature": "telegraph",
         "awareness": 0,
+        "pose": {
+          "state": "telegraph",
+          "present": true,
+          "scale": 0.88,
+          "presence": 0.6963,
+          "eye": 0.2638,
+          "eyeSize": 2.9308,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 423.2355,
+            "y": 368.3818,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 2.6072,
+            "y": 2.6072
+          },
+          "metres": 207.4617,
+          "visible": true,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -108,7 +142,7 @@
           "onScreen": 131,
           "legible": 3,
           "kinds": 2,
-          "nearest": 64.44,
+          "nearest": 64.47,
           "byKind": {
             "dumpster": {
               "pieces": 12,
@@ -123,7 +157,7 @@
             "vending": {
               "pieces": 12,
               "legible": 1,
-              "maxPx": 3.22
+              "maxPx": 3.21
             },
             "shelter": {
               "pieces": 4,
@@ -148,7 +182,7 @@
           }
         }
       },
-      "ms": 6756
+      "ms": 5025
     },
     {
       "id": "street",
@@ -160,9 +194,9 @@
       "file": "benchmark/screenshots/street.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8657400173611111,
-        "litPct": 86.57,
-        "mean": 81.787,
+        "lit": 0.8559548611111111,
+        "litPct": 85.6,
+        "mean": 81.403,
         "max": 249
       },
       "furniture": {
@@ -218,10 +252,11 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 17129,
+        "ms": 12339,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 2.65,
         "loop": 1,
         "portals": {
           "A": false,
@@ -233,6 +268,38 @@
         "hold": 0,
         "creature": "dormant",
         "awareness": 0,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 1.1977,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 1421.4454,
+            "y": 368.2594,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 10.914,
+            "y": 10.914
+          },
+          "metres": 84.7838,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -281,7 +348,7 @@
           }
         }
       },
-      "ms": 17129
+      "ms": 12339
     },
     {
       "id": "hammer-located",
@@ -293,10 +360,10 @@
       "file": "benchmark/screenshots/hammer-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.22731770833333334,
-        "litPct": 22.73,
-        "mean": 45.081,
-        "max": 237
+        "lit": 0.23021701388888888,
+        "litPct": 23.02,
+        "mean": 46.567,
+        "max": 238
       },
       "furniture": {
         "pools": 8,
@@ -351,10 +418,11 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 20921,
+        "ms": 13064,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 2.7,
         "loop": 1,
         "portals": {
           "A": false,
@@ -366,6 +434,38 @@
         "hold": 0,
         "creature": "telegraph",
         "awareness": 0,
+        "pose": {
+          "state": "telegraph",
+          "present": true,
+          "scale": 0.88,
+          "presence": 0.7575,
+          "eye": 0.5097,
+          "eyeSize": 2.8391,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 981.3095,
+            "y": 357.7731,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 2.9939,
+            "y": 2.9939
+          },
+          "metres": 200.9647,
+          "visible": true,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -414,7 +514,7 @@
           }
         }
       },
-      "ms": 20921
+      "ms": 13064
     },
     {
       "id": "hammer-awakening",
@@ -426,10 +526,10 @@
       "file": "benchmark/screenshots/hammer-awakening.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.21397352430555555,
-        "litPct": 21.4,
-        "mean": 45.686,
-        "max": 235
+        "lit": 0.2114453125,
+        "litPct": 21.14,
+        "mean": 44.753,
+        "max": 236
       },
       "furniture": {
         "pools": 8,
@@ -484,10 +584,11 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 36056,
+        "ms": 36811,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 3.8667,
         "loop": 1,
         "portals": {
           "A": false,
@@ -499,6 +600,38 @@
         "hold": 0,
         "creature": "dormant",
         "awareness": 0,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 2.7754,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": -394.351,
+            "y": 357.6599,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 3.0969,
+            "y": 3.0969
+          },
+          "metres": 370.3466,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -547,7 +680,7 @@
           }
         }
       },
-      "ms": 36056
+      "ms": 36811
     },
     {
       "id": "portal-located",
@@ -559,10 +692,10 @@
       "file": "benchmark/screenshots/portal-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.41400607638888887,
-        "litPct": 41.4,
-        "mean": 55.615,
-        "max": 219
+        "lit": 0.412890625,
+        "litPct": 41.29,
+        "mean": 55.387,
+        "max": 218
       },
       "furniture": {
         "pools": 8,
@@ -617,10 +750,11 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 22079,
+        "ms": 16886,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 2.7,
         "loop": 1,
         "portals": {
           "A": false,
@@ -632,6 +766,38 @@
         "hold": 0,
         "creature": "dormant",
         "awareness": 0,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 2.2057,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 595.3893,
+            "y": 362.4053,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 3.1865,
+            "y": 3.1865
+          },
+          "metres": 156.1308,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -680,7 +846,7 @@
           }
         }
       },
-      "ms": 22079
+      "ms": 16886
     },
     {
       "id": "portal-shutdown",
@@ -692,9 +858,9 @@
       "file": "benchmark/screenshots/portal-shutdown.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8861588541666666,
-        "litPct": 88.62,
-        "mean": 32.951,
+        "lit": 0.8867903645833334,
+        "litPct": 88.68,
+        "mean": 33.05,
         "max": 189
       },
       "furniture": {
@@ -750,10 +916,11 @@
           "height": 720
         },
         "steps": 3,
-        "ms": 26266,
+        "ms": 25420,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 2.7667,
         "loop": 1,
         "portals": {
           "A": false,
@@ -765,6 +932,38 @@
         "hold": 0.556,
         "creature": "dormant",
         "awareness": 0,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 2.238,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 596.0395,
+            "y": 362.3734,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 3.14,
+            "y": 3.14
+          },
+          "metres": 158.4216,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -813,7 +1012,7 @@
           }
         }
       },
-      "ms": 26266
+      "ms": 25420
     },
     {
       "id": "creature-stalking",
@@ -825,10 +1024,10 @@
       "file": "benchmark/screenshots/creature-stalking.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.28388671875,
-        "litPct": 28.39,
-        "mean": 46.068,
-        "max": 253
+        "lit": 0.24601996527777778,
+        "litPct": 24.6,
+        "mean": 46.108,
+        "max": 252
       },
       "furniture": {
         "pools": 8,
@@ -883,10 +1082,11 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 27104,
+        "ms": 47390,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 3.8667,
         "loop": 1,
         "portals": {
           "A": false,
@@ -898,6 +1098,79 @@
         "hold": 0,
         "creature": "stalk",
         "awareness": 0.382,
+        "pose": {
+          "state": "stalk",
+          "present": true,
+          "scale": 0.96,
+          "presence": 0.62,
+          "eye": 0.8,
+          "eyeSize": 0.2226,
+          "eyeFlare": 0,
+          "haze": 0.62,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 2
+        },
+        "where": {
+          "head": {
+            "x": 594.5117,
+            "y": 332.3444,
+            "depth": -303.2422
+          },
+          "pxPerMetre": {
+            "x": 31.277,
+            "y": 31.277
+          },
+          "metres": 15.9334,
+          "visible": true,
+          "column": {
+            "on": true,
+            "axis": {
+              "x": -314.0467,
+              "z": -303.067
+            },
+            "headRow": 332.3444,
+            "rows": {
+              "y0": 330.3444,
+              "y1": 334.3444
+            },
+            "band": {
+              "y": 2.3875,
+              "inner": 0.4071,
+              "outer": 0.6785
+            },
+            "widest": 0.7341,
+            "haze": 0.62
+          },
+          "curtain": [
+            {
+              "x0": 566.4615,
+              "x1": 575.0453,
+              "y0": 330.3444,
+              "y1": 334.3444
+            },
+            {
+              "x0": 600.7969,
+              "x1": 609.3808,
+              "y0": 330.3444,
+              "y1": 334.3444
+            }
+          ],
+          "reference": [
+            {
+              "x0": 530.993,
+              "x1": 546.8063,
+              "y0": 330.3444,
+              "y1": 334.3444
+            },
+            {
+              "x0": 629.0359,
+              "x1": 644.8493,
+              "y0": 330.3444,
+              "y1": 334.3444
+            }
+          ]
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -946,7 +1219,7 @@
           }
         }
       },
-      "ms": 27104
+      "ms": 47390
     },
     {
       "id": "creature-chasing",
@@ -958,9 +1231,9 @@
       "file": "benchmark/screenshots/creature-chasing.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8411458333333334,
-        "litPct": 84.11,
-        "mean": 48.551,
+        "lit": 0.8343489583333333,
+        "litPct": 83.43,
+        "mean": 46.992,
         "max": 250
       },
       "furniture": {
@@ -1016,10 +1289,11 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 37322,
+        "ms": 40135,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 4.8167,
         "loop": 1,
         "portals": {
           "A": false,
@@ -1031,6 +1305,79 @@
         "hold": 0,
         "creature": "chase",
         "awareness": 0.83,
+        "pose": {
+          "state": "chase",
+          "present": true,
+          "scale": 1.04,
+          "presence": 0.9705,
+          "eye": 1,
+          "eyeSize": 0.091,
+          "eyeFlare": 0,
+          "haze": 0.9705,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 6
+        },
+        "where": {
+          "head": {
+            "x": 605.3514,
+            "y": 277.7784,
+            "depth": -326.5692
+          },
+          "pxPerMetre": {
+            "x": 75.4277,
+            "y": 75.4277
+          },
+          "metres": 6.6748,
+          "visible": true,
+          "column": {
+            "on": true,
+            "axis": {
+              "x": -320.4104,
+              "z": -325.869
+            },
+            "headRow": 277.7784,
+            "rows": {
+              "y0": 275.7784,
+              "y1": 279.7784
+            },
+            "band": {
+              "y": 2.3875,
+              "inner": 0.441,
+              "outer": 0.7351
+            },
+            "widest": 0.7953,
+            "haze": 0.9705
+          },
+          "curtain": [
+            {
+              "x0": 543.2921,
+              "x1": 568.1158,
+              "y0": 275.7784,
+              "y1": 279.7784
+            },
+            {
+              "x0": 642.587,
+              "x1": 667.4108,
+              "y0": 275.7784,
+              "y1": 279.7784
+            }
+          ],
+          "reference": [
+            {
+              "x0": 453.3843,
+              "x1": 495.5974,
+              "y0": 275.7784,
+              "y1": 279.7784
+            },
+            {
+              "x0": 715.1055,
+              "x1": 757.3186,
+              "y0": 275.7784,
+              "y1": 279.7784
+            }
+          ]
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -1079,7 +1426,7 @@
           }
         }
       },
-      "ms": 37322
+      "ms": 40135
     },
     {
       "id": "banish",
@@ -1091,10 +1438,10 @@
       "file": "benchmark/screenshots/banish.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.7757834201388889,
-        "litPct": 77.58,
-        "mean": 71.083,
-        "max": 245
+        "lit": 0.7773502604166667,
+        "litPct": 77.74,
+        "mean": 73.807,
+        "max": 243
       },
       "furniture": {
         "pools": 8,
@@ -1149,10 +1496,11 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 31971,
+        "ms": 39624,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 4.0167,
         "loop": 1,
         "portals": {
           "A": false,
@@ -1164,6 +1512,79 @@
         "hold": 0,
         "creature": "stagger",
         "awareness": 0.576,
+        "pose": {
+          "state": "stagger",
+          "present": true,
+          "scale": 1,
+          "presence": 0.7098,
+          "eye": 1,
+          "eyeSize": 0.091,
+          "eyeFlare": 0,
+          "haze": 0.7098,
+          "redden": 0,
+          "staggerLeft": 0.8833,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 570.3624,
+            "y": -445.7789,
+            "depth": -302.078
+          },
+          "pxPerMetre": {
+            "x": 730.8451,
+            "y": 730.8451
+          },
+          "metres": 1.2978,
+          "visible": true,
+          "column": {
+            "on": true,
+            "axis": {
+              "x": -312.6644,
+              "z": -303.2815
+            },
+            "headRow": -445.7789,
+            "rows": {
+              "y0": -447.7789,
+              "y1": -443.7789
+            },
+            "band": {
+              "y": 2.3875,
+              "inner": 0.4241,
+              "outer": 0.7068
+            },
+            "widest": 0.7647,
+            "haze": 0.7098
+          },
+          "curtain": [
+            {
+              "x0": 384.2258,
+              "x1": 458.6804,
+              "y0": -447.7789,
+              "y1": -443.7789
+            },
+            {
+              "x0": 682.0443,
+              "x1": 756.4989,
+              "y0": -447.7789,
+              "y1": -443.7789
+            }
+          ],
+          "reference": [
+            {
+              "x0": 96.3304,
+              "x1": 228.006,
+              "y0": -447.7789,
+              "y1": -443.7789
+            },
+            {
+              "x0": 912.7188,
+              "x1": 1044.3943,
+              "y0": -447.7789,
+              "y1": -443.7789
+            }
+          ]
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 1,
@@ -1212,7 +1633,7 @@
           }
         }
       },
-      "ms": 31971
+      "ms": 39624
     },
     {
       "id": "capture-reset",
@@ -1224,9 +1645,9 @@
       "file": "benchmark/screenshots/capture-reset.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8401106770833333,
-        "litPct": 84.01,
-        "mean": 79.039,
+        "lit": 0.8561046006944445,
+        "litPct": 85.61,
+        "mean": 80.875,
         "max": 249
       },
       "furniture": {
@@ -1282,10 +1703,11 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 78932,
+        "ms": 39303,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 5.1167,
         "loop": 2,
         "portals": {
           "A": false,
@@ -1297,6 +1719,38 @@
         "hold": 0,
         "creature": "stalk",
         "awareness": 0,
+        "pose": {
+          "state": "stalk",
+          "present": true,
+          "scale": 0.96,
+          "presence": 0.62,
+          "eye": 0.8,
+          "eyeSize": 1.1829,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 2
+        },
+        "where": {
+          "head": {
+            "x": 1442.8472,
+            "y": 362.9659,
+            "depth": -257.3336
+          },
+          "pxPerMetre": {
+            "x": 11.2443,
+            "y": 11.2443
+          },
+          "metres": 83.9041,
+          "visible": true,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -1345,7 +1799,7 @@
           }
         }
       },
-      "ms": 78932
+      "ms": 39303
     },
     {
       "id": "finale-headlights",
@@ -1357,10 +1811,10 @@
       "file": "benchmark/screenshots/finale-headlights.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9497699652777778,
-        "litPct": 94.98,
-        "mean": 43.899,
-        "max": 245
+        "lit": 0.9504644097222222,
+        "litPct": 95.05,
+        "mean": 44.79,
+        "max": 243
       },
       "furniture": {
         "pools": 8,
@@ -1415,10 +1869,11 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 88461,
+        "ms": 90961,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 7.65,
         "loop": 1,
         "portals": {
           "A": true,
@@ -1430,6 +1885,38 @@
         "hold": 0,
         "creature": "enraged",
         "awareness": 1,
+        "pose": {
+          "state": "enraged",
+          "present": true,
+          "scale": 1.08,
+          "presence": 1,
+          "eye": 1,
+          "eyeSize": 2.8759,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 1,
+          "staggerLeft": 0,
+          "puffs": 10
+        },
+        "where": {
+          "head": {
+            "x": 2932.8858,
+            "y": 348.1825,
+            "depth": -192.2007
+          },
+          "pxPerMetre": {
+            "x": 11.4697,
+            "y": 11.4697
+          },
+          "metres": 204.5259,
+          "visible": true,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 1,
         "fade": 0,
         "banished": 0,
@@ -1478,7 +1965,7 @@
           }
         }
       },
-      "ms": 88461
+      "ms": 90961
     },
     {
       "id": "win",
@@ -1490,9 +1977,9 @@
       "file": "benchmark/screenshots/win.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.101953125,
-        "litPct": 10.2,
-        "mean": 15.855,
+        "lit": 0.09828342013888888,
+        "litPct": 9.83,
+        "mean": 15.911,
         "max": 196
       },
       "furniture": {
@@ -1548,10 +2035,11 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 96298,
+        "ms": 84884,
         "phase": "won",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 7.25,
         "loop": 1,
         "portals": {
           "A": true,
@@ -1563,6 +2051,38 @@
         "hold": 0,
         "creature": "enraged",
         "awareness": 1,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 0.091,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 3
+        },
+        "where": {
+          "head": {
+            "x": 3869.6091,
+            "y": 343.1544,
+            "depth": -191.4618
+          },
+          "pxPerMetre": {
+            "x": 15.7492,
+            "y": 15.7492
+          },
+          "metres": 207.4676,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 1,
         "fade": 0.6,
         "banished": 0,
@@ -1611,7 +2131,7 @@
           }
         }
       },
-      "ms": 96298
+      "ms": 84884
     },
     {
       "id": "responsive",
@@ -1623,9 +2143,9 @@
       "file": "benchmark/screenshots/responsive.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9300497658079625,
-        "litPct": 93,
-        "mean": 63.827,
+        "lit": 0.9303327478532396,
+        "litPct": 93.03,
+        "mean": 64.552,
         "max": 249
       },
       "furniture": {
@@ -1681,10 +2201,11 @@
           "height": 854
         },
         "steps": 4,
-        "ms": 14915,
+        "ms": 19478,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
+        "shutterTime": 2.55,
         "loop": 1,
         "portals": {
           "A": false,
@@ -1696,6 +2217,38 @@
         "hold": 0,
         "creature": "dormant",
         "awareness": 0,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 1.1977,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 1166.8811,
+            "y": 436.7818,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 12.9453,
+            "y": 12.9453
+          },
+          "metres": 84.7838,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -1744,7 +2297,7 @@
           }
         }
       },
-      "ms": 14915
+      "ms": 19478
     },
     {
       "id": "pause",
@@ -1756,9 +2309,9 @@
       "file": "benchmark/screenshots/pause.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.677265625,
-        "litPct": 67.73,
-        "mean": 46.299,
+        "lit": 0.680078125,
+        "litPct": 68.01,
+        "mean": 47.222,
         "max": 196
       },
       "furniture": {
@@ -1814,10 +2367,11 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 19931,
+        "ms": 20672,
         "phase": "playing",
         "paused": true,
         "simFrozen": true,
+        "shutterTime": 2.4,
         "loop": 1,
         "portals": {
           "A": false,
@@ -1829,6 +2383,38 @@
         "hold": 0,
         "creature": "dormant",
         "awareness": 0,
+        "pose": {
+          "state": "dormant",
+          "present": false,
+          "scale": 1,
+          "presence": 0,
+          "eye": 0,
+          "eyeSize": 1.1977,
+          "eyeFlare": 0,
+          "haze": 0,
+          "redden": 0,
+          "staggerLeft": 0,
+          "puffs": 0
+        },
+        "where": {
+          "head": {
+            "x": 1421.4454,
+            "y": 368.2469,
+            "depth": -256
+          },
+          "pxPerMetre": {
+            "x": 10.914,
+            "y": 10.914
+          },
+          "metres": 84.7838,
+          "visible": false,
+          "column": {
+            "on": false,
+            "reason": "no shimmer was drawn this frame"
+          },
+          "curtain": [],
+          "reference": []
+        },
         "dusk": 0,
         "fade": 0,
         "banished": 0,
@@ -1877,17 +2463,17 @@
           }
         }
       },
-      "ms": 19931
+      "ms": 20672
     }
   ],
   "luma": {
     "floor": 6,
-    "mean": 60.62,
+    "mean": 60.358,
     "tightest": {
       "id": "win",
-      "litPct": 10.2,
+      "litPct": 9.83,
       "floor": 6,
-      "margin": 4.2
+      "margin": 3.83
     }
   }
 }

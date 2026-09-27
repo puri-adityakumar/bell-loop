@@ -736,7 +736,38 @@ check('the game constructs a creature view and an Act I apparition', () => {
   assert.equal(game.creatureView.disposed, false)
   assert.equal(game.creature.state, 'telegraph', 'Act I opens as a telegraph')
   assert.equal(game.creatureView.root.visible, true, 'the apparition is on the title screen')
-  assert.ok(game.creatureView.pose.presence < 0.3, 'and it is the dim one')
+  // ITERATION 2, PASS 15. BEFORE: `presence < 0.3`, which was the Act I apparition's
+  // own `presence` column and made this a restatement of the table. AFTER: the claim
+  // is the one the title screen actually has to make, which is that the figure is
+  // INSIDE ITS OWN BEAT rather than pinned at a row's nominal value. What makes the
+  // apparition faint is no longer a low alpha — pass 1's lighter fog put a 0.3-alpha
+  // near-black body at 0.90 of its own background, where §12.1's hole is 0.62, and no
+  // amount of fog fixed that — it is the fog at ninety metres plus a body that keeps
+  // moving. So the body column moved up (0.78) and the beat stayed, and this check
+  // holds the beat rather than the number it used to restate.
+  let beatLow = Infinity
+  let beatHigh = 0
+  for (let t = 0; t < 4; t += 1 / 240) {
+    const value = beast.creaturePose({ state: 'telegraph' }, { time: t, distance: 90 }).presence
+    beatLow = Math.min(beatLow, value)
+    beatHigh = Math.max(beatHigh, value)
+  }
+  const onScreen = game.creatureView.pose.presence
+  assert.ok(
+    onScreen > beatLow - 1e-9 && onScreen <= beatHigh + 1e-9,
+    `the apparition's body is at ${onScreen}, which is outside the range its own beat produces ` +
+      `(${beatLow.toFixed(3)}-${beatHigh.toFixed(3)})`,
+  )
+  assert.ok(
+    beatHigh - beatLow > 0.05,
+    "the telegraph row's body beat is flat, so the title screen is showing a solid figure and calling it an apparition",
+  )
+  // ...and it is still an apparition: a title screen with a solid figure on it is a
+  // different game, and the beat is what makes it one
+  assert.ok(
+    game.creatureView.pose.eye > 0,
+    'the apparition is on the title screen with its eye at zero, so there is nothing to notice',
+  )
   // §8.3's distance floor is also the telegraph's, so the eyes are at their
   // largest here — the pixel floor, not an anatomical eye
   assert.ok(game.creatureView.pose.eyeSize > 1, 'the eyes hold the pixel floor at that range')

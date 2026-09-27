@@ -73,11 +73,19 @@ import * as beast from '../src/game/creature.js'
 import * as hood from '../src/game/neighborhood.js'
 import * as rules from '../src/game/rules.js'
 import {
-  captureView,
+  viewById,
   STREET_NODE,
   FURNITURE_FAMILIES,
   FURNITURE_POOLS,
   FURNITURE_MIN_LEGIBLE_PX,
+  // pass 15. The probe's two box geometries, read from the same table the steps
+  // come from: the rows the shimmer is measured over, and the reference band the
+  // creature's own effect on the street lighting is divided out against. A page
+  // that owned either number would be a second staging, and a second staging is
+  // what the probe's own header exists to prevent.
+  PROBE_BAND_ROWS,
+  PROBE_REFERENCE_INNER,
+  PROBE_REFERENCE_OUTER,
 } from '../src/game/capture.js'
 import Hud from '../src/ui/Hud.jsx'
 import PauseOverlay from '../src/ui/PauseOverlay.jsx'
@@ -201,6 +209,49 @@ function frame() {
 
 async function frames(count) {
   for (let index = 0; index < count; index += 1) await frame()
+}
+
+/**
+ * holdLoop / releaseLoop — the world's render loop, off and on. PASS 15.
+ *
+ * The loop is the one thing on this page that can move the world between two
+ * shutters. `_animate` hands `update` `Math.min(clock.getDelta(), 0.05)`, so a
+ * loop that is running while a picture is being read is a world that has taken a
+ * clamped frame since that picture was drawn — and a shutter is about a second of
+ * wall clock at this renderer's rate, which is one or two of those on its own.
+ *
+ * So the probe's loop is held for the whole of a frame: from the last frame the
+ * creature is drawn in, through the shutter, through the removal, and through the
+ * baseline's own shutter. `holdLoop` cancels `game.rafId`, which is the NEXT
+ * frame's id, so it stops the world on the frame just drawn rather than between
+ * two of them.
+ *
+ * `releaseLoop` is the only place on this page that re-arms the loop, and `run`
+ * calls it at the TOP rather than leaving a run responsible for putting it back.
+ * A run handed a held loop that does not notice would draw its first frames from
+ * a stopped world and the picture would be right by accident.
+ */
+let loopHeld = false
+// the world clock of the last frame a probe frame was drawn in, carried from
+// `run` to `__captureBaseline` so the control is stamped against the clock of the
+// picture it is a control for rather than against the moment it was taken. 0 means
+// no frame has been shuttered from this page, and the baseline says so.
+let shutterTime = 0
+
+function holdLoop() {
+  if (loopHeld) return
+  cancelAnimationFrame(game.rafId)
+  loopHeld = true
+}
+
+function releaseLoop() {
+  if (!loopHeld) return
+  loopHeld = false
+  // measured from now and not from the frame that was held: the world gets the
+  // first frame it would have had if the loop had never been stopped, rather
+  // than 0.05 s of shutter time it did not live through.
+  game.clock.oldTime = performance.now()
+  game.rafId = requestAnimationFrame(game._animate)
 }
 
 /**
@@ -449,8 +500,23 @@ async function shutAll() {
  * re-emergence clock is pushed past its own fade so the figure is fully present:
  * §8.3's fade exists so that a teleport reads as an arrival, and a capture is not
  * an arrival.
+ *
+ * ITERATION 2, PASS 15 — `staggerSeconds`. §7.4's recoil clock, and a
+ * `stagger` without one is not a `stagger`: `creatureStep` reads a spent clock
+ * as a finished banish, puts the creature `dormant` and forgets it, and the
+ * shutter would photograph a street with nothing in it under a filename that
+ * says otherwise. The probe's five-row set needs the row, and the recoil IS part
+ * of that row's presentation (`RECOIL` is read off the clock in
+ * `creaturePose`), so the clock is a field of this step rather than a second verb
+ * that sets half a state and leaves the other half to the AI.
+ *
+ * BEFORE: `{state, metres, bearing}`. AFTER: `staggerSeconds` as a fourth field,
+ * where `0` means "leave the clock alone" — the honest reading for the four rows
+ * that never read it, and the reason `capture.js` writes the field on every
+ * `creature` step rather than only on the stagger's: a step whose shape depends
+ * on which row it is staging is two shapes to keep in step.
  */
-function placeCreature({ state, metres, bearing = 0 }) {
+function placeCreature({ state, metres, bearing = 0, staggerSeconds = 0 }) {
   const yaw = game.player.yaw + (bearing * Math.PI) / 180
   const drawn = {
     x: game.player.pos.x - Math.sin(yaw) * metres,
@@ -465,11 +531,199 @@ function placeCreature({ state, metres, bearing = 0 }) {
     chaseSeconds: 0,
     banishCount: game.state.banishCount,
     tier: rules.portalsShut(game.state.portals),
+    // spread LAST and only when it is a real number, because the counter is
+    // §7.4's own and a zero written over a live one would end the banish the
+    // field exists to stage
+    ...(Number.isFinite(staggerSeconds) && staggerSeconds > 0 ? { staggerSeconds } : {}),
   }
   game.dismissing = false
   game.dismissElapsed = 0
   game.reemergeElapsed = beast.FADE_SECONDS.reemerge + 0.3
   game.banishElapsed = 0
+}
+
+/** One number to four places, or `null`. The report is read by a machine. */
+function round(value) {
+  return Number.isFinite(value) ? Number(value.toFixed(4)) : null
+}
+
+/**
+ * where — where the creature's HEAD is in this frame, in pixels, and how big a
+ * metre is at that depth.
+ *
+ * ITERATION 2, PASS 15, and it exists because of a hole in the creature gate.
+ * `findEyes` picks the brightest compact blob in the frame and `creatureContrast`
+ * then measures the body under it — so every number that gate produces is a
+ * statement about WHENEVER THAT BLOB IS. Passes 5-12 added lit windows to
+ * distant houses, and a 12x6 cream window in `hammer-located.png` now satisfies
+ * every one of the finder's tests. Nothing in the pure harness can see that,
+ * because the pure harness cannot see a frame.
+ *
+ * The world's own scene graph can. `creatureView.head`'s world position pushed
+ * through the real camera is where the eye quad is by construction — the eyes are
+ * 3 cm above the head's centre, a pixel and a bit at 17 m — so a probe frame's
+ * anchor is checkable against the subject the harness staged, and a blob 200 px
+ * away in a house window is a failed frame rather than a measurement.
+ *
+ * `pxPerMetre` is the camera's own right and up vectors, not the world's axes: a
+ * metre measured along a world axis is foreshortened by however far the camera is
+ * turned, and the shimmer's curtain bands are 0.40-0.59 m off the figure's axis,
+ * which at 17 m is nine pixels. Nine pixels is worth measuring properly.
+ */
+function where(viewport) {
+  const camera = game.camera
+  camera.updateProjectionMatrix()
+  camera.updateMatrixWorld(true)
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert()
+  const toPixels = (v) => ({
+    x: (v.x * 0.5 + 0.5) * viewport.width,
+    y: (-v.y * 0.5 + 0.5) * viewport.height,
+  })
+  const head = new THREE.Vector3()
+  game.creatureView.head.getWorldPosition(head)
+  const centre = toPixels(head.clone().project(camera))
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0)
+  const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1)
+  const across = toPixels(head.clone().add(right).project(camera))
+  const above = toPixels(head.clone().add(up).project(camera))
+  return {
+    head: { x: round(centre.x), y: round(centre.y), depth: round(head.z) },
+    pxPerMetre: { x: round(Math.abs(across.x - centre.x)), y: round(Math.abs(above.y - centre.y)) },
+    metres: round(camera.position.distanceTo(head)),
+    visible: game.creatureView.root.visible === true,
+    ...column(viewport, centre.y, right),
+  }
+}
+
+/**
+ * column — where the shimmer's own curtains are in this frame, in pixels.
+ *
+ * ITERATION 2, PASS 15, and the third thing `where` reports, because the first
+ * version of this probe put its two measurement boxes a fixed fraction of
+ * `HAZE_HALF_WIDTH` either side of the creature's HEAD — and that measured empty
+ * air for one of the five rows.
+ *
+ * THE COLUMN IS A CONE, NOT A CYLINDER. `hazeLayers` widens it from 0.72 of
+ * `HAZE_HALF_WIDTH` at the floor to 1.28 at the top, so a box derived from the
+ * constant straddles the hole in the low bands and overshoots the crest in the
+ * high ones, by the same amount in opposite directions.
+ *
+ * AND IT STANDS ON THE GROUND WHILE THE HEAD IS ON §7.4's RECOIL. `RECOIL` throws
+ * a staggering figure 1.35 m back and pitches it 0.43 rad, which carries the head
+ * 2.80 x sin(0.43) = 1.17 m off the axis it is supposed to be over — 35 px at the
+ * 17 m this probe stands at, in a box six pixels wide. The stagger's three samples
+ * were photographing fog and reporting that a shimmer drawn there was missing.
+ *
+ * So the boxes come off the drawn geometry: `creatureView.hazeLayers` is the band
+ * list `_presentHaze` wrote this frame, the band that straddles the head's own
+ * height is found in it, and its own `inner`/`outer` are projected along the
+ * camera's right vector. `HAZE_INNER_FRACTION` is never re-derived here.
+ *
+ * THE REFERENCE BOXES
+ * -------------------
+ * Two, the same rows, `PROBE_REFERENCE_INNER` 1.3 m to `PROBE_REFERENCE_OUTER`
+ * 1.8 m off the axis: clear of the widest band the table can draw (0.83 m at
+ * `enraged`'s 1.08 scale) by half again, and inside the lamp pool, so they see
+ * the same change in the street lighting the band does.
+ *
+ * They are there because pass 11 gave the creature a SECOND effect on the light,
+ * worth 8-12 luma over the whole picture: `lampPulse` scales the sodium lamps by
+ * the eye-flare envelope, and a figure the harness has just placed has its flare
+ * at the peak. The first version of this measurement read that as a shimmer.
+ *
+ * @param {{width: number, height: number}} viewport
+ * @param {number} headRow the head's projected y, in pixels
+ * @param {THREE.Vector3} right the camera's own right axis
+ * @returns `{column, curtain, reference}` — or `column.on === false` and two empty
+ *   box lists when no shimmer was drawn, which is a measurement failure and not a
+ *   reason to measure somewhere else
+ */
+function column(viewport, headRow, right) {
+  const view = game.creatureView
+  const bands = view.hazeLayers
+  if (!Array.isArray(bands) || bands.length === 0) {
+    return { column: { on: false, reason: 'no shimmer was drawn this frame' }, curtain: [], reference: [] }
+  }
+  const haze = view.haze
+  const axis = { x: haze.position.x, z: haze.position.z }
+  const headWorld = new THREE.Vector3()
+  view.head.getWorldPosition(headWorld)
+  // the band the head is standing in, and the nearest one above if the head falls
+  // between two (the bands overlap, so this is a choice and not a lookup)
+  const band =
+    bands.find((entry) => headWorld.y >= entry.y - entry.halfHeight && headWorld.y <= entry.y + entry.halfHeight) ??
+    bands.reduce((nearest, entry) => (Math.abs(entry.y - headWorld.y) < Math.abs(nearest.y - headWorld.y) ? entry : nearest))
+  const toPixels = (v) => ({
+    x: (v.x * 0.5 + 0.5) * viewport.width,
+    y: (-v.y * 0.5 + 0.5) * viewport.height,
+  })
+  // A metre sideways at this depth, as the picture sees it: a point a metre along
+  // the camera's own right vector, projected. The axis's screen x is read at the
+  // head's row and the radii as offsets from it, which is exact for an offset
+  // perpendicular to the view axis and close enough over a 0.6 m band.
+  const at = (metres) => toPixels(new THREE.Vector3(axis.x, headWorld.y, axis.z).addScaledVector(right, metres).project(game.camera))
+  const origin = at(0)
+  const perMetre = Math.abs(at(-1).x - origin.x)
+  const y0 = headRow - PROBE_BAND_ROWS
+  const y1 = headRow + PROBE_BAND_ROWS
+  // The two edges, in the order the PICTURE has them. `sign` decides which way
+  // round they fall: on the left of the axis the smaller radius is the LARGER x,
+  // so ordering the radii instead of the coordinates hands the measurement a
+  // rectangle with its corners the wrong way round, and `regionMean` refuses one —
+  // correctly, and in a way that took a full probe run to find, because the right
+  // half of the figure was the only half that was ever a rectangle.
+  const side = (sign, inner, outer) => {
+    const atInner = origin.x + sign * inner * perMetre
+    const atOuter = origin.x + sign * outer * perMetre
+    return {
+      x0: round(Math.min(atInner, atOuter)),
+      x1: round(Math.max(atInner, atOuter)),
+      y0: round(y0),
+      y1: round(y1),
+    }
+  }
+  return {
+    column: {
+      on: true,
+      axis: { x: round(axis.x), z: round(axis.z) },
+      headRow: round(headRow),
+      rows: { y0: round(y0), y1: round(y1) },
+      band: { y: round(band.y), inner: round(band.inner), outer: round(band.outer) },
+      widest: round(Math.max(...bands.map((entry) => entry.outer))),
+      haze: round(view.pose ? view.pose.haze : 0),
+    },
+    curtain: [side(-1, band.inner, band.outer), side(1, band.inner, band.outer)],
+    reference: [side(-1, PROBE_REFERENCE_INNER, PROBE_REFERENCE_OUTER), side(1, PROBE_REFERENCE_INNER, PROBE_REFERENCE_OUTER)],
+  }
+}
+
+/**
+ * poseReport — the pose the frame was taken with, read off the view itself.
+ *
+ * `creaturePose` is pure and `verify.mjs` can call it with a clock it chooses,
+ * but the clock in a capture is the world's own and the numbers that reach the
+ * screen are the ones `present` applied to a material. This is the link: the
+ * per-state record in `benchmark/creature-probe.json` carries the alpha the
+ * pixels were drawn with, so "the eye cleared the floor" and "the eye was asked
+ * for at 0.8" are one measurement rather than two unrelated ones.
+ */
+function poseReport() {
+  const pose = game.creatureView.pose
+  if (!pose) return null
+  return {
+    state: pose.state,
+    present: pose.present === true,
+    scale: round(pose.scale),
+    presence: round(pose.presence),
+    eye: round(pose.eye),
+    eyeSize: round(pose.eyeSize),
+    eyeFlare: round(pose.eyeFlare),
+    haze: round(pose.haze),
+    redden: round(pose.redden),
+    staggerLeft: round(game.creature.staggerSeconds),
+    trail: game.creatureTrail ? game.creatureTrail.length : 0,
+    puffs: game.creaturePuffs ? game.creaturePuffs.puffs.length : 0,
+  }
 }
 
 /** §7.4: one press, and the world decides whether it connected. */
@@ -776,14 +1030,40 @@ function sightline() {
  * claims to be frozen is a broken world, and `verify.mjs` fails on it.
  */
 async function run(id) {
-  const view = captureView(id)
+  const view = viewById(id)
   if (!view) throw new Error(`no such capture view: ${id}`)
   if (!game) throw new Error('the capture page never built a world')
+  // a page whose loop a previous run left held is a page whose world is stopped.
+  // Put it back before a single step is taken, so no frame of this run is drawn
+  // from a stopped world. `run` holds it again at the end, for every view.
+  releaseLoop()
   const started = performance.now()
   for (const step of view.steps) await applyStep(step)
   // the clock either side of the frames the PNG is taken from
   const before = game.animTime
   await frames(1)
+  // Pass 15. THE HELD LOOP, and it starts HERE for EVERY view rather than only for the
+  // probe's.
+  //
+  // `frames(1)` resolves inside the very frame whose `_animate` drew the picture, and
+  // at that moment `game.rafId` names the NEXT one — so cancelling it stops the world
+  // on the frame the snapshot below is about to describe.
+  //
+  // For a probe frame this is load-bearing, because its baseline is a subtraction
+  // against a second shutter taken a second of wall clock later. For a GALLERY frame it
+  // is load-bearing too, and it was not until this pass measured it: the shutter is
+  // about a second of wall clock at this renderer's rate, so a loop that is still
+  // running lets the world take a clamped 0.05 s frame — or two — between the frame
+  // that was drawn and the picture that was read. §16.5's `banish` is the case in
+  // point: its eye is 21 luma above the finder's floor of 150, its flicker is 7.7 Hz
+  // with a 0.13 s period, and 0.05 s of drift is 38% of a cycle of the very beat that
+  // sets that eye. The committed `banish.png` measured 171 and the next run of the
+  // same steps found nothing at all — not a change in the world, a change in when the
+  // shutter was pressed. A gallery whose creature frames are a coin flip is not a
+  // gallery, and §6.5's contract is that a set of steps is worth the same picture
+  // twice.
+  holdLoop()
+  shutterTime = game.animTime
   const state = store.get()
   const snapshot = {
     id,
@@ -794,6 +1074,10 @@ async function run(id) {
     phase: state.phase ?? null,
     paused: state.paused === true,
     simFrozen: game.animTime === before,
+    // pass 15. The clock of the last frame drawn, which is the clock this frame's PNG
+    // was taken at — the loop is held from here to the shutter — and the clock a
+    // probe frame's baseline is measured against.
+    shutterTime: round(shutterTime),
     loop: state.loop ?? null,
     portals: { ...(state.portals ?? {}) },
     finale: game.state.finale === true,
@@ -801,6 +1085,13 @@ async function run(id) {
     hold: Number(game._hold.toFixed(3)),
     creature: game.creature.state,
     awareness: Number((game.creatureAwareness ?? 0).toFixed(3)),
+    // pass 15. The three numbers a per-state light measurement cannot be read
+    // without: the pose the frame was drawn with, where the head landed in
+    // pixels (so the eye finder can be checked against the subject rather than
+    // trusted), and the scale a metre has at that depth (so the shimmer's
+    // curtains can be located in the picture instead of in a comment).
+    pose: poseReport(),
+    where: where(view.viewport),
     dusk: game.state.dusk,
     fade: Number(game.fade.toFixed(3)),
     banished: game.state.banishCount,
@@ -813,3 +1104,102 @@ async function run(id) {
 }
 
 window.__captureRun = run
+
+/**
+ * __captureBaseline — the SAME world with the figure taken out of it, one frame
+ * later, and nothing else changed. ITERATION 2, PASS 15.
+ *
+ * WHY NOT A SECOND VIEW
+ * ---------------------
+ * The first version of the probe took its baseline as its own capture view: the
+ * `stalk` step list with the `creature` step removed, run as a second page load.
+ * Two runs of the same steps are the same world only to the order of a frame, and
+ * this measurement is worth one level of luma. Between them: `flickerAt`'s hashed
+ * lamp dropouts tick on `animTime` and the rows' waits are not the control's wait,
+ * the sky's ash drifts, the two runs' `animTime` differ by the sampling delay, and
+ * the render itself carries about 1.3 levels of per-pixel noise. A one-level
+ * measurement cannot be a subtraction of two one-second runs.
+ *
+ * So the baseline is taken in the same page, at the same clock, by removing the
+ * figure and rendering one more frame — which is also a STRICTLY better control
+ * than a separately written view was, because it is the same picture with one thing
+ * taken out of it rather than a second picture of a world that resembles it.
+ *
+ * THE FOUR THINGS THAT HAD TO BE TRUE
+ * ------------------------------------
+ *  1. **The figure has to actually leave.** `creatureStep` is the state machine
+ *     that owns the removal, so the state is set and the world is stepped, not
+ *     bypassed: `dormant` is a state the machine reaches on its own, and
+ *     `creaturePose` reads it as `present: false`, which is what hides the rig, the
+ *     trail, the dust and the column in one line.
+ *  2. **The lamps have to go back.** `_writeLampDread` is handed a drawn position
+ *     for any figure that exists, whatever its state, so a merely-dormant creature
+ *     would leave the pool drodded and the pulse applied — and the pool is most of
+ *     the frame. Passing `null` is the world's own "nothing near any lamp" path,
+ *     which is what §9.3 and §10.4 use and what a world with no creature in it
+ *     looks like.
+ *  3. **The clock must not move.** §6.5's contract is the whole reason a capture
+ *     set is reproducible, and the render loop is the one thing here that can move
+ *     the world between two shutters. It is ALREADY held: `run` holds it the
+ *     moment the creature's last frame is drawn, so the world is standing on the
+ *     frame this baseline is a control for, and nothing re-arms it in between.
+ *  4. **And the drawing buffer has to survive to the shutter.** One frame is
+ *     stepped with `dt` 0, the frame is drawn, and then ONE COMPOSITOR frame is
+ *     waited for — a bare `requestAnimationFrame`, with no `_animate` behind it,
+ *     because what the shutter needs is for the browser to commit the canvas it
+ *     was just handed, not for the world to have another go at it.
+ *
+ * WHY 3 IS A FIX AND NOT THE ORIGINAL SENTENCE
+ * ---------------------------------------------
+ * The first version held the loop here, at the top of this call, and then put it
+ * BACK before the shutter — one `requestAnimationFrame`, one wait. The frame that
+ * came back was worth 0.05 s of world time every single run, and not by accident:
+ * `world.js` clamps its delta to 0.05 s, and the delta it was handed was the
+ * second the software renderer had just spent drawing the frame underneath it, so
+ * the clamp was what the control was made of. The measured drift was 0.05 s on
+ * every row, against a 0.02 s ceiling, which is the gate this file's own pass
+ * wrote catching its own harness. Holding the loop across BOTH shutters is the
+ * same fix at the other end: the picture the baseline is compared against is the
+ * one the creature was drawn in, and the loop is off for the whole of it.
+ *
+ * @returns the clock either side, what is still on screen, and the lamp record
+ */
+window.__captureBaseline = async () => {
+  if (!game) throw new Error('the capture page never built a world')
+  if (shutterTime === 0) {
+    throw new Error('no frame has been shuttered from this page, so there is no clock for a baseline to share')
+  }
+  if (!loopHeld) {
+    throw new Error('the render loop is not held, so the clock moves under the shutter and this is a second world')
+  }
+  const before = game.animTime
+  // 1. the figure leaves, by the state machine's own door
+  game.creature.state = 'dormant'
+  game.creature.staggerSeconds = 0
+  game.dismissing = false
+  game.dismissElapsed = 0
+  game.spotElapsed = null
+  game.update(0)
+  // 2. ...and the lamps go back to what a world with nothing in it looks like
+  game._writeLampDread(null)
+  game.renderer.render(game.scene, game.camera)
+  // 3. one COMPOSITOR frame, and no world frame behind it. This is the whole
+  // difference from the version that re-armed the loop here.
+  await frame()
+  return {
+    animTime: round(game.animTime),
+    // the clock of the frame this baseline is a control FOR, not the clock of the
+    // moment the control was taken — those are the same number now, and `drift`
+    // is the proof rather than the intention.
+    frameTime: round(shutterTime),
+    drift: round(game.animTime - shutterTime),
+    // the movement inside this call on its own, reported because "the clock is
+    // held" is a claim and a claim with no number is a comment.
+    held: round(game.animTime - before),
+    loopHeld,
+    creature: game.creature.state,
+    presented: game.creatureView.root.visible === true,
+    shimmer: game.creatureView.haze.visible === true,
+    lamp: { lamp: game.lampDread.lamp, level: round(game.lampDread.level), pulse: round(game.lampDread.pulse) },
+  }
+}

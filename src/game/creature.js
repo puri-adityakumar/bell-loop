@@ -1945,9 +1945,44 @@ export const CREATURE_PRESENTATION = Object.freeze({
    * moved. BEFORE: it walked at full gait amplitude, because the gait had exactly
    * one amplitude and it was applied to every state.
    */
+  // ITERATION 2, PASS 15. `presence: 0.3 -> 0.78`, `eye: 0.5 -> 0.6`, and a NEW
+  // `flicker.bodyFloor: 0.82`. All three are measured retunes, and the
+  // measurement is in `.probe/creature-probe.json` at the commit that made them.
+  //
+  // WHY THE BODY HAD TO RISE. The row is the Act I apparition and §6.1 wants it to be
+  // a rumour, so 0.3 was never an arbitrary number. But pass 1 made the fog LIGHTER
+  // and warmer, and this row's read is `presence` against that fog: measured over the
+  // three probe samples the figure's body sat at luma 69.8/70.5/71.3 against a local
+  // background of 77.2/77.3 — a ratio of 0.90, where §12.1's "a hole in the fog" is
+  // 0.62. That is arithmetic, not taste: a near-black body at alpha `p` over a fog of
+  // `F` lands at `F(1-p) + own·p`, and with the probe's own measurements (`F` 78.8 at
+  // alpha 0.62 reading 45.19, so the opaque body is 24.6) the ratio is
+  // `1 - 0.68p`. A 0.62 ratio needs `p >= 0.56`, and the row's DEEPEST beat is 0.3 x
+  // its flicker, which lands in a trough. The row could not hold the fog gate in any
+  // phase of itself, and the fix that keeps §6.1 is the beat's SHAPE rather than its
+  // absence.
+  //
+  // WHY THE BODY AND THE EYE NOW HAVE DIFFERENT FLOORS. Before this pass one `g` drove
+  // both, so a body beat deep enough to vanish took the eye with it — which is right
+  // for §7.4's stagger (a bolt of pain, whole figure) and wrong for the apparition
+  // (a signal that is there, then is not, then is). `bodyFloor` is the split: the
+  // EDGE is a constant hole in the fog, from 0.82 of the beat up, and the EYE still
+  // runs the row's full 0.06-to-1.0 beat, so "it was there and then it was not" is
+  // now carried by the one thing in the frame that is unfogged and additive — which
+  // is also the only part of the figure a player at ninety metres can see at all.
+  // 0.82 x 0.78 is 0.639 of body at the trough of the beat and 0.78 at its crest,
+  // i.e. ratios of 0.565 and 0.469 against the 0.62 floor, with the whole beat inside
+  // the gate rather than one lucky phase of it.
+  //
+  // AND THE EYE, 0.5 -> 0.6. With the body no longer carrying the apparition's read,
+  // the eye is what is left, and §6.1's beat is now a beat in the eye alone. The eye
+  // is an additive quad over fog, so its luma has a floor of the fog's own and a
+  // 20% larger alpha buys the 18 levels of margin over `EYE_MIN` + `PROBE_EYE_MARGIN`
+  // that the retune costs elsewhere. It is the same hex and the same size; only the
+  // alpha moved.
   telegraph: Object.freeze({
-    present: 1, scale: 0.88, presence: 0.3, eye: 0.5,
-    flicker: Object.freeze({ rate: 5.4, depth: 0.62, floor: 0.06 }),
+    present: 1, scale: 0.88, presence: 0.78, eye: 0.6,
+    flicker: Object.freeze({ rate: 5.4, depth: 0.62, floor: 0.06, bodyFloor: 0.82 }),
     lean: 0, sway: 0.35, stride: 0.12, scan: 0.12, edge: 0, recoil: 0, redden: 0, heave: 0.35,
   }),
   /**
@@ -2949,19 +2984,40 @@ export const HAZE_SPAN = 3.05
 export const HAZE_HALF_WIDTH = 0.62
 
 /**
- * HAZE_PEAK — the alpha at the crest of ONE band, before the bands sum. 0.006.
+ * HAZE_PEAK — the alpha at the crest of ONE band, before the bands sum.
+ * 0.006 -> 0.012 -> 0.006.
  *
- * BEFORE: n/a. AFTER 0.006, and the number is small because additive luma near
- * black is not a linear quantity.
+ * ITERATION 2, PASS 15, and this is the one number in the file that went up and came
+ * back. Pass 11 budgeted the shimmer against a surround of 19/255 — a figure at 30 m
+ * in the violet fog pass 1 replaced — and held the worst pixel inside [2, 12] encoded
+ * levels. That budget was never wrong about the CEILING and it was wrong about the
+ * FLOOR, because it was written for a surround this world no longer has, so pass 15
+ * doubled the alpha to 0.012 and predicted the rows would follow it linearly.
  *
- * `HAZE_COLOUR` below is a pale grey whose linear luma is 0.218, so one band at
- * 0.006 adds 0.0013 linear light, and the surface the shimmer sits on in
- * `creature-stalking.png` measures about 19 of 255 — 0.0065 linear. A pixel is inside
- * at most `HAZE_OVERLAP` 2 bands, which is 0.0026 linear, and re-encoding that gives
- * about +5 levels of sRGB on that surround: a readable shimmer. Ten levels would be a
- * grey pillar and fifty a light, and `verify.mjs` measures the real worst pixel in the
- * renderer's own colour space and requires it inside [2, 12] levels, because a ceiling
- * alone is satisfied by a shimmer too faint to see.
+ * THE MEASUREMENT REFUSED IT, ON BOTH SIDES.
+ *
+ * The probe photographs each row twice — once as staged and once, in the same page at
+ * the same world clock, with the figure taken out of it — and the difference over a
+ * box in the air beside the figure, less what the creature's own effect on the street
+ * lighting did there, is the shimmer. At 0.006 the honest numbers were `stalk`
+ * -0.40 / +0.30 and at 0.012 they are -0.28, -0.10, +0.18, +0.35, +0.56 — a mean of
+ * about +0.05 against a floor of 0.6, and a sample-to-sample scatter of 0.7 on the
+ * same row 0.18 s apart. So the doubling bought roughly a third of a luma of a
+ * measurement whose own noise is larger than that, and it cost something real: with
+ * the haze at 0.012 the eye finder could no longer resolve the eye in the SHIPPED
+ * `banish.png` — the close-range §7.4 frame, where the figure is four metres away and
+ * the doubled additive haze softens the eye quad's edge enough that the >=150
+ * flood-fill no longer finds a compact blob. `verify.mjs` fails on that frame and it
+ * is right to.
+ *
+ * That is the whole argument for putting it back: an effect that is worth less than
+ * its own measurement noise is not an effect that can be bought with a number, and
+ * the number is not free. §4's three signals are still three signals — the shimmer
+ * alone is 13 luma encoded against `EYE_MIN` 150, which `verify.mjs` asserts here and
+ * did before. The shimmer's floor is a question for a pass that can answer it, and
+ * this pass's answer is that the harness cannot yet: the control boxes sit inside
+ * the same glow they are dividing out, so the differential measures the creature's
+ * presence to about +/-0.3 luma and the shimmer to rather less than that.
  */
 export const HAZE_PEAK = 0.006
 
@@ -3660,9 +3716,18 @@ export function creaturePose(creature, frame = {}) {
   if (row.flicker) {
     const { rate, depth, floor } = row.flicker
     const beat = 1 - depth + depth * apparitionFlicker(time * (rate / 5.4), offset)
-    const g = clampUnit(floor + (1 - floor) * beat)
-    pose.presence *= g
-    pose.eye *= g
+    // ITERATION 2, PASS 15. TWO gates on one beat, and only because the rows disagree
+    // about what the beat is FOR. `floor` is §6.1's — the signal is there, then is not,
+    // then is — and `bodyFloor` is §12.1's, because a body that has faded out of the
+    // fog is not an apparition, it is a hole in the picture shaped like a person. A row
+    // with no `bodyFloor` gets `floor`, which is what `stagger` still wants: a bolt of
+    // pain runs through the whole figure. BEFORE: one `g` on both, so the telegraph's
+    // body and its eye could not disagree and the body could never be a hole in the
+    // lighter fog pass 1 made. See `CREATURE_PRESENTATION.telegraph` for the measured
+    // ratios either side of this.
+    const bodyFloor = Number.isFinite(row.flicker.bodyFloor) ? row.flicker.bodyFloor : floor
+    pose.presence *= clampUnit(bodyFloor + (1 - bodyFloor) * beat)
+    pose.eye *= clampUnit(floor + (1 - floor) * beat)
   }
 
   if (row.recoil > 0) {

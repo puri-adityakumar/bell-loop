@@ -28,3 +28,6 @@ dist-ssr
 node_modules/.cache/
 .vercel
 .review-artifacts/
+
+# Pass 15's per-state light probe frames and report (tools/capture.mjs --probe)
+.probe/
