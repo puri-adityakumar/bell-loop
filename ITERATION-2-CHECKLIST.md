@@ -65,14 +65,23 @@ Hard rules for every pass:
   sightline accents (a lit window at the end of an avenue), prune anything that
   clutters. Screenshot 3 avenues and judge them as photographs.
 
-## P4 — MUSIC
-- [x] `PASS 13: Ambient music route.` New MUSIC route in AudioManager: slow pad
-  progression over the drone (minor, whole-note chords ~50-60 BPM feel), tape
-  wobble + hiss, occasional distant bell motif echoing the toll. Original
-  synthesis evoking the reference video's mood — NOT the copyrighted track.
-- [x] `PASS 14: Music integration.` Ducking table (chase/capture/win), level
-  routing through the same bus discipline as the drone, route-table rows +
-  checks (audible while playing, ducked in chase, near-silent on win).
+## P4 — SOUND: the world bed, then the music
+- [x] `PASS 13: Sound I - the world bed.` Low continuous room tone (filtered
+  noise + slow LFO, on the drone's own duck ladder); distant facility rumbles /
+  clanks / thumps on a SEEDED 20-60 s schedule, placed in the world and panned +
+  damped by distance; a wind layer whose level and brightness follow the drifting
+  haze bands from pass 9; the portal hum's second distance channel (a lowpass
+  that closes with range). All procedural, all seeded, all `kind: null` so the
+  creature cannot hear them. The `setTimeout` ambience scheduler is gone: three
+  cursor streams on the world's own `dt` replaced it, which fixes a bed that kept
+  breathing through a pause and could not be asserted. No music in this pass.
+- [ ] `PASS 14: Sound II - the ambient music.` (was P4's two rows: the music
+  route and its ducking table.) Slow pad progression over the bed, minor,
+  whole-note chords at a 50-60 BPM feel, tape wobble + hiss, an occasional
+  distant bell motif echoing the toll. Original synthesis evoking the reference
+  video's mood — NOT the copyrighted track. Route-table rows + checks (audible
+  while playing, ducked in chase, near-silent on win), and the routing must
+  share the bed's bus discipline rather than sit beside it.
 
 ## P5 — POLISH + VERIFY
 - [x] `PASS 15: Creature in the new light.` Silhouette/eyes read against amber

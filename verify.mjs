@@ -39,7 +39,7 @@ import assert from 'node:assert/strict'
 // v2 slice 01. `hash32`, `streamAt` and the one `mulberry32` left in the
 // repository — v1's `maze.js` carried a second copy and slice 16 deleted it, so
 // the alias this import used to need (`mulberry32V2`) is gone with it.
-import { flickerAt, hash32, streamAt, mulberry32 } from './src/game/hash.js'
+import { flickerAt, hash32, streamAt, mulberry32, DEFAULT_SEED } from './src/game/hash.js'
 // v2 slice 02. Imported as a namespace because GRID, BLOCK and the BFS helper
 // names all collide with the v2 world modules' own vocabulary, and the v2 world
 // reads `hood.*` beside them.
@@ -4421,9 +4421,16 @@ test('the §13 sound list is here, as a table, and nothing is missing from it', 
   // check is a specification and not an echo. If a sound is added to the design
   // without a row, this is where it is caught; if a row is added without a design
   // entry, the deepEqual is.
+  //
+  // PASS 13 ADDED FOUR, and they are listed separately rather than folded into the
+  // seven so the two claims stay separable: the seven are slice 11's contract with
+  // §13, and the four are the world bed — what the PLACE makes, not what the player
+  // and the creature make. `GAMEDESIGN.md` §13 carries the same split, and the
+  // second list is as much a specification as the first.
   const section13 = ['bell toll', 'ambient drone', 'footstep tick', 'breathing', 'portal hum', 'creature breath', 'portal shutdown']
+  const worldBed = ['room tone', 'haze wind', 'distant facility', 'water drip']
   const sounds = distinct(audio.AUDIO_ROUTES.map((row) => row.sound))
-  assert.deepEqual([...sounds].sort(), [...section13].sort(), '§13\'s seven sounds and the table disagree')
+  assert.deepEqual([...sounds].sort(), [...section13, ...worldBed].sort(), 'the sound list and the table disagree')
 
   // every row is a complete row: nothing the router or the gate depends on may
   // be missing, and a row with no voice is a sound nobody can hear
@@ -4878,7 +4885,13 @@ test('the world hands the table facts and never a sound', () => {
   const calls = [...WORLD_SOURCE.matchAll(/this\.audio\?\.\s*(\w+)/g)].map((m) => m[1])
   assert.deepEqual(
     [...new Set(calls)].sort(),
-    ['stopPortalHums', 'update', 'winChord'],
+    // `setSeed` is pass 13's addition, and it is the one that is not a decision:
+    // the world owns the run's seed and hands it over once, in its constructor,
+    // exactly the way it hands over `_audioFrame`'s facts sixty times a second. A
+    // gate that forbade it would be forbidding the world from knowing its own
+    // seed, and the alternative — the audio inventing one — is the bug the
+    // shared `DEFAULT_SEED` exists to prevent.
+    ['setSeed', 'stopPortalHums', 'update', 'winChord'],
     'the world calls the audio directly somewhere new',
   )
   assert.equal(calls.filter((name) => name === 'update').length, 1, 'the router is called more than once per frame')
@@ -4967,16 +4980,25 @@ test('the audio module is in the pure harness, and every sound is synthesized', 
     assert.equal(new RegExp(`\\b${global}\\b`).test(head), false, `${global} is reachable at module scope`)
   }
   assert.equal(/from ['"]three['"]/.test(AUDIO_SOURCE), false, 'audio.js imports three')
-  // the rules it needs are the shared ones, not private copies
-  assert.match(AUDIO_SOURCE, /import \{ soundRadius, soundStrength \} from '\.\/creature\.js'/)
+  // the rules it needs are the shared ones, not private copies. PASS 13 took the
+  // distance model, the wrap and the PRNG from the modules that already own them:
+  // `wrapDelta` is `world.js`'s fold, `soundStrength` is `creature.js`'s curve,
+  // and `hash32`/`mulberry32`/`streamAt` are §3.2's foundation. An audio file
+  // with its own PRNG would be a second definition of what a seed means.
+  assert.match(AUDIO_SOURCE, /import \{ soundRadius, soundStrength, wrapDelta \} from '\.\/creature\.js'/)
   assert.match(AUDIO_SOURCE, /import \{ PORTAL_NOISE_THRESHOLD, BREATH_RECOVERY_THRESHOLD \} from '\.\/rules\.js'/)
+  assert.match(AUDIO_SOURCE, /import \{ hash32, mulberry32, streamAt, DEFAULT_SEED \} from '\.\/hash\.js'/)
+  assert.match(AUDIO_SOURCE, /import \{ WORLD_HALF \} from '\.\/neighborhood\.js'/)
   // zero downloaded assets: nothing fetches and nothing loads a file
   const code = stripProse(AUDIO_SOURCE)
   for (const loader of ['fetch(', 'XMLHttpRequest', 'new Audio(', 'new Image(', 'createMediaElement', '.mp3', '.wav', '.ogg', 'decodeAudioData']) {
     assert.equal(code.includes(loader), false, `audio.js reaches for ${loader}`)
   }
-  // the whole synthesis surface is WebAudio node factories
-  for (const factory of ['createOscillator', 'createGain', 'createBiquadFilter', 'createBufferSource', 'createDynamicsCompressor']) {
+  // the whole synthesis surface is WebAudio node factories. `createStereoPanner`
+  // is pass 13's addition and it is listed for the reason the rest are: a
+  // spatialised sound built out of two gain nodes is not spatialisation, so the
+  // factory that does it is part of what this file is allowed to reach for.
+  for (const factory of ['createOscillator', 'createGain', 'createBiquadFilter', 'createBufferSource', 'createDynamicsCompressor', 'createStereoPanner']) {
     assert.ok(AUDIO_SOURCE.includes(factory), `audio.js stopped using ${factory}`)
   }
   // and a manager that was never unlocked is a no-op rather than a throw: the
@@ -4995,6 +5017,591 @@ test('the audio module is in the pure harness, and every sound is synthesized', 
   manager.duckAmbient()
   manager.stopPortalHums()
   assert.equal(manager.ready, false, 'a headless manager built an AudioContext')
+})
+
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 13 — Sound I: the world bed
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS SECTION OWNS, AND WHY IT IS MOSTLY ABOUT THE SEED
+// ------------------------------------------------------------
+// The pass has four parts (a room tone, a haze-following wind, seeded facility
+// noise, and a portal hum that damps with distance) and one property worth more
+// than any of them: **every sound in the file is a function of the run's seed.**
+// That is a claim about the absence of a thing — no `Math.random`, no
+// `setTimeout`, no wall clock — and claims about absences rot, because the next
+// person to reach for the obvious three-character shortcut brings one back and
+// every other check in this file still passes.
+//
+// So the checks here are in four groups:
+//   - the ROWS: four new sounds, all continuous, all priced at zero for the
+//     creature, all silent off a run;
+//   - the TABLES: the retuned numbers against the relationships that make them
+//     safe (the bed under one footstep, the wind's floor, the hum's two ends);
+//   - the SCHEDULE: gaps, placement, seeding, and the claim that a backlog does
+//     not arrive as a burst;
+//   - the ABSENCES: `Math.random`, `setTimeout`, and a private PRNG, read out of
+//     the file's code with the prose stripped.
+//
+// The last group is why `stripProse` is used on the WHOLE file here rather than on
+// the module-scope half: `Math.random` was a runtime-only habit, and the class is
+// where it lived.
+
+section('Sound I: the world bed (iteration 2, pass 13)')
+
+/** The four rows pass 13 added, restated so this is a specification. */
+const BED_ROWS = Object.freeze(['roomTone', 'hazeWind', 'facility', 'drip'])
+
+/** A player standing at the origin, looking down −Z (yaw 0). */
+const LISTENER = Object.freeze({ position: Object.freeze({ x: 0, z: 0 }), yaw: 0 })
+
+test('the world bed is four continuous rows, and none of them is a stimulus', () => {
+  // The claim: the bed exists on every begun run, never on an unstarted one, and
+  // is invisible to the creature. The last is the one that matters — §6.2 prices
+  // sounds by the radius they carry, and a row with a `kind` would hand the AI a
+  // stimulus for a noise the player did not make.
+  for (const id of BED_ROWS) {
+    const row = audio.routeFor(id)
+    assert.ok(row, `${id} is not in the routing table`)
+    assert.equal(row.mode, 'sustained', `${id} is an event rather than a layer`)
+    assert.equal(row.tuning, null, `${id} is a bell`)
+    assert.equal(row.kind, null, `${id} carries a §6.2 kind, so the creature can hear it`)
+    assert.equal(audio.cueRadius(row), 0, `${id} is a stimulus to the creature`)
+    assert.ok(audio.SUSTAINED_ROUTE_IDS.includes(id), `${id} is not on every started frame`)
+  }
+  // and the title screen is silent: no bed row, no drone, nothing
+  assert.deepEqual(audio.routeAudio({}), [], 'the bed runs before the run has begun')
+  assert.deepEqual(
+    audio.routeAudio({ started: false, playing: true, haze: 1, position: { x: 1, z: 2 }, yaw: 3 }),
+    [],
+    'the bed runs on a frame that says it has not begun',
+  )
+  // the scheduled rows carry the listener and the gate; a cue that dropped
+  // `position` would be a facility noise with no place to be, and the checks
+  // above would not see it
+  const playing = audio.routeAudio({ ...PLAYING_FRAME, position: { x: 4, z: -9 }, yaw: 1.2, haze: 0.5 })
+  const facility = playing.find((cue) => cue.id === 'facility')
+  const drip = playing.find((cue) => cue.id === 'drip')
+  assert.deepEqual(facility.params.position, { x: 4, z: -9 }, 'the facility row lost the listener')
+  assert.equal(facility.params.yaw, 1.2)
+  assert.equal(facility.params.playing, true)
+  assert.equal(drip.params.playing, true)
+  // and a frame with no listener at all is still routed, with a null position —
+  // the row is the world's business, and `facilityVoice` is what reads as silent
+  const bare = audio.routeAudio({ ...PLAYING_FRAME }).find((cue) => cue.id === 'facility')
+  assert.equal(bare.params.position, null, 'a missing listener was replaced with a guess')
+  // the bed ducks with the phase ladder, so a won run is quiet
+  const won = audio.routeAudio({ ...PLAYING_FRAME, won: true })
+  for (const id of BED_ROWS) {
+    assert.equal(won.find((entry) => entry.id === id).radius, 0)
+  }
+  assert.ok(
+    audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 1, won: true }).level < audio.hazeWindVoice(PLAYING_FRAME).level,
+    'the win card does not quiet the wind',
+  )
+})
+
+test('the whole bed fits under one ordinary footstep', () => {
+  // §13 makes the footstep the primary sound-radius tell, and the bed is the only
+  // other thing on that bus, so the bed is held below the quietest thing the
+  // player MUST be able to hear. The sum is recomputed here from the tables rather
+  // than read out of a comment, which is the whole point: a retune of any one
+  // layer that breaks the ceiling fails the build.
+  const peak = audio.DRONE_TUNING.gain * audio.DRONE_LEVEL
+    + audio.ROOM_TONE.level
+    + audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 1 }).level
+  assert.equal(audio.WORLD_BED_CEILING, audio.FOOTSTEP_VOICES.walk.level, 'the ceiling is not a footstep')
+  assert.ok(
+    peak <= audio.WORLD_BED_CEILING,
+    `the bed peaks at ${peak.toFixed(4)}, over the ${audio.WORLD_BED_CEILING} ceiling`,
+  )
+  // with room left, because a ceiling met exactly is a ceiling one retune away
+  // from being broken
+  assert.ok(peak < audio.WORLD_BED_CEILING * 0.95, 'the bed is at its ceiling')
+  // and each layer is individually quiet, which is the other half: one layer at
+  // 0.09 and two at 0.001 would pass the sum and fail the ear
+  for (const level of [audio.ROOM_TONE.level, audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 1 }).level]) {
+    assert.ok(level <= audio.WORLD_BED_CEILING * 0.5, `a bed layer is at ${level}`)
+  }
+  // the room tone's own numbers have to make a bed rather than a filter sweep
+  assert.ok(audio.ROOM_TONE.highpass < audio.ROOM_TONE.cutoff, 'the room tone filters a band of negative width')
+  assert.ok(audio.ROOM_TONE.lfoDepth < audio.ROOM_TONE.cutoff, 'the LFO can push the cutoff below the highpass')
+  assert.ok(audio.ROOM_TONE.lfoRate > 0 && audio.ROOM_TONE.lfoRate < 0.1, 'a 6 s "breath" is not a breath')
+  assert.ok(audio.ROOM_TONE.cutoff < 1000, 'a room tone at 2 kHz is a hiss, not a room')
+})
+
+test('the room tone rides the drone\'s ladder and is silent off a run', () => {
+  const playing = audio.roomToneVoice(PLAYING_FRAME)
+  assert.equal(playing.level, audio.ROOM_TONE.level)
+  // one ladder, three users: the black and the win levels are the drone's own, so
+  // a capture cannot leave the bed at full while the drone ducks
+  assert.equal(
+    audio.roomToneVoice({ started: true, playing: false }).level,
+    audio.ROOM_TONE.level * audio.DRONE_LEVEL_BLACK,
+  )
+  assert.equal(
+    audio.roomToneVoice({ ...PLAYING_FRAME, won: true }).level,
+    audio.ROOM_TONE.level * audio.DRONE_LEVEL_WON,
+  )
+  assert.ok(audio.DRONE_LEVEL_BLACK < audio.DRONE_LEVEL, 'the black is not quieter than playing')
+  assert.ok(audio.DRONE_LEVEL_WON < audio.DRONE_LEVEL_BLACK, 'the win is not quieter than the black')
+  // and no run, no bed — stated in the voice rather than left to the router, so a
+  // caller that reaches past `routeAudio` still gets silence
+  for (const frame of [{}, { started: false }, { started: true, playing: false, won: false }]) {
+    const voice = audio.roomToneVoice(frame)
+    if (frame.started === true) assert.ok(voice.level > 0, `a started frame got a silent bed: ${JSON.stringify(frame)}`)
+    else assert.equal(voice.level, 0, `a frame with no run got level ${voice.level}`)
+  }
+  // the LFO's rate and depth travel with the voice rather than being read from the
+  // table by the graph, so the two cannot describe different filters
+  assert.equal(playing.lfoRate, audio.ROOM_TONE.lfoRate)
+  assert.equal(playing.lfoDepth, audio.ROOM_TONE.lfoDepth)
+  assert.equal(playing.cutoff, audio.ROOM_TONE.cutoff)
+})
+
+test('the wind follows the sky\'s haze, and only the sky\'s haze', () => {
+  // THE COUPLING. `hazeWindVoice` takes a number and nothing else, so the wind's
+  // level is a function of the sky's reading and of the frame — not of a clock of
+  // its own. Two frames with the same haze must give the same wind whatever else
+  // differs, and that is the whole anti-drift claim.
+  const a = audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 0.42 })
+  const b = audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 0.42, creatureDistance: 900, breath: 0 })
+  assert.deepEqual(a, b, 'the wind is not a pure function of the frame')
+  // monotone in both channels, over a grid rather than at two points
+  let previousLevel = -1
+  let previousCutoff = -1
+  for (let haze = 0; haze <= 1.0001; haze += 0.05) {
+    const voice = audio.hazeWindVoice({ ...PLAYING_FRAME, haze })
+    assert.ok(voice.level >= previousLevel - 1e-12, `the wind fell at haze ${haze.toFixed(2)}`)
+    assert.ok(voice.cutoff >= previousCutoff - 1e-12, `the wind dulled at haze ${haze.toFixed(2)}`)
+    assert.ok(voice.level <= audio.WORLD_BED_CEILING, `the wind is over the ceiling at haze ${haze.toFixed(2)}`)
+    previousLevel = voice.level
+    previousCutoff = voice.cutoff
+  }
+  // a floor, not an absence: a wind that stopped when the sky was clear would make
+  // the sky's own animation a fault in the audio
+  const clear = audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 0 })
+  assert.equal(clear.level, audio.HAZE_WIND.floor)
+  assert.ok(clear.level > 0, 'no haze is silence')
+  const thick = audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 1 })
+  assert.equal(thick.level, audio.HAZE_WIND.floor + audio.HAZE_WIND.range)
+  assert.ok(thick.cutoff > clear.cutoff, 'thick air is not duller than thin air')
+  // and a bad reading is the thinnest air, never silence and never a spike
+  for (const haze of [undefined, null, NaN, -5, 4, 'lots']) {
+    const voice = audio.hazeWindVoice({ ...PLAYING_FRAME, haze })
+    assert.ok(voice.level > 0 && voice.level <= thick.level, `haze ${haze} gave level ${voice.level}`)
+    assert.ok(Number.isFinite(voice.cutoff) && voice.cutoff >= audio.HAZE_WIND.bandLo, `haze ${haze} gave a cutoff off the table`)
+  }
+  // the two ends of the band are the table's, and the Q is a band rather than a
+  // notch
+  assert.equal(clear.cutoff, audio.HAZE_WIND.bandLo)
+  assert.equal(thick.cutoff, audio.HAZE_WIND.bandHi)
+  assert.ok(audio.HAZE_WIND.resonance > 0 && audio.HAZE_WIND.resonance < 2, 'the wind band is not a band')
+  // THE COUPLING REACHES THE ONE-SHOTS, and the number that says so is the ratio
+  // the wind voice uses to scale its gusts (`applyHazeWind`): the bed level over
+  // the floor. It is 1 at no haze — so a gust is exactly the absolute level it had
+  // before this pass — and it is bounded, or a thick sky would produce a gust
+  // louder than the ceiling.
+  assert.equal(clear.level / audio.HAZE_WIND.floor, 1, 'a gust in clear air is not the level it had before')
+  assert.ok(thick.level / audio.HAZE_WIND.floor < 6, 'a gust in thick air is louder than the whole bed')
+  assert.ok(thick.level / audio.HAZE_WIND.floor > 2, 'the gusts do not follow the haze at all')
+  assert.equal(audio.AMBIENCE_DRIP_LEVEL, 1, 'a drip now scales with the wind')
+  // the drip's scale is the IDENTITY on purpose — a drain drips whatever the sky
+  // is doing — so the two scales cannot quietly become one expression
+  assert.ok(Number.isFinite(audio.AMBIENCE_DRIP_LEVEL) && audio.AMBIENCE_DRIP_LEVEL > 0)
+})
+
+test('the facility stream is seeded, spaced, and placed inside the world', () => {
+  // THE SCHEDULE, which is the part of the pass a person can actually notice.
+  const spec = audio.AMBIENCE_SPECS.facility
+  assert.equal(spec.gap.min, 20, 'the brief asks for no more often than every 20 s')
+  assert.equal(spec.gap.max, 60, 'the brief asks for no less often than every 60 s')
+  const events = audio.ambienceStream('facility', 1337, 200)
+  assert.equal(events.length, 200)
+  let previous = -1
+  const kinds = new Set()
+  for (const event of events) {
+    const gap = event.at - previous
+    assert.ok(gap >= spec.gap.min - 1e-9 && gap <= spec.gap.max + 1e-9, `a gap of ${gap.toFixed(2)}s is outside the window`)
+    assert.equal(event.id, 'facility')
+    assert.ok(audio.FACILITY_KIND_IDS.includes(event.kind), `an unknown kind: ${event.kind}`)
+    kinds.add(event.kind)
+    assert.ok(Math.abs(event.x) <= hood.WORLD_HALF && Math.abs(event.z) <= hood.WORLD_HALF, 'a noise was placed off the world')
+    previous = event.at
+  }
+  // all three kinds turn up, so the stream is not one sound on a timer wearing
+  // three names
+  assert.deepEqual([...kinds].sort(), [...audio.FACILITY_KIND_IDS].sort(), 'a kind never fires')
+  // the first event is a full gap out: a run that opens with a random clank is a
+  // run that opens wrong
+  const first = audio.ambienceStart('facility', 1337)
+  assert.equal(first.index, 0)
+  assert.ok(first.at >= spec.gap.min, 'the first facility noise lands on the first frame')
+  // the same seed is the same schedule, byte for byte, and it is a schedule
+  // rather than a list, so the cursor and the walk agree at every index
+  assert.equal(
+    JSON.stringify(audio.ambienceStream('facility', 1337, 200)),
+    JSON.stringify(events),
+    'the same seed gave a different schedule',
+  )
+  const other = audio.ambienceStream('facility', 4242, 200)
+  assert.ok(
+    other.some((event, index) => Math.abs(event.at - events[index].at) > 1e-6),
+    'two seeds produced the same timings',
+  )
+  // THE RANDOM-ACCESS CLAIM. A stream that can only be walked from zero is a
+  // schedule array with extra steps, and an hour of drips would be an hour of
+  // objects in memory. So: asking at index 90 gives the same event whether or not
+  // anything was asked before it.
+  let cursor = audio.ambienceStart('facility', 1337)
+  for (let i = 0; i < 90; i += 1) cursor = audio.nextAmbienceEvent('facility', cursor, 1337).cursor
+  assert.equal(cursor.index, 90)
+  assert.deepEqual(
+    audio.nextAmbienceEvent('facility', { index: 90, at: cursor.at }, 1337).event,
+    events[90],
+    'event 90 is not a function of 90',
+  )
+  // and an unknown stream is answered rather than thrown
+  assert.equal(audio.ambienceStart('bagpipes', 1337), null)
+  assert.equal(audio.nextAmbienceEvent('bagpipes', cursor, 1337), null)
+})
+
+test('a facility noise is placed in the world, not at the speaker', () => {
+  // The event is a fixed point in the city, so the LISTENER moves and the sound
+  // does not. Four consequences, and each one is a different bug if it breaks.
+  const [event] = audio.ambienceStream('facility', 1337, 1)
+  const kind = audio.FACILITY_KINDS[event.kind]
+  // the listener is placed `d` metres along +X from the EVENT, not from the
+  // origin, so "the level at 12 m" means 12 m from the thing making the noise
+  const at = (d, yaw = 0) => audio.facilityVoice(event, { position: { x: event.x + d, z: event.z }, yaw })
+  // 1. the level IS the shared distance model, and it is zero at the edge of it
+  for (const distance of [0, 1, 10, 60, 120, 200]) {
+    assert.equal(
+      at(distance).level,
+      kind.level * beast.soundStrength(distance, audio.FACILITY_RANGE),
+      `the level at ${distance}m is not the distance model`,
+    )
+    assert.ok(Math.abs(at(distance).distance - distance) < 1e-9, `the distance at ${distance}m is wrong`)
+  }
+  assert.equal(at(audio.FACILITY_RANGE).level, 0, 'a noise is audible at the edge of its range')
+  // and the torus has no "far away": a million metres is a NEARBY point on a
+  // 448 m wrap. The inaudible case in this world is the ANTIPODE, half the world
+  // away — and it is silent only because `FACILITY_RANGE` is inside the torus's
+  // own reach, which is the constraint the range docblock argues for.
+  const antipode = audio.facilityVoice(event, { position: { x: event.x + hood.WORLD_EXTENT / 2, z: event.z }, yaw: 0 })
+  assert.equal(antipode.distance, hood.WORLD_EXTENT / 2, 'the antipode is not half the world away')
+  assert.equal(antipode.level, 0, 'the far side of the world is audible')
+  assert.ok(
+    audio.FACILITY_RANGE < hood.WORLD_EXTENT / 2,
+    `a range of ${audio.FACILITY_RANGE}m is outside the world's own reach of ${hood.WORLD_EXTENT / 2}m, so no placement can ever be silent`,
+  )
+  // 2. the WRAP. The world is 448 m of torus, and an event at −224 is three
+  // metres from a player at +224 — not 448. An unwrapped distance would silence
+  // the stream over two thirds of the map and still pass a check on a straight
+  // line.
+  const near = hood.WORLD_EXTENT - 1
+  const wrapped = audio.facilityVoice(event, { position: { x: event.x - near, z: event.z }, yaw: 0 })
+  assert.ok(wrapped.distance < 2, `the wrapped distance is ${wrapped.distance}`)
+  assert.ok(wrapped.level > at(audio.FACILITY_RANGE).level, 'the wrap bought no level')
+  // 3. the PAN is a pan, and it is signed by the player's RIGHT. At yaw 0 the
+  // player faces −Z with their right hand on +X (`player.js` composes the camera
+  // from that yaw), so a noise to the listener's +X is on their LEFT. Turning on
+  // the spot must move it across the field, and the two ends must be hard.
+  const east = at(20, 0)          // the noise lies to the +X of the listener
+  const north = at(20, Math.PI)   // …and the listener has turned to face it
+  assert.ok(Math.abs(Math.abs(east.pan) - 1) < 1e-6, 'a noise off the shoulder is not hard against that ear')
+  assert.ok(Math.abs(Math.abs(north.pan) - 1) < 1e-6, 'a noise off the other shoulder is not hard against that ear')
+  assert.ok(east.pan * north.pan < 0, 'turning on the spot did not move the sound across the field')
+  // and dead ahead is centred, which is the yaw that points the player's forward
+  // (−sin, −cos) at the event
+  const ahead = at(20, Math.PI / 2)
+  assert.ok(Math.abs(ahead.pan) < 1e-9, 'a noise dead ahead is not centred')
+  // the honest limit of a stereo field, stated because it is a real one: a noise
+  // DIRECTLY BEHIND is also centred, so the pan carries left/right and not
+  // front/back. Distance is carried by the level and the damp instead, which is
+  // the whole reason the pass spends a second channel on both.
+  const behind = audio.facilityVoice(event, { position: { x: event.x, z: event.z - 20 }, yaw: 0 })
+  assert.ok(Math.abs(behind.pan) < 1e-9, 'a noise behind you is off to one side')
+  for (const voice of [east, north, ahead, behind]) {
+    assert.ok(voice.pan >= -1 && voice.pan <= 1, `a pan of ${voice.pan} is off the field`)
+    assert.ok(voice.damp >= audio.FACILITY_DAMP_FAR && voice.damp <= audio.FACILITY_DAMP_NEAR, 'the damp left its window')
+  }
+  // 4. distance DAMPENS as well as attenuates, and it is the same claim the
+  // portal hum makes on its own pair of numbers
+  assert.ok(at(0).damp > at(120).damp, 'a far noise is not duller')
+  assert.equal(at(0).damp, audio.FACILITY_DAMP_NEAR)
+  assert.ok(at(200).damp < audio.FACILITY_DAMP_NEAR * 0.6)
+  // 5. and a source nobody can locate is SILENT, not loud. This is the one that
+  // matters: a noise computed from a broken input is a noise out of nowhere.
+  for (const frame of [{}, { position: null }, { position: {} }, { position: { x: NaN, z: 0 } }, { position: 'here' }]) {
+    const voice = audio.facilityVoice(event, frame)
+    assert.equal(voice.level, 0, `a listener of ${JSON.stringify(frame)} made a sound`)
+    assert.equal(voice.pan, 0)
+    assert.equal(voice.distance, null)
+  }
+  assert.equal(audio.facilityVoice(null, LISTENER).level, 0, 'no event is a sound')
+  assert.equal(audio.facilityVoice({ ...event, kind: 'bagpipes' }, LISTENER).level, 0, 'an unknown kind is a sound')
+  assert.equal(audio.facilityVoice({ ...event, x: NaN }, LISTENER).level, 0)
+  // a source off the world is a *wrapped* one, not a silent one: 1e9 m folds to
+  // somewhere in the city, and pretending otherwise would mean a second distance
+  // model — the one this pass explicitly refused to write
+  const offWorld = audio.facilityVoice({ ...event, x: 1e9 }, LISTENER)
+  assert.ok(offWorld.distance <= hood.WORLD_EXTENT / 2, 'a wrapped distance left the world')
+  assert.equal(offWorld.level, audio.FACILITY_KINDS[event.kind].level * beast.soundStrength(offWorld.distance, audio.FACILITY_RANGE))
+})
+
+test('the portal hum dims with distance as well as with level', () => {
+  // §13: the hum is progress feedback IN-WORLD, and the player is meant to find a
+  // portal by ear. The level already fell with distance (slice 11); pass 13 added
+  // the second channel, because one channel is a volume knob and two is a
+  // distance.
+  const live = (distance) => audio.portalHumVoice({ id: 'A', progress: 0, distance })
+  assert.equal(live(0).damp, audio.PORTAL_HUM_DAMP_NEAR, 'a hum at arm\'s length is not open')
+  assert.equal(live(audio.PORTAL_HUM_RANGE).damp, audio.PORTAL_HUM_DAMP_FAR, 'a hum at the edge is not closed')
+  assert.ok(audio.PORTAL_HUM_DAMP_FAR < audio.PORTAL_HUM_DAMP_NEAR)
+  let previous = Infinity
+  for (let d = 0; d <= audio.PORTAL_HUM_RANGE; d += 0.25) {
+    const damp = live(d).damp
+    assert.ok(damp < previous + 1e-9, `the hum got brighter at ${d}m`)
+    previous = damp
+  }
+  // it is DISTANCE and nothing else: progress, the swell and a shutdown all leave
+  // the damp alone, exactly as they leave the level alone
+  for (const progress of [0, 0.5, rules.PORTAL_NOISE_THRESHOLD, 1]) {
+    assert.equal(
+      audio.portalHumVoice({ id: 'A', progress, distance: 12 }).damp,
+      audio.portalHumVoice({ id: 'A', progress: 0, distance: 12 }).damp,
+      'progress changed the damp',
+    )
+  }
+  // a shut portal is silent but still reports the damping it died on, the way it
+  // still reports the pitch it died on
+  const dead = audio.portalHumVoice({ id: 'A', progress: 1, shut: true, distance: 5 })
+  assert.equal(dead.level, 0)
+  assert.equal(dead.damp, audio.portalHumVoice({ id: 'A', progress: 0, distance: 5 }).damp)
+  assert.equal(audio.portalHumVoice({ id: 'A', distance: NaN }).damp, audio.PORTAL_HUM_DAMP_FAR, 'an unknown distance is a bright hum')
+})
+
+test('the noise floor and the draw streams are the seed and nothing else', () => {
+  // `fillNoise` replaces `Math.random() * 2 - 1` over 96 000 samples, and the two
+  // remaining draws come from per-voice streams. All three are claims about
+  // reproducibility, so they are checked as reproducibility rather than as taste.
+  const a = new Float32Array(4096)
+  const b = new Float32Array(4096)
+  assert.equal(audio.fillNoise(a, 1337), a, 'fillNoise does not return its target')
+  audio.fillNoise(b, 1337)
+  assert.deepEqual([...a], [...b], 'two runs of the same seed hum differently')
+  audio.fillNoise(b, 4242)
+  assert.notDeepEqual([...a], [...b], 'two seeds hum the same')
+  // it is NOISE and not a tone: bounded, zero-mean, and uncorrelated with itself
+  // one sample apart. A filter or a sine would fail the third of these.
+  let sum = 0
+  let lag = 0
+  for (let i = 0; i < a.length; i += 1) {
+    assert.ok(a[i] >= -1 && a[i] < 1, `sample ${i} is ${a[i]}, outside [-1, 1)`)
+    sum += a[i]
+    if (i > 0) lag += a[i] * a[i - 1]
+  }
+  const mean = sum / a.length
+  assert.ok(Math.abs(mean) < 0.05, `the floor is not zero-mean: ${mean.toFixed(4)}`)
+  const correlation = lag / (a.length - 1)
+  assert.ok(Math.abs(correlation) < 0.05, `the floor is correlated with itself: ${correlation.toFixed(4)}`)
+  // a different salt is a different floor, and that is the extension point a
+  // future wet-street or louder-building caller needs
+  const salted = new Float32Array(512)
+  audio.fillNoise(salted, 1337, 0x0badf00d)
+  assert.notDeepEqual([...salted.slice(0, 64)], [...a.slice(0, 64)], 'the salt does nothing')
+  // the per-voice streams: same seed and channel is the same sequence, and two
+  // channels of one run are independent, which is what stops a new sound from
+  // retuning the footstep
+  const take = (seed, channel, count = 8) => {
+    const draw = audio.createDraw(seed, channel)
+    return Array.from({ length: count }, () => draw())
+  }
+  const footstep = take(1337, audio.DRAW_CHANNELS.footstep)
+  const echo = take(1337, audio.DRAW_CHANNELS.echo)
+  for (const value of [...footstep, ...echo]) {
+    assert.ok(value >= 0 && value < 1, `a draw of ${value} is outside [0, 1)`)
+  }
+  assert.deepEqual(footstep, take(1337, audio.DRAW_CHANNELS.footstep), 'a channel is not reproducible')
+  assert.notDeepEqual(footstep, echo, 'two channels share a sequence')
+  assert.notDeepEqual(footstep, take(4242, audio.DRAW_CHANNELS.footstep), 'a seed is not reproducible')
+  // and the channels are a table, not a free integer, because a channel is a
+  // voice and an unnamed voice cannot be found by whoever comes next
+  assert.ok(Object.isFrozen(audio.DRAW_CHANNELS))
+  for (const name of ['footstep', 'echo']) {
+    assert.ok(Number.isInteger(audio.DRAW_CHANNELS[name]), `${name} has no channel`)
+  }
+  assert.equal(
+    new Set(Object.values(audio.DRAW_CHANNELS)).size,
+    Object.keys(audio.DRAW_CHANNELS).length,
+    'two voices share a channel',
+  )
+})
+
+test('a backlog does not arrive as a burst, and a pause freezes the bed', () => {
+  // The cursor machine is driven on a REAL manager rather than a hand-made stub:
+  // `_advanceAmbience` and `_cursor` touch nothing but `this.seed` and
+  // `this.ambience`, and a real manager with no AudioContext is the honest way to
+  // say "the clock, with none of the audio around it". The machine is where the
+  // pause and the hidden-tab bugs live: three numbers and a `while`.
+  const stub = () => {
+    const manager = new audio.AudioManager()
+    manager.setSeed(1337)
+    return manager
+  }
+  const advance = (self, id, dt, fired) => self._advanceAmbience(id, dt, (event) => fired.push(event))
+  // 1. one event at a time on an ordinary frame, and none at all before the gap
+  {
+    const self = stub()
+    const fired = []
+    assert.equal(advance(self, 'drip', 1 / 60, fired), 0, 'a drip landed on the first frame')
+    // the first event's own time, from the pure schedule — not the gap's minimum,
+    // which is only the earliest the seeded draw could have put it
+    const first = audio.ambienceStart('drip', 1337).at
+    for (let i = 0; i < Math.ceil(first * 60) + 4; i += 1) advance(self, 'drip', 1 / 60, fired)
+    assert.equal(fired.length, 1, `${fired.length} drips landed in the first gap`)
+    assert.equal(fired[0].kind, 'drip')
+    assert.ok(Math.abs(fired[0].at - first) < 1e-9, 'the drip that fired was not the first one')
+  }
+  // 2. a frame that arrives after the tab was hidden drops the backlog instead of
+  // playing it. Ten minutes of drips on the frame the player comes back is the
+  // most audible way this could be wrong, and the cap is what prevents it.
+  {
+    const self = stub()
+    const fired = []
+    const oneFrame = advance(self, 'drip', 600, fired)
+    assert.equal(oneFrame, audio.AMBIENCE_MAX_PER_FRAME, 'a hidden tab played its whole backlog')
+    assert.equal(fired.length, audio.AMBIENCE_MAX_PER_FRAME)
+    const cursor = self.ambience.get('drip')
+    assert.equal(cursor.clock, 600, 'the clock did not advance by the frame')
+    assert.ok(cursor.at >= 600, `the cursor is still behind the clock at ${cursor.at}`)
+    // and the stream RESUMES from the new base rather than queueing
+    const before = cursor.index
+    for (let i = 0; i < 30; i += 1) advance(self, 'drip', 1 / 60, fired)
+    assert.ok(cursor.index > before, 'the stream stopped after a dropped backlog')
+  }
+  // 3. a dt of zero or less is not time passing. The world's paused frame still
+  // calls `_updateAudio`, and a cursor that advanced on it would keep the bed
+  // breathing through the pause card.
+  {
+    const self = stub()
+    for (const dt of [0, -1, NaN, undefined]) {
+      assert.equal(advance(self, 'gust', dt, []), 0, `a dt of ${dt} moved the bed`)
+      assert.equal(self.ambience.get('gust')?.clock ?? 0, 0, `a dt of ${dt} advanced the clock`)
+    }
+  }
+  // 4. the fired events are the SCHEDULE's events, in the schedule's order, and
+  // not a re-derivation: this is what ties the voice to the pure function the
+  // checks above walk
+  {
+    const self = stub()
+    const fired = []
+    for (let i = 0; i < 3600; i += 1) advance(self, 'facility', 1 / 60, fired)
+    const expected = audio.ambienceStream('facility', 1337, fired.length + 1)
+    assert.deepEqual(fired, expected.slice(0, fired.length), 'the voice is not playing the schedule')
+    // a minute of play is 60 s of a 20-60 s stream, so it is a FEW events and
+    // never a stream of them: this is the assertion that a seeded schedule is
+    // occasional rather than rhythmic
+    assert.ok(fired.length >= 1, `no facility noise in a minute of play (${fired.length})`)
+    assert.ok(fired.length <= 4, `${fired.length} facility noises in a minute of play is a rhythm, not a place`)
+  }
+  // 5. an unknown stream is a no-op rather than a throw
+  {
+    const self = stub()
+    assert.equal(advance(self, 'bagpipes', 1, []), 0)
+    assert.equal(advance(self, 'drip', 1, null), 0, 'a missing callback is a crash')
+  }
+})
+
+test('the bed has no unseeded draw and no timer left in it', () => {
+  // The absence claims, read out of the CODE (prose stripped, so a comment that
+  // says "Math.random" in order to explain why there is none cannot satisfy this).
+  //
+  // This is the check that would have caught the pass not happening: before it,
+  // every one of these greps was true, and every other check in this file passed
+  // with them true.
+  const code = stripProse(AUDIO_SOURCE)
+  for (const forbidden of ['Math.random', 'setTimeout', 'setInterval', 'Date.now', 'performance.now', 'new Date']) {
+    assert.equal(code.includes(forbidden), false, `audio.js still reaches for ${forbidden}`)
+  }
+  // the noise buffer is filled by the seeded function, not inline. This and the
+  // two call-forms below are read from the RAW source, because `stripProse` is
+  // about the absence claims and it blanks the string literals the stream ids
+  // are written with.
+  assert.ok(AUDIO_SOURCE.includes('fillNoise(buffer.getChannelData(0), this.seed)'), 'the noise floor is not the seeded one')
+  // the ambience is on the world's clock: the cursors are advanced by the frame's dt
+  for (const id of audio.AMBIENCE_IDS) {
+    assert.ok(
+      AUDIO_SOURCE.includes(`_advanceAmbience('${id}', dt`),
+      `the ${id} stream is not driven by the frame clock`,
+    )
+  }
+  // the old scheduler is gone by name, and so is the handle array it filled
+  assert.equal(code.includes('_scheduleAmbient'), false, 'the setTimeout scheduler survived')
+  assert.equal(code.includes('_ambientTimers'), false, 'the timer handle array survived')
+  // and the world is the only thing that can hand the bed a position: the file
+  // cannot read the camera or the scene, so it cannot place a noise any other way
+  assert.equal(code.includes('this.scene'), false, 'the audio reached for the scene')
+  assert.equal(code.includes('camera'), false, 'the audio reached for the camera instead of the frame')
+})
+
+test('a manager that was never unlocked still builds nothing, and knows its seed', () => {
+  // The autoplay half of the brief, stated as a check: a manager that no gesture
+  // has reached builds no AudioContext, no bed and no cursors, and every voice on
+  // every row survives being called on it. `routeAudio` is given a frame with all
+  // three pass-13 fields, so the new rows are exercised with real values rather
+  // than with `undefined`.
+  const manager = new audio.AudioManager()
+  assert.equal(manager.ready, false)
+  assert.equal(manager.seed, DEFAULT_SEED, 'the manager does not default to the shared seed')
+  // `setSeed` takes the world's number, and drops what was derived from the old
+  // one: a cursor or a noise buffer left behind would be the previous run's
+  manager.setSeed(99)
+  manager.ambience.set('drip', { index: 3, at: 12, clock: 30 })
+  manager.draws.set(1, audio.createDraw(1, 1))
+  assert.equal(manager.setSeed(101), 101)
+  assert.equal(manager.seed, 101)
+  assert.equal(manager.ambience.size, 0, 'setSeed kept a cursor from the old run')
+  assert.equal(manager.draws.size, 0, 'setSeed kept a draw stream from the old run')
+  assert.equal(manager.setSeed(NaN), 101, 'a bad seed was accepted')
+  // `stopAmbience` is the cheap one: cursors only, no nodes touched, so it is
+  // legal to call on a manager that never built anything
+  manager.stopAmbience()
+  // and the full frame through every row, still with no context
+  const frame = { ...PLAYING_FRAME, position: { x: 3, z: 4 }, yaw: 0.5, haze: 0.7, portals: [{ id: 'A', distance: 4 }] }
+  manager.update(1 / 60, frame)
+  for (const row of audio.AUDIO_ROUTES) {
+    manager[row.voice].call(manager, audio.routeAudio(frame).find((cue) => cue.id === row.id), 1 / 60)
+  }
+  assert.equal(manager.ready, false, 'a headless manager built an AudioContext')
+  assert.equal(manager.bed, null, 'a headless manager built a bed')
+  assert.equal(manager.ambience.size, 0, 'a headless manager advanced a cursor')
+  assert.equal(manager.hums.size, 0, 'a headless manager built a hum')
+})
+
+test('the world and the audio read one seed, not two', () => {
+  // `DEFAULT_SEED` is the seam that stops "the world defaults to 1337" and "the
+  // audio defaults to 1337" from being two facts that agree today. Neither module
+  // may name a literal.
+  assert.equal(DEFAULT_SEED, 1337, 'the shared default moved')
+  assert.ok(Number.isInteger(DEFAULT_SEED))
+  const audioConstructor = AUDIO_SOURCE.slice(AUDIO_SOURCE.indexOf('constructor(options = {}) {'))
+  const worldConstructor = WORLD_SOURCE.slice(WORLD_SOURCE.indexOf('constructor(container, options = {}) {'))
+  assert.ok(
+    /this\.seed = Number\.isFinite\(options\.seed\) \? options\.seed : DEFAULT_SEED/.test(audioConstructor),
+    'the manager does not fall back to the shared seed',
+  )
+  assert.ok(
+    /this\.seed = options\.seed \?\? DEFAULT_SEED/.test(worldConstructor),
+    'the world does not fall back to the shared seed',
+  )
+  // the world hands it over, and does so after it knows its own seed and before
+  // anything that could read it
+  const handOver = worldConstructor.indexOf('this.audio?.setSeed?.(this.seed)')
+  assert.ok(handOver > worldConstructor.indexOf('this.seed = options.seed'), 'the audio is seeded before the world knows its seed')
+  assert.ok(handOver < worldConstructor.indexOf('this._buildLights()'), 'the audio is seeded after the world is built')
+  assert.match(AUDIO_SOURCE, /import \{ hash32, mulberry32, streamAt, DEFAULT_SEED \} from '\.\/hash\.js'/)
 })
 // ---------------------------------------------------------------------------
 // the store React subscribes to — v2's `src/game/store.js`
@@ -5849,8 +6456,34 @@ test('the world still makes exactly one audio call, and the router still owns th
   // §13's discipline, re-asserted: slice 12 added a pause branch and had no
   // business reaching for a voice from it
   const calls = [...WORLD_SOURCE.matchAll(/this\.audio\?\.\s*(\w+)/g)].map((m) => m[1])
-  assert.deepEqual([...new Set(calls)].sort(), ['stopPortalHums', 'update', 'winChord'])
+  assert.deepEqual(
+    [...new Set(calls)].sort(),
+    // `setSeed` is pass 13's addition and it is the one that is not a decision:
+    // the world owns the run's seed and hands it over once, in the constructor,
+    // the way it hands over `_audioFrame`'s facts sixty times a second. A gate
+    // that forbade it would be forbidding the world from knowing its own seed.
+    ['setSeed', 'stopPortalHums', 'update', 'winChord'],
+  )
   assert.equal(calls.filter((name) => name === 'update').length, 1)
+  // and it is handed over ONCE — a setSeed in the update path would be a world
+  // re-seeding the audio sixty times a second, which would silently restart the
+  // ambience cursors on every frame and make the bed fire every event at once.
+  // The match is for the CALL, not the word: a comment that mentions `setSeed`
+  // must not be able to satisfy a count.
+  const constructor = WORLD_SOURCE.slice(
+    WORLD_SOURCE.indexOf('constructor(container, options = {}) {'),
+    WORLD_SOURCE.indexOf('this._buildLights()'),
+  )
+  assert.equal(
+    (constructor.match(/this\.audio\?\.setSeed\?\.\(/g) ?? []).length,
+    1,
+    'setSeed is not called exactly once from the constructor',
+  )
+  assert.equal(
+    (WORLD_SOURCE.match(/this\.audio\?\.setSeed\?\.\(/g) ?? []).length,
+    1,
+    'setSeed is called from somewhere other than the constructor',
+  )
   for (const field of audio.AUDIO_FRAME_FIELDS) {
     assert.ok(new RegExp(`\\b${field}:`).test(WORLD_SOURCE), `the world never fills in ${field}`)
   }

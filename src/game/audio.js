@@ -37,9 +37,40 @@
  * PURE: the table and the parameter functions touch no DOM, no Three.js and no
  * clock, so `verify.mjs` imports this file directly. Everything inside the
  * `AudioManager` boundary is WebAudio and is exercised only in a browser.
+ *
+ * PASS 13 — THE WORLD BED, AND THE SEED IT IS A FUNCTION OF
+ * -------------------------------------------------------
+ * The file above this line was half data for one reason — §15.1's seam, so the
+ * routing could be proved in node. Pass 13 pushes the same discipline one step
+ * further, and the step is SEEDING rather than structure:
+ *
+ *   - **Every draw in this file comes from the run's seed.** `Math.random` is
+ *     gone from the file's code entirely (the gate greps for it), the 2 s noise
+ *     buffer is a pure function of the seed, the ambience schedule is a pure
+ *     function of `(seed, index)`, and the two remaining per-event draws — the
+ *     footstep's surface and the bell's echo tail — come from a per-VOICE seeded
+ *     channel so that adding a sound cannot retune the ones already there.
+ *   - **The ambience is on the world's clock.** Before this pass it was a
+ *     `setTimeout` chain, which meant a paused game still breathed, a won game
+ *     still breathed, and nothing in the repository could assert a schedule it
+ *     could not name. It is now one cursor per stream, advanced by the frame's
+ *     own `dt`, and `AMBIENCE_SPECS` is the table those cursors read.
+ *   - **Three new rows, all priced at 0.** `roomTone`, `hazeWind`, `facility`
+ *     and `drip` are the world talking to itself, and a sound the creature could
+ *     be drawn to would hand it the player's position for free. That is why
+ *     every one of them carries `kind: null` and why the gate holds the radius
+ *     at zero rather than leaving it to the table.
+ *
+ * What pass 13 is NOT is the music. There is no pad, no progression and no
+ * melody in this file, and the ambient music the brief asked for is the second
+ * audio pass rather than being smuggled in here: a music bed and a world bed
+ * want opposite things from the same bus, and putting both in one pass would
+ * have made both of them worse.
  */
 
-import { soundRadius, soundStrength } from './creature.js'
+import { hash32, mulberry32, streamAt, DEFAULT_SEED } from './hash.js'
+import { soundRadius, soundStrength, wrapDelta } from './creature.js'
+import { WORLD_HALF } from './neighborhood.js'
 import { PORTAL_NOISE_THRESHOLD, BREATH_RECOVERY_THRESHOLD } from './rules.js'
 
 // ---------------------------------------------------------------------------
@@ -229,6 +260,34 @@ export const AUDIO_ROUTES = Object.freeze([
     id: 'drone', sound: 'ambient drone', voice: 'applyDrone', mode: 'sustained',
     tuning: null, kind: null, exhausted: false,
     gate: 'the lifetime of a begun run — v1\'s, retuned lower (§13)',
+  }),
+  // --- ITERATION 2, PASS 13: the world bed, as four more rows ----------------
+  // All four are `sustained` rather than `once` because none of them is an
+  // event: each is a layer that runs, and the two scheduled ones decide for
+  // themselves when to fire. All four carry `kind: null`, so `cueRadius` prices
+  // them at 0 — the world bed is not a stimulus, and a noise the creature could
+  // be drawn to would turn atmosphere into a tell for the PLAYER's position,
+  // which is the one thing §6.2 must never learn from a pass that exists to be
+  // ignored.
+  Object.freeze({
+    id: 'roomTone', sound: 'room tone', voice: 'applyRoomTone', mode: 'sustained',
+    tuning: null, kind: null, exhausted: false,
+    gate: 'the lifetime of a begun run — a filtered-noise bed under the drone (pass 13)',
+  }),
+  Object.freeze({
+    id: 'hazeWind', sound: 'haze wind', voice: 'applyHazeWind', mode: 'sustained',
+    tuning: null, kind: null, exhausted: false,
+    gate: 'always, level and brightness following the sky\'s drifting haze bands (pass 13)',
+  }),
+  Object.freeze({
+    id: 'facility', sound: 'distant facility', voice: 'updateFacility', mode: 'sustained',
+    tuning: null, kind: null, exhausted: false,
+    gate: 'a seeded rumble, clank or thump every 20-60 s, placed in the world (pass 13)',
+  }),
+  Object.freeze({
+    id: 'drip', sound: 'water drip', voice: 'updateDrips', mode: 'sustained',
+    tuning: null, kind: null, exhausted: false,
+    gate: 'a drip off a drain every few seconds while playing (pass 13)',
   }),
 ])
 
@@ -426,6 +485,28 @@ export const PORTAL_HUM_LEVEL = 0.05
 export const PORTAL_HUM_SWELL = 1.8
 
 /**
+ * The hum's lowpass, at the portal and at the edge of its range. Hz.
+ *
+ * BEFORE: n/a — the hum attenuated in level only, so a portal across the street
+ * and one at arm's length were the same sound at two volumes. AFTER: a far hum
+ * is duller as well as quieter.
+ *
+ * This is the brief's "volume scales with player distance" taken one channel
+ * further, and the reason is that one channel is not a distance. Air removes
+ * high frequencies before it removes energy, so the pair (level, colour) is what
+ * makes a source read as *away* rather than as *turned down* — and the player is
+ * meant to be able to find a portal by ear before they can see one, which is the
+ * entire job of §13's "progress feedback in-world".
+ *
+ * It is the same two numbers, in the same order, as `FACILITY_DAMP_NEAR`/`_FAR`,
+ * and it is deliberate that they are two pairs rather than one: a portal is a
+ * tuned instrument and a distant building is a building, and a shared table
+ * would be an invitation to retune one into the other.
+ */
+export const PORTAL_HUM_DAMP_NEAR = 1800
+export const PORTAL_HUM_DAMP_FAR = 500
+
+/**
  * portalHumPitch — where a portal's hum is, given how far the shutdown has got.
  *
  * An octave, falling: `PORTAL_HUM_PITCH` at nothing, half that at done. One
@@ -459,7 +540,22 @@ export function portalHumVoice(portal) {
   const reach = Number.isFinite(distance) ? soundStrength(distance, PORTAL_HUM_RANGE) : 0
   const past = Math.max(0, (progress - PORTAL_NOISE_THRESHOLD) / (1 - PORTAL_NOISE_THRESHOLD))
   const level = shut || reach <= 0 ? 0 : PORTAL_HUM_LEVEL * reach * (1 + (PORTAL_HUM_SWELL - 1) * past)
-  return { id: source.id ?? null, pitch: portalHumPitch(progress), level, progress, shut, distance: Number.isFinite(distance) ? distance : null }
+  // PASS 13. The damp is a function of `reach` and of nothing else, which is what
+  // makes it assertable as strictly decreasing in distance and exactly `DAMP_FAR`
+  // at the edge of the range — the same monotonicity claim the level has carried
+  // since slice 11, now on the second channel. A shut portal reports the damp it
+  // died on, like its pitch: the progress stays recoverable from the data after
+  // the sound has gone.
+  const damp = PORTAL_HUM_DAMP_FAR + (PORTAL_HUM_DAMP_NEAR - PORTAL_HUM_DAMP_FAR) * reach
+  return {
+    id: source.id ?? null,
+    pitch: portalHumPitch(progress),
+    level,
+    damp,
+    progress,
+    shut,
+    distance: Number.isFinite(distance) ? distance : null,
+  }
 }
 
 /**
@@ -503,6 +599,523 @@ export function droneLevelFor(frame = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// ITERATION 2, PASS 13 — THE WORLD BED
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS PASS IS, AND WHAT IT IS NOT
+// -------------------------------------
+// The bed is the sound of the PLACE: a room tone under everything, air moving
+// with the sky's own haze, and the occasional noise from somewhere else in a
+// city this size. It is NOT the creature, and it is NOT music — the music is
+// the second of the two audio passes and none of it is here. The line is drawn
+// at "the world talking to itself": every sound below is generated by the world
+// and is indifferent to the player, and the one thing the creature must never
+// learn from this pass is where the player is standing.
+//
+// FOUR PARTS, AND WHY EACH IS WHERE IT IS
+// --------------------------------------
+//   1. `roomToneVoice` — a filtered-noise bed under the drone. The drone is
+//      TONE (two oscillators, 44 Hz); a room tone is AIR, and an empty street
+//      with a tone under it sounds like an oscillator playing, not like a place.
+//   2. `hazeWindVoice` — the wind, following the number the SKY computes from
+//      the drifting haze bands. Coupling, not coincidence: a second LFO here
+//      would drift against the bands within a minute and the two would be
+//      visibly unrelated to anyone who went looking for the link.
+//   3. `nextAmbienceEvent` + `facilityVoice` — distant facility noise on a
+//      SEEDED schedule, placed in the world by seed and heard through the same
+//      `soundStrength` distance model the creature's own breath uses.
+//   4. `createDraw` / `fillNoise` — the seeded replacements for the last of
+//      this file's `Math.random` draws, so the bed is a function of the seed.
+//
+// THE SCHEDULE USED TO BE A `setTimeout`
+// -------------------------------------
+// BEFORE: `_scheduleAmbient(fn, 4, 12)` walked a `setTimeout` chain with
+// `Math.random` intervals, and this file's own header says why that is the wrong
+// shape for this codebase — "a voice that keeps its own time drifts away from
+// the pause and the capture". It was worse than that here: those timers kept
+// firing through a pause, they were not reproducible between two runs of the
+// same seed, and nothing in the repository could assert any of it. AFTER: one
+// cursor per stream, advanced by the frame's own `dt`, with every event's
+// numbers a pure function of `(seed, index)`. The gaps are unchanged (4-12 s
+// for a gust, 2.5-8 s for a drip); the MECHANISM is what moved, and a gate can
+// now walk a simulated hour of it.
+
+/** Clamp to `[lo, hi]`, answering a non-number with the floor. */
+function clamp(value, lo, hi) {
+  if (!Number.isFinite(value)) return lo
+  return value < lo ? lo : value > hi ? hi : value
+}
+
+// --- 1. the room tone -------------------------------------------------------
+
+/**
+ * ROOM_TONE — the air under the drone, as data.
+ *
+ * BEFORE: n/a. The only noise in the ambience was the drone rumble's 44 Hz
+ * lowpassed noise, which is a SUB sound; a room tone is broadband and sits
+ * above it. AFTER: a highpassed, lowpassed noise bed with two slow LFOs.
+ *
+ * | number | what it is | why it is that |
+ * | --- | --- | --- |
+ * | `highpass` 55 Hz | the bottom of the bed | the drone owns everything under its own 44 Hz fundamental plus the rumble pair at 27.5/28.6; a second voice down there is not air, it is mud, and it fights the compressor's 6:1 for headroom |
+ * | `cutoff` 520 Hz | the top of the bed | a room tone is a mid hiss, not a hiss across the spectrum — the same argument `MOON_PEAK` makes about light |
+ * | `lfoRate` 0.017 Hz | a 59 s breath on the cutoff | slow enough that a listener cannot predict it and fast enough to hear a change across a run |
+ * | `lfoDepth` 140 Hz | how far the cutoff wanders | about a quarter of the cutoff, so the bed brightens and dulls rather than opening and closing |
+ * | `level` 0.024 | the whole bed at the bus | quiet by construction: `WORLD_BED_CEILING` is the number that holds the bed under one ordinary footstep, and this is most of what is left after the drone and the wind |
+ *
+ * The level is a multiple of `droneLevelFor(frame)` rather than a number of its
+ * own, so the bed ducks on the capture's black and goes quiet under the win chord
+ * on exactly the ladder the drone uses. Three sounds sharing one ladder is a
+ * table; three sounds each carrying a private one is three chances to disagree
+ * about what "quiet" means at the end of a run.
+ */
+export const ROOM_TONE = Object.freeze({
+  highpass: 55,
+  cutoff: 520,
+  resonance: 0.8,
+  lfoRate: 0.017,
+  lfoDepth: 140,
+  level: 0.024,
+})
+
+/**
+ * roomToneVoice — the bed's level for this frame, as a number.
+ *
+ * Zero on any frame that is not a started run, which in practice means the title
+ * screen: `routeAudio` emits no rows at all before `started`, so a bed that was
+ * somehow given a level anyway would have to be constructed by a caller who had
+ * already ignored the frame contract. It is still stated here rather than
+ * assumed, because "the title screen is silent" is a claim and claims get
+ * checked.
+ *
+ * @param {object} [frame]
+ * @returns {{ level: number, cutoff: number, lfoRate: number, lfoDepth: number }}
+ */
+export function roomToneVoice(frame = {}) {
+  const level = frame.started === true ? ROOM_TONE.level * droneLevelFor(frame) : 0
+  return { level, cutoff: ROOM_TONE.cutoff, lfoRate: ROOM_TONE.lfoRate, lfoDepth: ROOM_TONE.lfoDepth }
+}
+
+// --- 2. the wind, following the sky's haze ----------------------------------
+
+/**
+ * HAZE_WIND — the moving-air layer, as data.
+ *
+ * BEFORE: n/a. There was a `_windGust` (a scheduled one-shot on a `setTimeout`)
+ * and nothing underneath it, so "the wind" was a thing that happened every few
+ * seconds over silence. AFTER: a continuous band whose gain AND brightness both
+ * follow `hazeIntensityAt`, with the gusts still on top of it.
+ *
+ * The numbers are the pass's real content, and they are the same two ideas:
+ *
+ * - `floor` 0.006 — the bed at NO haze. Not zero. A wind layer that stopped
+ *   when the sky was clear would make the sky's own animation a fault in the
+ *   audio, and a listener would hear the coupling as a dropout rather than as
+ *   weather. The floor is the "there is always some air" statement.
+ * - `range` 0.012 — what a full haze adds on top of the floor. That doubles the
+ *   level across the sky's whole range, which is a lot, and the reason it is
+ *   affordable is `WORLD_BED_CEILING` — the number that holds all three bed
+ *   layers together under one ordinary footstep however they are retuned.
+ * - `bandLo` / `bandHi` — the bandpass centre, 320 Hz at no haze to 980 Hz at
+ *   full. Thick air is not only louder, it is *duller*, and the opposite
+ *   temptation (brightening with haze) was rejected: more haze means more
+ *   scattering, and scattering takes the top off.
+ */
+export const HAZE_WIND = Object.freeze({
+  floor: 0.006,
+  range: 0.012,
+  bandLo: 320,
+  bandHi: 980,
+  resonance: 0.9,
+})
+
+/**
+ * hazeWindVoice — the wind layer for this frame, as numbers.
+ *
+ * `haze` is a FACT from the sky (`SkyView.hazeIntensity()`), and this is where it
+ * becomes a sound. Three properties the gate holds:
+ *
+ *  - **bounded without clamping.** `floor + range · haze` over `haze ∈ [0, 1]`
+ *    is in `[floor, floor + range]` by arithmetic, so a bad `haze` cannot make
+ *    the wind louder than the table says. `clamp01` is still applied to `haze`
+ *    itself, because the sky's number is another module's promise and this one
+ *    should not inherit it.
+ *  - **monotone.** More haze is never less wind. A non-monotone mapping would
+ *    be audible as the wind rising against the sky, which is the exact failure
+ *    this coupling exists to make impossible.
+ *  - **an absent `haze` is the thinnest air, not silence.** A missing number is
+ *    answered as zero haze, which is the FLOOR rather than the absence. This is
+ *    the opposite of `proximityAt`'s "silence is the safe reading", and the
+ *    difference is the layer: a proximity readout that fires wrongly teaches a
+ *    player to distrust it, while a bed that stops teaches them nothing at all
+ *    — it just sounds broken.
+ */
+export function hazeWindVoice(frame = {}) {
+  const haze = clamp01(frame.haze)
+  const bed = HAZE_WIND.floor + HAZE_WIND.range * haze
+  return {
+    level: frame.started === true ? bed * droneLevelFor(frame) : 0,
+    haze,
+    cutoff: HAZE_WIND.bandLo + (HAZE_WIND.bandHi - HAZE_WIND.bandLo) * haze,
+  }
+}
+
+/**
+ * WORLD_BED_CEILING — what the whole bed is allowed to cost at the bus.
+ *
+ * BEFORE: n/a — there was one bed (the drone) and no claim about the sum.
+ * AFTER: the drone at full, the room tone and the wind at their ceilings must
+ * together stay under ONE ordinary footstep's `FOOTSTEP_VOICES.walk.level`.
+ *
+ * The comparison is not decoration, and it is not arbitrary. §13 makes the
+ * footstep the primary sound-radius tell: a creature drawn to the player by a
+ * stride the player cannot hear is a failed loop, and the bed is the only other
+ * thing on that bus. So the bed is held below the quietest thing the player must
+ * be able to hear, and the gate recomputes the sum from the tables rather than
+ * trusting the comment — a retune of any one layer that breaks the ceiling fails
+ * the build instead of quietly burying the footsteps.
+ */
+export const WORLD_BED_CEILING = FOOTSTEP_VOICES.walk.level
+
+// --- 3. the seeded ambience streams ----------------------------------------
+
+/**
+ * The salt every ambience stream is mixed from, and the per-stream codes.
+ *
+ * XOR rather than addition, so two streams derived from the same seed cannot
+ * collide by carrying, and the three codes are far apart in the mix — a gust and
+ * a facility rumble sharing a `hash32` lane would be audible as a repeated
+ * pattern every 20-60 s, which is the one thing an occasional noise must not be.
+ */
+const AMBIENCE_SALT = 0x2f6d3b17
+
+/**
+ * FACILITY_KINDS — the three noises a building of this size makes when nobody is
+ * looking at it.
+ *
+ * | kind | what it is | why it is that one |
+ * | --- | --- | --- |
+ * | `rumble` | a sub swell with a 41 Hz body and a lowpassed noise wash | the sound of a big empty thing settling; long, soft and impossible to place, which is what "distant" is made of |
+ * | `clank` | a metallic strike — narrow band, fast decay | the only one with an attack you can hear, so it is the one that occasionally gives the game a pulse; kept from dominating by being brief rather than by being quiet |
+ * | `thump` | a single low knock, 58 Hz, 1.1 s | a door somewhere. The middle of the three: pitched enough to be a door, dull enough not to be a bell |
+ *
+ * `length` is how long the voice owns the bus — longer than `decay` on all
+ * three, because the tail is what makes a distant noise sound distant.
+ */
+export const FACILITY_KINDS = Object.freeze({
+  rumble: Object.freeze({ id: 'rumble', level: 0.05, tone: 41, decay: 2.2, band: 180, q: 0.9, length: 3.2 }),
+  clank: Object.freeze({ id: 'clank', level: 0.03, tone: 196, decay: 0.55, band: 1500, q: 5, length: 1.1 }),
+  thump: Object.freeze({ id: 'thump', level: 0.042, tone: 58, decay: 1.1, band: 320, q: 1.2, length: 1.6 }),
+})
+
+/** The three kinds, by name. */
+export const FACILITY_KIND_IDS = Object.freeze(Object.keys(FACILITY_KINDS))
+
+/**
+ * AMBIENCE_SPECS — the three scheduled streams, as one table.
+ *
+ * BEFORE: two hand-written calls to `_scheduleAmbient(fn, min, max)` with the
+ * numbers written into the call (`4, 12` and `2.5, 8`), and a third sound that
+ * did not exist. AFTER: three rows, one mechanism, and the facility row's window
+ * is a row rather than an argument.
+ *
+ * | id | gap | placed | what fires |
+ * | --- | --- | --- | --- |
+ * | `facility` | 20-60 s | yes, in the world | one of `FACILITY_KINDS`, at a seeded point in the city, heard through the listener's distance and bearing |
+ * | `gust` | 4-12 s | no | a draft through the corridors, scaled by the current haze |
+ * | `drip` | 2.5-8 s | no | a drip off a drain — pass 8 put the water in the street, and this is the sound of it |
+ *
+ * `code` is the stream's lane in the mix. The gaps are the numbers the old
+ * `setTimeout` calls used, unchanged, and the only reason the facility row is
+ * slower is the brief's: a noise every 4 s is a rhythm, and a rhythm is
+ * something a player learns, at which point it stops being a place and starts
+ * being a metronome.
+ */
+export const AMBIENCE_SPECS = Object.freeze({
+  facility: Object.freeze({ id: 'facility', code: 0x0f1a2b3c, gap: Object.freeze({ min: 20, max: 60 }), placed: true, kinds: FACILITY_KIND_IDS }),
+  gust: Object.freeze({ id: 'gust', code: 0x51a2b34c, gap: Object.freeze({ min: 4, max: 12 }), placed: false, kinds: Object.freeze(['gust']) }),
+  drip: Object.freeze({ id: 'drip', code: 0x7c3d9e11, gap: Object.freeze({ min: 2.5, max: 8 }), placed: false, kinds: Object.freeze(['drip']) }),
+})
+
+/** The three stream ids, so a check can talk about the table without parsing it. */
+export const AMBIENCE_IDS = Object.freeze(Object.keys(AMBIENCE_SPECS))
+
+/**
+ * AMBIENCE_MAX_PER_FRAME — how many events one stream may fire on one frame.
+ *
+ * BEFORE: n/a — a `setTimeout` chain fires exactly one event per tick, so the
+ * question never arose. AFTER: a frame that arrives after a hidden tab has an
+ * arbitrary backlog behind it, and the cap is what stops that backlog arriving as
+ * a burst.
+ *
+ * Two is the number, and it is not arbitrary either: the shortest gap in the
+ * table is the drip's 2.5 s, so at any `dt` the game can actually produce — the
+ * world clamps its frame to 0.05 s, and a capture harness to `SIM_DT` — TWO is
+ * already unreachable. It exists for a caller that hands in a nonsense `dt`, and
+ * a cap of one would be a cap that fires on legitimate frames.
+ */
+export const AMBIENCE_MAX_PER_FRAME = 2
+
+/**
+ * The scale the scheduled drip is played at.
+ *
+ * BEFORE: `0.07` and `0.02` were written into `_waterDrip`. AFTER: an identity,
+ * named — because the honest answer for a drip is that it does not scale with
+ * anything the sky reports. A drain drips whether the haze is thick or thin, and
+ * the two one-shot scales sitting in one place is what stops a later pass from
+ * wiring the drip to the wind and making a puddle breathe.
+ *
+ * The WIND's scale is not a constant, and that is the point of this paragraph: it
+ * is the current bed level over `HAZE_WIND.floor`, which is 1 at no haze and 3 at
+ * full. So a draft in thick air is three times a draft in thin air — the coupling
+ * is in the GUST, not only in the bed under it — and at haze 0 the gust is
+ * exactly the absolute level it had before this pass, which is where it should be
+ * when the layer beneath it did not exist.
+ */
+export const AMBIENCE_DRIP_LEVEL = 1
+
+/**
+ * The unit draw behind one event: one stream per event, four facts from it.
+ *
+ * `a` picks the kind, `b`/`c` place it, `d` sets the gap that follows. Four
+ * draws from ONE per-event stream rather than four from an ambience-wide one is
+ * the difference between "the gap after event 12 depends only on event 12" and
+ * "it depends on every event before it" — the second is deterministic but it
+ * means the schedule cannot be sampled at an index, and sampling at an index is
+ * what makes it checkable.
+ *
+ * @param {string} id a key of `AMBIENCE_SPECS`
+ * @param {number} index the event's index in its stream
+ * @param {number} seed the run's seed
+ * @returns {() => number}
+ */
+function drawsAt(id, index, seed) {
+  return streamAt((seed ^ AMBIENCE_SALT) >>> 0, index, AMBIENCE_SPECS[id].code)
+}
+
+/** The gap after the event at `index`, in seconds, inside the spec's window. */
+function gapAt(id, index, seed) {
+  const gap = AMBIENCE_SPECS[id].gap
+  return gap.min + drawsAt(id, index, seed)() * (gap.max - gap.min)
+}
+
+/**
+ * ambienceStart — the cursor a stream begins at.
+ *
+ * The first event is already a full gap out, not at zero. A stream whose first
+ * event landed on the frame the run began would be the first thing a player
+ * heard after pressing BEGIN, and a run that opens with a random clank is a run
+ * that opens wrong.
+ *
+ * @param {string} id a key of `AMBIENCE_SPECS`
+ * @param {number} seed the run's seed
+ * @returns {{ index: number, at: number } | null}
+ */
+export function ambienceStart(id, seed) {
+  if (!AMBIENCE_SPECS[id]) return null
+  return { index: 0, at: gapAt(id, 0, seed) }
+}
+
+/**
+ * nextAmbienceEvent — one step of a stream: the event, and the cursor after it.
+ *
+ * Pure, and O(1) whatever the stream's length, because the gap after event `n`
+ * is hashed from `n` rather than accumulated. That is the whole reason this is a
+ * cursor and not a schedule array: a run that has been going for an hour has an
+ * hour of drips behind it, and a gate that wants to know what happens at 3 600 s
+ * should not have to walk 3 600 s to find out.
+ *
+ * The returned event is a plain, serialisable fact. `x`/`z` are canonical world
+ * coordinates for a placed stream and `null` for the others, which is why the
+ * drip's event does not carry a position nobody asked for.
+ *
+ * @param {string} id a key of `AMBIENCE_SPECS`
+ * @param {object} cursor `{ index, at }` from `ambienceStart` or a previous call
+ * @param {number} seed the run's seed
+ * @returns {{ event: object, cursor: object } | null}
+ */
+export function nextAmbienceEvent(id, cursor, seed) {
+  const spec = AMBIENCE_SPECS[id]
+  if (!spec) return null
+  const index = Number.isFinite(cursor?.index) ? Math.max(0, Math.floor(cursor.index)) : 0
+  const at = Number.isFinite(cursor?.at) ? cursor.at : 0
+  const draws = drawsAt(id, index, seed)
+  const a = draws()
+  const b = draws()
+  const c = draws()
+  const kind = spec.kinds[Math.min(spec.kinds.length - 1, Math.floor(a * spec.kinds.length))]
+  return {
+    event: {
+      id, index, at, kind, a, b, c,
+      x: spec.placed ? (b * 2 - 1) * WORLD_HALF : null,
+      z: spec.placed ? (c * 2 - 1) * WORLD_HALF : null,
+    },
+    cursor: { index: index + 1, at: at + gapAt(id, index + 1, seed) },
+  }
+}
+
+/**
+ * ambienceStream — the first `count` events of a stream, as a list.
+ *
+ * A convenience over `ambienceStart` + `nextAmbienceEvent` for callers that want
+ * the whole thing: the gate, and any future capture that wants to know when the
+ * next clank is. It is deliberately NOT how the voice consumes a stream — the
+ * voice holds a cursor and asks for one event at a time, so a run that has been
+ * going for an hour has not built an hour of events in memory.
+ *
+ * @param {string} id a key of `AMBIENCE_SPECS`
+ * @param {number} seed the run's seed
+ * @param {number} count how many events to walk
+ * @returns {object[]}
+ */
+export function ambienceStream(id, seed, count) {
+  const events = []
+  let cursor = ambienceStart(id, seed)
+  const want = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0
+  for (let i = 0; i < want && cursor; i += 1) {
+    const step = nextAmbienceEvent(id, cursor, seed)
+    if (!step) break
+    events.push(step.event)
+    cursor = step.cursor
+  }
+  return events
+}
+
+/**
+ * FACILITY_RANGE — how far a facility noise carries, metres.
+ *
+ * 200, and the ceiling is not taste: §3.1's world is a 448 m torus, so the
+ * FURTHEST any two points in it can ever be is 224 m. A range above that is a
+ * number the world cannot reach — its level would have a floor of
+ * `1 − 224/range` and a noise would never quite die, which is both a level that
+ * cannot be reasoned about and a lie in the comment above it. 200 is inside the
+ * torus's own reach, so every distance in the world maps into `[0, 200]` and the
+ * level spans the whole of `[0, 1]`.
+ *
+ * The other half of the same argument: a much shorter range would mean most of
+ * the city's noises are inaudible from most of the city and the stream would be
+ * firing into nothing, and a much longer one would mean a noise is audible from
+ * anywhere and the player's own position stops mattering.
+ */
+export const FACILITY_RANGE = 200
+
+/**
+ * The damping pair for a placed noise: the lowpass ceiling when the listener is
+ * on top of it, and the one at the edge of its range.
+ *
+ * BEFORE: n/a — the placed sounds were `_windGust` and `_waterDrip`, which had no
+ * position and therefore no distance. AFTER: a far noise is not only quieter but
+ * DULLER, which is what air does, and it is the same trick the portal hum gets
+ * in `portalHumVoice` and for the same reason: two channels (level and colour)
+ * make a distance legible as a distance rather than as a volume setting.
+ */
+export const FACILITY_DAMP_NEAR = 1400
+export const FACILITY_DAMP_FAR = 420
+
+/**
+ * facilityVoice — one distant noise, heard from where the player is standing.
+ *
+ * The pass's spatial claim, and the three things it has to get right:
+ *
+ *  - **The distance is the world's, not the map's.** `wrapDelta` is the same fold
+ *    `world.js` uses for the creature and the portals, so a noise placed at
+ *    x = −224 is 3 m from a player at x = +224 rather than 448 m away. A copy of
+ *    the arithmetic that ignored the wrap would be inaudible over two thirds of
+ *    the map and would still pass a check down a straight line.
+ *  - **The level is `soundStrength` and not a new curve.** The creature's breath,
+ *    the portal hum and now the facility noise all attenuate through the same
+ *    function, so "how far does a sound carry" has one answer in this file.
+ *  - **A source the player cannot locate is silent, not loud.** No listener, a
+ *    non-finite one, or a position off the world all read as level 0 — the
+ *    `proximityAt` rule for the same reason: a pan and a distance computed from a
+ *    broken input is a noise out of nowhere, and a noise out of nowhere is the
+ *    one thing a horror game must not invent.
+ *
+ * @param {object} event an event from `nextAmbienceEvent` on a placed stream
+ * @param {object} [frame] `{ position: { x, z }, yaw }` — the listener
+ * @returns {{ kind: string|null, level: number, pan: number, damp: number, distance: number|null }}
+ */
+export function facilityVoice(event, frame = {}) {
+  const kind = FACILITY_KINDS[event?.kind] ?? null
+  const listener = frame.position
+  const known = !!listener && Number.isFinite(listener.x) && Number.isFinite(listener.z)
+  if (!kind || !known || !Number.isFinite(event.x) || !Number.isFinite(event.z)) {
+    return { kind: kind?.id ?? null, level: 0, pan: 0, damp: FACILITY_DAMP_NEAR, distance: null }
+  }
+  const dx = wrapDelta(event.x, listener.x)
+  const dz = wrapDelta(event.z, listener.z)
+  const distance = Math.hypot(dx, dz)
+  const reach = soundStrength(distance, FACILITY_RANGE)
+  // the player's right in world terms, so a noise ahead is centred and a noise
+  // off the shoulder is hard left or right — `player.js` composes the camera
+  // from the same yaw
+  const yaw = Number.isFinite(frame.yaw) ? frame.yaw : 0
+  const lateral = dx * Math.cos(yaw) - dz * Math.sin(yaw)
+  return {
+    kind: kind.id,
+    level: kind.level * reach,
+    pan: distance > 0 ? clamp(lateral / distance, -1, 1) : 0,
+    damp: FACILITY_DAMP_FAR + (FACILITY_DAMP_NEAR - FACILITY_DAMP_FAR) * reach,
+    distance,
+  }
+}
+
+// --- 4. the seeded draws ----------------------------------------------------
+
+/**
+ * The salt the noise floor is mixed from, and the draw channels.
+ *
+ * `DRAW_CHANNELS` is a table rather than a free integer because the point of
+ * naming them is that a channel is a *voice*: the footstep's surface variation
+ * must not depend on how many bells have rung, or adding a sound to the game
+ * would retune the ones already in it. One stream per voice, mixed from the run
+ * seed, is what makes this file's audio a function of `(seed, events)` rather
+ * than of `(seed, events, history)`.
+ */
+const NOISE_SALT = 0x51ed270b
+export const DRAW_CHANNELS = Object.freeze({ footstep: 1, echo: 2 })
+
+/**
+ * createDraw — one seeded unit stream for one channel.
+ *
+ * `mulberry32(hash32(seed, channel, salt))`: the §3.2 random-access entry point,
+ * so two channels of one run never share a lane and two runs of the same seed
+ * draw the same numbers in the same order.
+ *
+ * @param {number} seed the run's seed
+ * @param {number} [channel] a value of `DRAW_CHANNELS`
+ * @returns {() => number} floats in `[0, 1)`
+ */
+export function createDraw(seed, channel = 0) {
+  return mulberry32(hash32(seed >>> 0, channel, NOISE_SALT))
+}
+
+/**
+ * fillNoise — white noise, as a pure function of the seed.
+ *
+ * BEFORE: `for (let i…) data[i] = Math.random() * 2 - 1`, which meant every
+ * session's room tone was a different piece of noise and no two runs of the same
+ * seed sounded alike. AFTER: the same avalanche mix every sample, so the bed is
+ * reproducible — which is the whole reason the benchmark can claim a run is a
+ * function of its seed, and that claim is only true if the NOISE is too.
+ *
+ * `hash32(seed, i, salt)` rather than a generator, so the buffer is random
+ * ACCESS as well as random: a gate can ask for sample 44 999 without building
+ * the 44 998 before it, and a caller that wants a different floor (a wet street,
+ * a louder building) asks for a different salt rather than for a second copy of
+ * this loop.
+ *
+ * @param {Float32Array|number[]} target written in place
+ * @param {number} seed the run's seed
+ * @param {number} [salt] a different salt is a different noise floor
+ * @returns {Float32Array|number[]} the same target
+ */
+export function fillNoise(target, seed, salt = NOISE_SALT) {
+  for (let i = 0; i < target.length; i += 1) target[i] = hash32(seed, i, salt) / 2147483648 - 1
+  return target
+}
+
+// ---------------------------------------------------------------------------
 // the frame contract, and the router
 // ---------------------------------------------------------------------------
 
@@ -528,6 +1141,23 @@ export function droneLevelFor(frame = {}) {
  * - `started` is the only thing that opens the audio at all. The title screen is
  *   silent, which is §13's continuity claim pointed the other way: v1's opening
  *   toll was the *world's* bell, and v2 has no world bell.
+ *
+ * PASS 13 ADDED THREE, AND ALL THREE ARE FACTS ABOUT WHERE THE PLAYER IS
+ * ---------------------------------------------------------------------
+ * - `position` — the player's own coordinates, and the only way the audio can
+ *   place a noise that happened somewhere else. BEFORE: the frame carried no
+ *   position at all, which is why the ambience had no distance and every gust
+ *   was as close as the speaker. It is the BODY and not `camera.position`: the
+ *   camera carries the head bob, the sway and the chase shake, so a bed placed
+ *   from the eye would slide a third of a metre with every step.
+ * - `yaw` — which way the player is facing, so "off to the left" is a fact rather
+ *   than a guess. The camera's rotation is NOT used, for the same reason the
+ *   portal gate uses the camera's *position* rather than the player's: the
+ *   camera also carries the shake, and a noise that pans with the shake is a
+ *   noise that jitters.
+ * - `haze` — the sky's own `hazeIntensityAt` reading, handed over rather than
+ *   recomputed. The world does not own the haze bands and must not carry a
+ *   second copy of pass 9's drift table; it asks the sky and passes the number.
  */
 export const AUDIO_FRAME_FIELDS = Object.freeze([
   'started',
@@ -545,6 +1175,9 @@ export const AUDIO_FRAME_FIELDS = Object.freeze([
   'creaturePresent',
   'creatureAwareness',
   'portals',
+  'position',
+  'yaw',
+  'haze',
 ])
 
 /** A cue: one row of the table, plus whatever parameters its voice needs. */
@@ -615,6 +1248,14 @@ export function routeAudio(frame = {}) {
   pushCue(cues, cue('portalHum', {
     hums: playing && Array.isArray(frame.portals) ? frame.portals.map(portalHumVoice) : [],
   }))
+  // PASS 13: the world bed. `position` and `yaw` go on BOTH scheduled rows
+  // because both of them place a noise, and `haze` goes on the wind because that
+  // is the one row whose whole level is somebody else's number. The drone comes
+  // last, as it always has: the bed is under the bed.
+  pushCue(cues, cue('roomTone', roomToneVoice(frame)))
+  pushCue(cues, cue('hazeWind', hazeWindVoice(frame)))
+  pushCue(cues, cue('facility', { position: frame.position ?? null, yaw: frame.yaw, playing }))
+  pushCue(cues, cue('drip', { playing }))
   pushCue(cues, cue('drone', { level: droneLevelFor(frame) }))
   return cues
 }
@@ -624,7 +1265,13 @@ function pushCue(cues, cueValue) {
 }
 
 export class AudioManager {
-  constructor() {
+  /**
+   * @param {{ seed?: number }} [options] the run's seed; `world.js` hands the
+   *   same one over through `setSeed` when the world is built, so a run with a
+   *   named seed has a named soundscape. Defaults to `DEFAULT_SEED`, the one
+   *   constant `world.js` defaults to too.
+   */
+  constructor(options = {}) {
     this.ctx = null
     this.master = null
     this.compressor = null
@@ -645,10 +1292,75 @@ export class AudioManager {
     this.droneLevel = 0
     /** One live hum voice per portal id, created and dropped on demand. */
     this.hums = new Map()
+    // --- pass 13: the world bed's own state -------------------------------
+    this.seed = Number.isFinite(options.seed) ? options.seed : DEFAULT_SEED
+    /** One seeded draw stream per voice, so voices cannot retune each other. */
+    this.draws = new Map()
+    /**
+     * The three ambience cursors, `{ [id]: { index, at, clock } }`.
+     *
+     * BEFORE: an array of `setTimeout` handles that nothing in the repository
+     * could inspect. AFTER: a number per stream, advanced by the frame's `dt`,
+     * which is what makes the bed freezable (a paused frame routes no row, so no
+     * cursor moves) and reproducible (the schedule is a pure function of the
+     * seed, so a gate can walk an hour of it in a millisecond).
+     */
+    this.ambience = new Map()
+    /** The room tone and wind layers, torn down with the drone they ride. */
+    this.bed = null
+    /** The last routed room-tone / wind level, so 60 identical writes are 1. */
+    this.roomLevel = 0
+    this.windLevel = 0
   }
 
   get ready() {
     return this.ctx !== null
+  }
+
+  /**
+   * `setSeed(seed)` — hand the audio the run's seed, and drop everything derived
+   * from the old one.
+   *
+   * Called once, by `world.js`, in its constructor: the world knows the seed and
+   * the audio does not, and the alternative — each module defaulting to its own
+   * literal — is two defaults that agree by accident until one of them is
+   * retuned.
+   *
+   * Everything seeded is dropped, not just the cursors: a noise floor built from
+   * the old seed would keep humming under the new run, which is exactly the kind
+   * of "works on a fresh load" bug that only shows up on the second run.
+   *
+   * @param {number} seed
+   * @returns {number} the seed now in force
+   */
+  setSeed(seed) {
+    if (!Number.isFinite(seed)) return this.seed
+    this.seed = seed
+    this.draws.clear()
+    this.ambience.clear()
+    this.noiseBuffer = null
+    return this.seed
+  }
+
+  /**
+   * `_draw(channel)` — one seeded unit value for one voice.
+   *
+   * The streams are cached per channel rather than shared, and that is the whole
+   * design: a shared stream makes the footstep's surface depend on how many
+   * bells have rung, so adding a sound to the game would quietly retune the ones
+   * already in it. Per-channel streams are independent, so each voice is a
+   * function of the seed and of how many times *it* has spoken.
+   *
+   * @param {number} channel a value of `DRAW_CHANNELS`
+   * @returns {number} a float in `[0, 1)`
+   */
+  _draw(channel) {
+    let next = this.draws.get(channel)
+    if (!next) {
+      next = createDraw(this.seed, channel)
+      this.draws.set(channel, next)
+    }
+    return next()
   }
 
   /** Call from a real user gesture. Safe to call repeatedly. */
@@ -679,14 +1391,19 @@ export class AudioManager {
     if (this.master) this.master.gain.setTargetAtTime(muted ? 0 : this.volume, this.ctx.currentTime, 0.05)
   }
 
-  /** 2 seconds of white noise, reused by every noise-based voice. */
+  /**
+   * 2 seconds of white noise, reused by every noise-based voice.
+   *
+   * PASS 13: filled by `fillNoise(this.seed)` rather than by `Math.random`, so
+   * two runs of the same seed hum the same floor. The cost is one pass of
+   * `hash32` over 96 000 samples, about a millisecond, once, at unlock.
+   */
   _noise() {
     if (this.noiseBuffer) return this.noiseBuffer
     const ctx = this.ctx
     const length = Math.floor(ctx.sampleRate * 2)
     const buffer = ctx.createBuffer(1, length, ctx.sampleRate)
-    const data = buffer.getChannelData(0)
-    for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1
+    fillNoise(buffer.getChannelData(0), this.seed)
     this.noiseBuffer = buffer
     return buffer
   }
@@ -801,12 +1518,25 @@ export class AudioManager {
     this.ambient = { a, b, lfo, r1, r2, rumbleLfo, rumbleNoise, bus, filter }
     this.ambientGain = bus.gain
 
-    // loop 9: the corridor beyond the drone — scheduled one-shot events
-    this._ambientTimers = []
-    this._scheduleAmbient(() => this._windGust(), 4, 12)
-    this._scheduleAmbient(() => this._waterDrip(), 2.5, 8)
+    // loop 9: the corridor beyond the drone — scheduled one-shot events.
+    //
+    // PASS 13 REMOVED THE TIMERS. This used to read
+    // `this._scheduleAmbient(() => this._windGust(), 4, 12)` and the same for the
+    // drip, which walked a `setTimeout` chain on `Math.random` intervals. Three
+    // things were wrong with that and none of them were about sound: the timers
+    // kept firing through a pause (a game paused in a corridor still had a gust
+    // every few seconds), they were not reproducible between two runs of the same
+    // seed, and nothing in the repository could assert any of it. AFTER: the gust
+    // and the drip are rows in `AMBIENCE_SPECS` and are driven by the frame's own
+    // `dt` from `applyHazeWind` and `updateDrips`. The gaps are unchanged.
     // loop 12: whispered breath layer
     this._whisper = this._buildWhisper()
+    // PASS 13: the room tone and the wind are part of the drone's bed, not
+    // separate voices with a separate lifetime — they are built here so
+    // `stopAmbient` and `duckAmbient` reach them, and so a run that never called
+    // `startAmbient` has no bed at all rather than a bed nobody remembered to turn
+    // off. Their LEVELS come per frame from the router; the graphs do not.
+    this.bed = this._buildBed()
     // slice 11: v1's distant clang and its "second bell somewhere else in the
     // dark" are both gone, and this is the line where they went. §9 is explicit
     // that "the only bell in the game is the hammer, and it tolls for the player
@@ -814,6 +1544,71 @@ export class AudioManager {
     // bell that rings every fourteen seconds from nowhere is not atmosphere, it
     // is a fourth tuning the player has to learn to ignore — and it teaches the
     // ear to stop listening for the one that means something.
+  }
+
+  /**
+   * `_buildBed()` — the room tone and the wind layer, as one pair of graphs.
+   *
+   * Neither is an oscillator, and that is the point of the pass. A tone under a
+   * street reads as an oscillator playing; air reads as filtered noise, and noise
+   * has to be LOOPED, so both beds are a `BufferSource` over the shared 2 s noise
+   * buffer running forever with a gain node the router drives.
+   *
+   *   room tone: noise -> highpass(55) -> lowpass(520, LFO) -> gain
+   *   wind:      noise -> bandpass(swept by the haze) -> gain
+   *
+   * The room tone's cutoff is modulated by an LFO at `ROOM_TONE.lfoRate` with
+   * `lfoDepth` of travel, because a filter that never moves is a texture and a
+   * filter that moves is air. The LFO is an oscillator *into an AudioParam*, not
+   * an interval writing the parameter, so it costs nothing per frame and cannot
+   * be left half-applied by a teardown.
+   *
+   * @returns {{ room: object, wind: object } | null}
+   */
+  _buildBed() {
+    if (!this.ctx || !this.ambient) return null
+    const ctx = this.ctx
+    const bus = this.ambient.bus
+    // --- the room tone ---
+    const roomSource = this._noiseSource()
+    const roomHigh = ctx.createBiquadFilter()
+    roomHigh.type = 'highpass'
+    roomHigh.frequency.value = ROOM_TONE.highpass
+    const roomLow = ctx.createBiquadFilter()
+    roomLow.type = 'lowpass'
+    roomLow.frequency.value = ROOM_TONE.cutoff
+    roomLow.Q.value = ROOM_TONE.resonance
+    const roomGain = ctx.createGain()
+    roomGain.gain.value = 0.0001
+    const roomLfo = ctx.createOscillator()
+    roomLfo.type = 'sine'
+    roomLfo.frequency.value = ROOM_TONE.lfoRate
+    const roomDepth = ctx.createGain()
+    roomDepth.gain.value = ROOM_TONE.lfoDepth
+    roomLfo.connect(roomDepth)
+    roomDepth.connect(roomLow.frequency)
+    roomSource.connect(roomHigh)
+    roomHigh.connect(roomLow)
+    roomLow.connect(roomGain)
+    roomGain.connect(bus)
+    roomSource.start()
+    roomLfo.start()
+    // --- the wind ---
+    const windSource = this._noiseSource()
+    const windBand = ctx.createBiquadFilter()
+    windBand.type = 'bandpass'
+    windBand.frequency.value = HAZE_WIND.bandLo
+    windBand.Q.value = HAZE_WIND.resonance
+    const windGain = ctx.createGain()
+    windGain.gain.value = 0.0001
+    windSource.connect(windBand)
+    windBand.connect(windGain)
+    windGain.connect(bus)
+    windSource.start()
+    return {
+      room: { source: roomSource, high: roomHigh, low: roomLow, gain: roomGain, lfo: roomLfo, depth: roomDepth },
+      wind: { source: windSource, band: windBand, gain: windGain },
+    }
   }
 
   /**
@@ -870,16 +1665,93 @@ export class AudioManager {
     return { noise, inhale, exhale }
   }
 
-  /** Schedule an ambience one-shot to repeat every min..max seconds. */
-  _scheduleAmbient(fn, min, max) {
-    const tick = () => {
-      if (!this.ambient) return
-      fn()
-      const timer = setTimeout(tick, (min + Math.random() * (max - min)) * 1000)
-      this._ambientTimers.push(timer)
+  // -------------------------------------------------------------------------
+  // the seeded ambience cursor (pass 13) — what `_scheduleAmbient` used to be
+  // -------------------------------------------------------------------------
+
+  /**
+   * `_cursor(id)` — a stream's cursor, created on first use.
+   *
+   * Three numbers: `index` (which event is next), `at` (when it is due, in
+   * seconds of play — the clock below, not the wall clock) and `clock` (how far
+   * this stream has been advanced). `clock` is stored per stream rather than
+   * taken from `dt` at the call site so a stream that is skipped for a frame
+   * cannot silently jump.
+   *
+   * @param {string} id a key of `AMBIENCE_SPECS`
+   * @returns {{ index: number, at: number, clock: number }|null}
+   */
+  _cursor(id) {
+    let cursor = this.ambience.get(id)
+    if (!cursor) {
+      const start = ambienceStart(id, this.seed)
+      cursor = start ? { ...start, clock: 0 } : null
     }
-    const timer = setTimeout(tick, (min + Math.random() * (max - min)) * 1000)
-    this._ambientTimers.push(timer)
+    if (cursor) this.ambience.set(id, cursor)
+    return cursor
+  }
+
+  /**
+   * `_advanceAmbience(id, dt, fire)` — move one stream's clock and play whatever
+   * is now due.
+   *
+   * The replacement for `_scheduleAmbient`, and every part of it is a decision:
+   *
+   *  - **The clock is the world's.** It advances by the frame's own `dt` and only
+   *    on frames that routed the row, so a pause (which routes nothing) freezes
+   *    the bed and so does a capture's black. The `setTimeout` chain this
+   *    replaces ran straight through both.
+   *  - **Backlog is skipped, not stacked.** A frame arriving after a tab has been
+   *    hidden for a minute has an hour of due events behind it; the cap below
+   *    plays a few and then re-bases the cursor to "now", because the alternative
+   *    — firing forty drips on the frame the player comes back — is the most
+   *    audible way to be wrong.
+   *  - **The cap is per frame and per stream**, so a skipped backlog in one
+   *    stream cannot delay another.
+   *
+   * @param {string} id a key of `AMBIENCE_SPECS`
+   * @param {number} dt seconds since the last frame
+   * @param {(event: object) => void} fire called once per due event
+   * @returns {number} how many events fired this frame
+   */
+  _advanceAmbience(id, dt, fire) {
+    const cursor = this._cursor(id)
+    if (!cursor || typeof fire !== 'function') return 0
+    if (!(dt > 0)) return 0
+    cursor.clock += dt
+    let fired = 0
+    while (cursor.at <= cursor.clock) {
+      if (fired >= AMBIENCE_MAX_PER_FRAME) {
+        // the backlog is older than the player was away; drop it and re-base
+        cursor.index += 1
+        cursor.at = cursor.clock
+        break
+      }
+      const step = nextAmbienceEvent(id, cursor, this.seed)
+      if (!step) break
+      fire(step.event)
+      cursor.index = step.cursor.index
+      cursor.at = step.cursor.at
+      fired += 1
+    }
+    return fired
+  }
+
+  /**
+   * `stopAmbience()` — freeze every stream where it stands.
+   *
+   * A SEPARATE method from `stopAmbient()` on purpose, and the distinction is
+   * the win: `stopAmbient` tears the graphs down (dispose, unmount), while this
+   * only resets the cursors (BEGIN AGAIN, a run that starts over). Folding them
+   * together is how a restart ends up with a bed whose nodes were stopped three
+   * seconds after they were built.
+   *
+   * @returns {void}
+   */
+  stopAmbience() {
+    this.ambience.clear()
+    this.roomLevel = 0
+    this.windLevel = 0
   }
 
   stopAmbient() {
@@ -913,10 +1785,26 @@ export class AudioManager {
       }
       this._whisper = null
     }
-    if (this._ambientTimers) {
-      for (const timer of this._ambientTimers) clearTimeout(timer)
-      this._ambientTimers = []
+    // PASS 13: the bed is torn down with the drone it rides. Before this pass
+    // there was nothing to stop here because there was nothing here: the room
+    // tone and the wind are the only sources `startAmbient` owns that the
+    // destructured node list above does not already name, and a source left
+    // running after its gain has been ramped to nothing is a leak wearing a
+    // two-second silence.
+    if (this.bed) {
+      for (const voice of [this.bed.room, this.bed.wind]) {
+        for (const node of Object.values(voice)) {
+          if (!node || typeof node.stop !== 'function') continue
+          try {
+            node.stop(now + 3)
+          } catch {
+            /* already stopped */
+          }
+        }
+      }
+      this.bed = null
     }
+    this.stopAmbience()
     // the hums are the world's hums, not the drone's, so they get their own
     // teardown rather than dying with the bus that happens to sit under them
     this.stopPortalHums()
@@ -926,21 +1814,34 @@ export class AudioManager {
   /**
    * Wind gust: filtered noise whose bandpass sweeps upward and whose gain
    * swells then collapses — as if a draft found its way through the corridors.
+   *
+   * PASS 13: every number that used to be a `Math.random()` draw is now the
+   * event's own `a`/`b`/`c`, which are a pure function of `(seed, index)`, and
+   * the level is scaled by the wind the router reported. A gust in thick air is
+   * louder than a gust in thin air, which is the coupling the pass bought with
+   * `haze`; moving the scheduling onto the cursor was the other half of it.
+   *
+   * @param {object} event a `gust` event from `nextAmbienceEvent`
+   * @param {number} [scale] the routed wind level, as a multiplier
+   * @returns {void}
    */
-  _windGust() {
+  _windGust(event, scale = 1) {
     if (!this.ctx) return
     const ctx = this.ctx
     const t0 = ctx.currentTime
-    const duration = 2.5 + Math.random() * 2.5
+    const a = event?.a ?? 0.5
+    const b = event?.b ?? 0.5
+    const c = event?.c ?? 0.5
+    const duration = 2.5 + a * 2.5
     const noise = this._noiseSource()
     const band = ctx.createBiquadFilter()
     band.type = 'bandpass'
-    band.frequency.setValueAtTime(240 + Math.random() * 140, t0)
-    band.frequency.exponentialRampToValueAtTime(700 + Math.random() * 500, t0 + duration * 0.6)
+    band.frequency.setValueAtTime(240 + b * 140, t0)
+    band.frequency.exponentialRampToValueAtTime(700 + c * 500, t0 + duration * 0.6)
     band.Q.value = 1.1
     const g = ctx.createGain()
     g.gain.setValueAtTime(0.0001, t0)
-    g.gain.linearRampToValueAtTime(0.035 + Math.random() * 0.025, t0 + duration * 0.45)
+    g.gain.linearRampToValueAtTime((0.035 + a * 0.025) * scale, t0 + duration * 0.45)
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration)
     noise.connect(band)
     band.connect(g)
@@ -949,16 +1850,28 @@ export class AudioManager {
     noise.stop(t0 + duration + 0.1)
   }
 
-  /** A single drip: pitch-gliding sine blip plus a faint high plink. */
-  _waterDrip() {
+  /**
+   * A single drip: pitch-gliding sine blip plus a faint high plink.
+   *
+   * PASS 13: the same seeded rewrite as `_windGust` — three event draws replace
+   * four `Math.random()` calls — plus the routed level as a multiplier.
+   *
+   * @param {object} event a `drip` event from `nextAmbienceEvent`
+   * @param {number} [scale] the routed drip level, as a multiplier
+   * @returns {void}
+   */
+  _waterDrip(event, scale = 1) {
     if (!this.ctx) return
     const ctx = this.ctx
     const t0 = ctx.currentTime
+    const a = event?.a ?? 0.5
+    const b = event?.b ?? 0.5
+    const c = event?.c ?? 0.5
     const blip = ctx.createOscillator()
     blip.type = 'sine'
-    blip.frequency.setValueAtTime(1050 + Math.random() * 500, t0)
+    blip.frequency.setValueAtTime(1050 + a * 500, t0)
     blip.frequency.exponentialRampToValueAtTime(280, t0 + 0.09)
-    const g = this._decayGain(0.07, 0.02, t0, 0.001)
+    const g = this._decayGain(0.07 * scale, 0.02, t0, 0.001)
     blip.connect(g)
     g.connect(this.ambient ? this.ambient.bus : this.master)
     blip.start(t0)
@@ -966,8 +1879,8 @@ export class AudioManager {
     // the faint plink an echo distance away
     const echo = ctx.createOscillator()
     echo.type = 'sine'
-    echo.frequency.value = 1400 + Math.random() * 600
-    const eg = this._decayGain(0.02, 0.015, t0 + 0.18 + Math.random() * 0.15, 0.002)
+    echo.frequency.value = 1400 + b * 600
+    const eg = this._decayGain(0.02 * scale, 0.015, t0 + 0.18 + c * 0.15, 0.002)
     echo.connect(eg)
     eg.connect(this.ambient ? this.ambient.bus : this.master)
     echo.start(t0 + 0.3)
@@ -1071,7 +1984,12 @@ export class AudioManager {
     // the street; a whiff is not, and neither is the reset sting — §13 wants the
     // sting to be one strike and nothing else.
     if (tuning.echo && !muffled) {
-      this._echoTail(bus, 0.21 + Math.random() * 0.06, 0.38 + Math.random() * 0.08, level * 0.5)
+      this._echoTail(
+        bus,
+        0.21 + this._draw(DRAW_CHANNELS.echo) * 0.06,
+        0.38 + this._draw(DRAW_CHANNELS.echo) * 0.08,
+        level * 0.5,
+      )
     }
   }
 
@@ -1156,9 +2074,17 @@ export class AudioManager {
     const level = voice.level
 
     // loop 12: surface variation — the scuff drifts across the cobble band and
-    // catches stones at random; sprints land harder and higher
-    const scuffHz = voice.band + Math.random() * voice.drift
-    const stone = Math.random() < 0.3 // a lucky strike on a raised cobble
+    // catches stones at random; sprints land harder and higher.
+    //
+    // PASS 13: the two `Math.random()` calls here became the footstep channel's
+    // seeded stream. That is the last unseeded draw in this file's one-shot
+    // voices, and the reason it was worth doing rather than leaving for later is
+    // that it is the sound the CREATURE navigates by: a footstep that varies
+    // differently between two runs of the same seed is a footstep whose
+    // character cannot be compared, and §6.2's whole table is a claim about
+    // character.
+    const scuffHz = voice.band + this._draw(DRAW_CHANNELS.footstep) * voice.drift
+    const stone = this._draw(DRAW_CHANNELS.footstep) < 0.3 // a lucky strike on a raised cobble
     const noise = this._noiseSource()
     const band = ctx.createBiquadFilter()
     band.type = 'bandpass'
@@ -1375,6 +2301,13 @@ export class AudioManager {
    * full wipe on BEGIN AGAIN) simply comes back. The cue is authoritative every
    * frame: an id missing from the list is faded out and torn down, which is why a
    * hum cannot survive a capture or a walk out of range.
+   *
+   * PASS 13 added a lowpass per hum (`voice.damp`), driven by `hum.damp`, so a
+   * portal across the street is duller as well as quieter. The filter sits
+   * BETWEEN the gain and the master, which means the 0.12 s fade-out used to drop
+   * an audible hum to silence now passes through a filter that is closing as it
+   * goes — which is correct, and is also why the damp is written even for a hum
+   * that is on its way out rather than only for one that is on its way in.
    */
   updatePortalHums(cue) {
     if (!this.ctx) return
@@ -1407,6 +2340,10 @@ export class AudioManager {
         // a living sound and not a test tone
         const shimmer = this.ctx.createOscillator()
         shimmer.type = 'sine'
+        const damp = this.ctx.createBiquadFilter()
+        damp.type = 'lowpass'
+        damp.frequency.value = hum.damp
+        damp.Q.value = 0.7
         const gain = this.ctx.createGain()
         gain.gain.value = 1
         const shimmerGain = this.ctx.createGain()
@@ -1414,15 +2351,17 @@ export class AudioManager {
         osc.connect(gain)
         shimmer.connect(shimmerGain)
         shimmerGain.connect(gain)
-        gain.connect(this.master)
+        gain.connect(damp)
+        damp.connect(this.master)
         gain.gain.setValueAtTime(0.0001, now)
         osc.start()
         shimmer.start()
-        voice = { osc, shimmer, gain }
+        voice = { osc, shimmer, gain, damp }
         this.hums.set(id, voice)
       }
       voice.osc.frequency.setTargetAtTime(hum.pitch, now, 0.08)
       voice.shimmer.frequency.setTargetAtTime(hum.pitch * 1.5, now, 0.08)
+      voice.damp.frequency.setTargetAtTime(hum.damp, now, 0.2)
       voice.gain.gain.setTargetAtTime(hum.level, now, 0.08)
     }
   }
@@ -1467,6 +2406,204 @@ export class AudioManager {
     if (Math.abs(this.droneLevel - level) < 1e-6) return
     this.droneLevel = level
     this.ambientGain.gain.setTargetAtTime(DRONE_TUNING.gain * level, this.ctx.currentTime, 0.25)
+  }
+
+  // -------------------------------------------------------------------------
+  // pass 13 — the world bed's four voices
+  // -------------------------------------------------------------------------
+
+  /**
+   * `applyRoomTone(cue)` — the room tone's level for this frame.
+   *
+   * The same shape as `applyDrone` and for the same reasons: build the graph if
+   * it is missing (a caller that unlocked and started a run without calling
+   * `startAmbient` still gets a bed), and only write the parameter when the level
+   * has actually moved. The time constant is longer than the drone's 0.25 s
+   * because this is a bed — a filter that changes level in a quarter of a second
+   * is a duck, and a bed that ducks reads as a mix rather than as air.
+   *
+   * @param {object} cue the `roomTone` cue
+   * @returns {void}
+   */
+  applyRoomTone(cue) {
+    if (!this.ctx) return
+    const level = cue?.params?.level
+    if (!Number.isFinite(level)) return
+    if (!this.ambient) this.startAmbient()
+    if (!this.bed || !this.bed.room) return
+    if (Math.abs(this.roomLevel - level) < 1e-6) return
+    this.roomLevel = level
+    this.bed.room.gain.gain.setTargetAtTime(level, this.ctx.currentTime, 0.6)
+  }
+
+  /**
+   * `applyHazeWind(cue, dt)` — the wind's level, its colour, and its gusts.
+   *
+   * One voice, three jobs, because they are three readings of the same number:
+   * the level and the bandpass centre both come from the cue's `haze`, and the
+   * gusts are the wind's own motion, scaled by the same bed so a gust in thick
+   * air is both louder and brighter than one in thin air.
+   *
+   * The bandpass is written with a 0.8 s constant. The haze moves over tens of
+   * seconds, so the parameter is being asked for a change it will not have for a
+   * while, and a fast constant would put a zipper on a layer whose whole claim is
+   * that it does not move quickly.
+   *
+   * The gusts are scaled by `level / HAZE_WIND.floor` rather than by a constant,
+   * which is what makes the coupling reach the ONE-SHOTS as well as the bed: a
+   * draft in thick air is three times a draft in thin air, and at haze 0 a gust is
+   * exactly the level it was before this pass. The scale is clamped to 1 because a
+   * frame that routes this row with a level of zero (a won run, a capture's black)
+   * must not turn a gust into a subtraction.
+   *
+   * @param {object} cue the `hazeWind` cue
+   * @param {number} [dt] seconds since the last frame
+   * @returns {void}
+   */
+  applyHazeWind(cue, dt = 0) {
+    if (!this.ctx) return
+    const params = cue?.params
+    if (!params) return
+    if (!this.ambient) this.startAmbient()
+    if (!this.bed || !this.bed.wind) return
+    const { level, cutoff } = params
+    if (Number.isFinite(level) && Math.abs(this.windLevel - level) > 1e-6) {
+      this.windLevel = level
+      this.bed.wind.gain.gain.setTargetAtTime(level, this.ctx.currentTime, 0.8)
+    }
+    if (Number.isFinite(cutoff)) {
+      this.bed.wind.band.frequency.setTargetAtTime(cutoff, this.ctx.currentTime, 0.8)
+    }
+    const gustScale = Number.isFinite(level) ? Math.max(1, level / HAZE_WIND.floor) : 1
+    this._advanceAmbience('gust', dt, (event) => {
+      this._windGust(event, gustScale)
+    })
+  }
+
+  /**
+   * `updateDrips(cue, dt)` — pass 8's water, heard.
+   *
+   * The one voice in this file whose gate is not the bed: a drip is a PLACE
+   * sound, so it is routed only while playing, and it rides the same cursor
+   * machinery as the gust and the facility noise because they answer the same
+   * question — what does the world do when the player is not doing anything.
+   *
+   * @param {object} cue the `drip` cue
+   * @param {number} [dt] seconds since the last frame
+   * @returns {void}
+   */
+  updateDrips(cue, dt = 0) {
+    if (!this.ctx) return
+    if (cue?.params?.playing !== true) return
+    this._advanceAmbience('drip', dt, (event) => {
+      this._waterDrip(event, AMBIENCE_DRIP_LEVEL)
+    })
+  }
+
+  /**
+   * `updateFacility(cue, dt)` — the distant facility stream.
+   *
+   * The only voice in the file that takes a LISTENER, and the reason is that it
+   * is the only voice whose source is somewhere the player is not. The listener
+   * comes from the frame (the player's own position and yaw, handed over by
+   * `world.js`), the placement comes from the event, and `facilityVoice` — pure,
+   * and above the class — is what turns the two into a level, a pan and a damping.
+   *
+   * The gate runs BEFORE the cursor, so the facility clock does not advance
+   * through a capture's black or the win card: a run that is not being played
+   * does not quietly accumulate noises to fire the moment it resumes. The gust
+   * and the drip are the same, for the same reason, and it is worth saying that
+   * the OLD `setTimeout` chain did exactly this badly — it ran through a pause,
+   * through the black and through the win card, and nothing noticed.
+   *
+   * @param {object} cue the `facility` cue
+   * @param {number} [dt] seconds since the last frame
+   * @returns {void}
+   */
+  updateFacility(cue, dt = 0) {
+    if (!this.ctx) return
+    const params = cue?.params
+    if (!params || params.playing !== true) return
+    const listener = { position: params.position, yaw: params.yaw }
+    this._advanceAmbience('facility', dt, (event) => {
+      const voice = facilityVoice(event, listener)
+      if (voice.level > 0) this._facilityHit(event, voice)
+    })
+  }
+
+  /**
+   * `_facilityHit(event, voice)` — one distant noise, synthesised and placed.
+   *
+   * The chain is the same for all three kinds — tone, wash, pan, damp — and only
+   * the numbers in `FACILITY_KINDS` differ, which is the reason that table is
+   * data: a fourth kind is a row, not a copy of this method.
+   *
+   * The `StereoPanner` is what makes the placement legible, and it pans in the
+   * STEREO FIELD rather than by balancing two gains, because a pan that is not a
+   * pan is not spatialisation, it is a volume difference. The lowpass in front of
+   * it is the damping: `voice.damp` falls with distance, so the same noise is a
+   * bright knock on the near side of the city and a dull one from the far side.
+   *
+   * @param {object} event the event, for its `a`/`b` and its placement
+   * @param {object} voice `facilityVoice`'s answer
+   * @returns {void}
+   */
+  _facilityHit(event, voice) {
+    if (!this.ctx) return
+    const kind = FACILITY_KINDS[voice.kind]
+    if (!kind) return
+    const ctx = this.ctx
+    const t0 = ctx.currentTime
+    const b = event?.b ?? 0.5
+    const c = event?.c ?? 0.5
+    // The detune is drawn from `c` and NOT from `a`, and the reason is worth a
+    // line: `a` already chose the kind, so detuning by it would mean every
+    // rumble sat a little flat and every thump a little sharp — a systematic
+    // correlation between what a noise is and what it sounds like, which is the
+    // kind of thing nobody notices until two rumbles are compared.
+    const detune = 1 + (c - 0.5) * 0.12
+    const out = ctx.createStereoPanner()
+    out.pan.value = voice.pan
+    out.connect(this.ambient ? this.ambient.bus : this.master)
+    const damp = ctx.createBiquadFilter()
+    damp.type = 'lowpass'
+    damp.frequency.value = voice.damp
+    damp.Q.value = kind.q
+    damp.connect(out)
+    // the body: a sine at the kind's tone, sagging as it decays
+    const body = ctx.createOscillator()
+    body.type = 'sine'
+    body.frequency.setValueAtTime(kind.tone * detune, t0)
+    body.frequency.exponentialRampToValueAtTime(kind.tone * detune * 0.82, t0 + kind.decay)
+    const bodyGain = this._decayGain(voice.level * 0.7, kind.decay, t0, 0.01)
+    body.connect(bodyGain)
+    bodyGain.connect(damp)
+    body.start(t0)
+    body.stop(t0 + kind.length)
+    // the wash: the noise that makes it a room rather than a note
+    const noise = this._noiseSource()
+    const band = ctx.createBiquadFilter()
+    band.type = 'bandpass'
+    band.frequency.value = kind.band * (0.8 + b * 0.4)
+    band.Q.value = kind.q
+    const wash = this._decayGain(voice.level * 0.5, kind.decay * 0.8, t0, 0.02)
+    noise.connect(band)
+    band.connect(wash)
+    wash.connect(damp)
+    noise.start(t0)
+    noise.stop(t0 + kind.length)
+    // the clank gets a second, brighter partial: a strike has more than one
+    // thing ringing, and one is a beep
+    if (voice.kind === 'clank') {
+      const ring = ctx.createOscillator()
+      ring.type = 'triangle'
+      ring.frequency.setValueAtTime(kind.tone * 2.51 * detune, t0)
+      const ringGain = this._decayGain(voice.level * 0.35, kind.decay * 0.6, t0, 0.005)
+      ring.connect(ringGain)
+      ringGain.connect(damp)
+      ring.start(t0)
+      ring.stop(t0 + kind.length)
+    }
   }
 
   /**

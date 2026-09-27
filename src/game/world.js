@@ -49,7 +49,7 @@ import { CreatureView } from './creatureView.js'
 import { SkyView } from './skyView.js'
 import * as beast from './creature.js'
 import * as rules from './rules.js'
-import { streamAt } from './hash.js'
+import { streamAt, DEFAULT_SEED } from './hash.js'
 import * as hood from './neighborhood.js'
 import { SPAWN, placeObjectives, streetNodeToWorld } from './neighborhood.js'
 // §14.1/§14.2/§14.3. The one place a game module reaches into `src/ui/`, and it
@@ -347,7 +347,15 @@ export class LongQuietGame {
     this.container = container
     this.store = options.store ?? createStore()
     this.audio = options.audio ?? null
-    this.seed = options.seed ?? 1337
+    this.seed = options.seed ?? DEFAULT_SEED
+    // ITERATION 2, PASS 13. The world is the only thing that knows the run's seed,
+    // and the world bed is seeded, so the seed is handed over once here rather than
+    // both modules defaulting to the same literal and hoping. It is a FACT, not a
+    // decision — the same category as the `_audioFrame` fields — which is why it
+    // is the one addition to the whitelist in the "world calls the audio directly"
+    // gate. `setSeed` is optional-chained for the harnesses that pass a fake audio
+    // without it (capture's page builds the world with no audio object at all).
+    this.audio?.setSeed?.(this.seed)
     this.disposed = false
 
     // --- renderer -----------------------------------------------------------
@@ -1203,6 +1211,23 @@ export class LongQuietGame {
           distance: Math.hypot(beast.wrapDelta(world.x, player.x), beast.wrapDelta(world.z, player.z)),
         }
       }),
+      // ITERATION 2, PASS 13 — the three fields the world bed is built on. All
+      // three are facts about where the player is, and the world is the only
+      // module that knows any of them; the bed decides what they sound like.
+      //
+      // `position` is `player.pos` and NOT `camera.position`: the camera carries
+      // the head bob, the sway and the chase shake, so a noise placed from the eye
+      // would swim a third of a metre with every stride — audible as a facility
+      // noise that drifts while the player stands still, which is the one artefact
+      // that would give the whole layer away as fake.
+      position: { x: player.x, z: player.z },
+      // and the yaw is the BODY's, for the same reason: the camera's rotation
+      // carries the shake, and a pan that jitters with the shake is not a pan.
+      yaw: this.player.yaw,
+      // the haze is the sky's own reading, asked for rather than recomputed. The
+      // bands are `skyView`'s table and `skyView`'s clock; a second copy of
+      // pass 9's drift maths in this file would be a copy that drifts.
+      haze: this.skyView.hazeIntensity(),
     }
   }
 

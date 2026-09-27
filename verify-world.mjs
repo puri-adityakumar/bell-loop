@@ -351,6 +351,13 @@ const rules = await import('./src/game/rules.js')
 // dependency — it is the same table, and a copy of it in this file would be a
 // second thing to keep right.
 const cap = await import('./src/game/capture.js')
+// ITERATION 2, PASS 13. The audio's PURE half is already imported above
+// (`routeAudio`); the world bed's schedule and its spatial model are the other
+// half of the same module, and a check that re-derived them would be asserting a
+// copy. `skyView.js` reaches for Three.js, which is why `verify.mjs` reads it as
+// text and this file imports it: §15.2's seam, in the direction the seam runs.
+const audioModule = await import('./src/game/audio.js')
+const { hazeIntensityAt, HAZE_AUDIO_CYCLE } = await import('./src/game/skyView.js')
 
 function makeFakeRenderer() {
   return {
@@ -8292,6 +8299,242 @@ check('dispose() tears the whole world down without throwing', () => {
   // the way out of a hot reload
   game.dispose()
   game.update(0.1)
+})
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 13 — the world bed, on the real world
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS BLOCK OWNS, AND WHY IT CANNOT BE A COPY OF verify.mjs
+// --------------------------------------------------------------
+// `verify.mjs` proves the bed's NUMBERS: the gaps, the placement, the distance
+// model, the wind's monotonicity, the absence of `Math.random`. Every one of
+// those is a pure function, and every one of them could be true while the game
+// handed the audio a frame that says nothing.
+//
+// This block proves the four things a pure function cannot:
+//
+//   1. THE LISTENER IS THE PLAYER. The frame's `position` and `yaw` are read back
+//      out of a world the player has been moved around in, so a world that passed
+//      the camera instead of the body — or a stale copy from spawn — fails here
+//      and not in the pure file.
+//   2. THE HAZE IS THE SKY'S OWN READING, AND IT MOVES. The world's `haze` is
+//      compared against `hazeIntensityAt(animTime, seed)` read from the same
+//      function the renderer uses, and it is required to CHANGE over a run: a
+//      coupling to a constant is not a coupling, and a gate that only checked
+//      "haze is a number" would pass a world that passed a literal.
+//   3. THE NOISE RESPONDS TO WHERE THE PLAYER STANDS. A facility event is placed
+//      by the seed, the player is teleported to two real positions inside this
+//      world, and `facilityVoice` is asked about both.
+//   4. THE PAUSE REACHES THE BED. The world's own frame sequence — including a
+//      pause — is replayed through the audio's real cursor machine, and the
+//      clock it advanced by must be the sum of the PLAYED frames only. This is
+//      the check the old `setTimeout` chain could not have passed, and the whole
+//      reason it is gone.
+
+check('the world hands the bed the player\'s own position and facing', () => {
+  game.restart()
+  run(game, 1.6)
+  const before = audio.lastFrame
+  assert.ok(before, 'the world never handed the audio a frame')
+  assert.deepEqual(
+    before.position,
+    { x: game.player.pos.x, z: game.player.pos.z },
+    'the frame is not the player\'s own position',
+  )
+  assert.equal(before.yaw, game.player.yaw, 'the frame is not the player\'s own facing')
+  assert.equal(typeof before.haze, 'number', 'the frame carries no haze')
+  assert.ok(before.haze >= 0 && before.haze <= 1, `the haze is ${before.haze}, outside [0, 1]`)
+
+  // walking moves it, and the value follows the body rather than a copy of spawn
+  const spawn = { x: before.position.x, z: before.position.z }
+  game.player.teleport(spawn.x + 12, spawn.z - 7, 0.9)
+  game.update(DT)
+  assert.deepEqual(audio.lastFrame.position, { x: game.player.pos.x, z: game.player.pos.z })
+  assert.ok(
+    Math.hypot(audio.lastFrame.position.x - spawn.x, audio.lastFrame.position.z - spawn.z) > 10,
+    'the frame did not follow the body',
+  )
+  assert.equal(audio.lastFrame.yaw, game.player.yaw)
+  assert.notEqual(audio.lastFrame.yaw, before.yaw, 'the facing in the frame never changes')
+  // and it is the BODY, not the camera. The eye is 1.6 m above the body and
+  // carries the bob, so a frame built from `camera.position` would be a
+  // THREE-key object where this is a two-key one — which is the only difference
+  // there is to see, because the camera's X and Z ARE the body's.
+  assert.deepEqual(Object.keys(before.position).sort(), ['x', 'z'], 'the frame position is not a two-axis body position')
+  assert.ok(
+    game.camera.position.y > game.player.pos.y,
+    'the eye is not above the body, so the two could not be told apart',
+  )
+})
+
+check('the wind follows a haze that moves, and it is the sky\'s own number', () => {
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  // the world's haze IS the sky's own reading. Note the two clocks: the sky keeps
+  // its OWN (`skyView._time`, which a loop does not reset) and the world keeps
+  // `animTime` (which one is), so the check is written against the sky's clock
+  // rather than the world's — a coupling to a *different* module's clock is
+  // exactly the bug this guards, and it would pass if the two happened to be
+  // equal in a fresh world.
+  let clock = 0
+  for (const seconds of [0, 12, 40, 90]) {
+    run(game, seconds - clock)
+    clock = seconds
+    assert.equal(
+      game.skyView.hazeIntensity(),
+      hazeIntensityAt(game.skyView._time, game.seed),
+      'the sky is not reading its own function',
+    )
+    assert.equal(audio.lastFrame.haze, game.skyView.hazeIntensity(), 'the world is not handing over the sky\'s reading')
+  }
+  // and it MOVES. A coupling to a constant is not a coupling: 96 s is more than a
+  // whole cycle at `HAZE_AUDIO_CYCLE` 24 on the first band, and the readings must
+  // differ
+  const readings = []
+  for (let i = 0; i < 24; i += 1) {
+    run(game, 4)
+    readings.push(audio.lastFrame.haze)
+  }
+  const distinct = new Set(readings.map((value) => value.toFixed(6))).size
+  assert.ok(distinct > 12, `the haze took ${distinct} values in 96 s, so it is barely moving`)
+  for (const value of readings) assert.ok(value >= 0 && value <= 1, `${value} is outside [0, 1]`)
+  // it is not a sawtooth either: the wind's own filter is written with a 0.8 s
+  // constant, so a number that jumped 0.6 between two frames 4 s apart would be a
+  // zipper waiting to happen
+  let biggest = 0
+  for (let i = 1; i < readings.length; i += 1) biggest = Math.max(biggest, Math.abs(readings[i] - readings[i - 1]))
+  assert.ok(biggest < 0.35, `the haze jumped by ${biggest.toFixed(3)} in 4 s`)
+  // THE COUPLING, measured on the audio's own answer rather than on the sky's:
+  // over this window the wind level must have moved with the haze, and in the same
+  // direction every time it moved
+  const winds = readings.map((haze) => audioModule.hazeWindVoice({ started: true, playing: true, haze }).level)
+  let moved = 0
+  for (let i = 1; i < readings.length; i += 1) {
+    const dh = readings[i] - readings[i - 1]
+    if (Math.abs(dh) < 1e-9) continue
+    moved += 1
+    assert.ok(Math.sign(winds[i] - winds[i - 1]) === Math.sign(dh), `the wind moved against the haze at step ${i}`)
+  }
+  assert.ok(moved > 8, `the haze only moved ${moved} times in 96 s, so the coupling is untested`)
+  assert.ok(new Set(winds.map((value) => value.toFixed(8))).size > 12, 'the wind did not move with the haze')
+  // the seed is part of the coupling: the same clock on a different run is a
+  // different reading, so two runs of the same street are not one run's weather
+  assert.notEqual(hazeIntensityAt(60, 1337), hazeIntensityAt(60, 4242), 'the haze ignores the seed')
+  assert.equal(hazeIntensityAt(60, 1337), hazeIntensityAt(60, 1337), 'the haze is not a function of its inputs')
+  assert.ok(HAZE_AUDIO_CYCLE > 1, 'the audio cycle was retuned to 1, which is the band rate itself')
+})
+
+check('a facility noise is louder and brighter where the player is standing', () => {
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  // the event is a fixed point in the city, placed by the seed alone
+  const [event] = audioModule.ambienceStream('facility', game.seed, 1)
+  const kind = audioModule.FACILITY_KINDS[event.kind]
+  // the player is really teleported into the world and the frame is really
+  // rebuilt: the point is that the two positions below are positions the WORLD
+  // reported, not numbers this check chose
+  const stand = (x, z) => {
+    game.player.teleport(x, z, 0)
+    game.update(DT)
+    return audio.lastFrame.position
+  }
+  const near = stand(event.x + 15, event.z)
+  const far = stand(event.x + 170, event.z)
+  const here = audioModule.facilityVoice(event, { position: near, yaw: 0 })
+  const there = audioModule.facilityVoice(event, { position: far, yaw: 0 })
+  assert.ok(Math.abs(here.distance - 15) < 0.2, `the near listener is ${here.distance.toFixed(1)} m from the noise`)
+  assert.ok(Math.abs(there.distance - 170) < 0.2, `the far listener is ${there.distance.toFixed(1)} m from the noise`)
+  assert.ok(here.level > there.level * 5, 'the near listener is not much closer to hearing it')
+  assert.ok(here.damp > there.damp, 'the near listener does not hear it more clearly')
+  assert.equal(here.level, kind.level * beast.soundStrength(here.distance, audioModule.FACILITY_RANGE))
+  // and the whole way in, from a standing start: five real positions inside this
+  // world, one level and one pan each, falling as the player walks away
+  let previous = Infinity
+  let previousDamp = Infinity
+  for (const offset of [0, 30, 60, 120, 190]) {
+    const at = audioModule.facilityVoice(event, { position: stand(event.x + offset, event.z), yaw: 0 })
+    assert.ok(at.level < previous, `the noise got louder at ${offset} m from the player`)
+    assert.ok(at.damp <= previousDamp, `the noise got brighter at ${offset} m from the player`)
+    previous = at.level
+    previousDamp = at.damp
+  }
+  // the pan follows the body's facing, and the body's facing is in the frame
+  game.player.teleport(event.x + 15, event.z, Math.PI)
+  game.update(DT)
+  const turned = audioModule.facilityVoice(event, { position: audio.lastFrame.position, yaw: audio.lastFrame.yaw })
+  assert.ok(turned.pan * here.pan < 0, 'turning on the spot did not move the facility noise')
+  assert.equal(turned.level, here.level, 'turning changed the level')
+  // and the two placements really are different answers from one event, which is
+  // the claim the whole placement buys: the noise is in the world, not at the
+  // speaker
+  assert.equal(there.kind, here.kind, 'the same noise changed its mind about what it is')
+  assert.notEqual(there.level, here.level, 'standing 155 m away changed nothing')
+})
+
+check('a pause freezes the bed, and a hidden tab does not fire a backlog', () => {
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  // The world's own frame sequence, recorded as (dt, did the router say the run
+  // was started), with a real pause in the middle. This is the composition the
+  // pass claims: the world freezes, the router says nothing, and the audio's
+  // cursor therefore does not move.
+  const sequence = []
+  for (let i = 0; i < 180; i += 1) {
+    game.update(DT)
+    sequence.push({ dt: DT, routed: routeAudio(audio.lastFrame).length > 0 })
+  }
+  game.setPaused(true)
+  const frozenTime = game.animTime
+  for (let i = 0; i < 120; i += 1) {
+    game.update(DT)
+    sequence.push({ dt: DT, routed: routeAudio(audio.lastFrame).length > 0 })
+  }
+  game.setPaused(false)
+  assert.equal(game.animTime, frozenTime, 'the pause did not freeze the world clock')
+
+  // replay the same sequence through the audio's REAL cursor machine — a real
+  // AudioManager with no context, which is the honest way to drive the clock with
+  // none of the audio around it
+  const manager = new audioModule.AudioManager()
+  manager.setSeed(game.seed)
+  const fired = []
+  let routedFrames = 0
+  for (const frame of sequence) {
+    // the composition the pass claims: the router sends no row on a paused frame,
+    // so no voice runs, so the cursor does not move. Skipping here is not a
+    // convenience — it is the thing being tested.
+    if (!frame.routed) continue
+    routedFrames += 1
+    manager._advanceAmbience('drip', frame.dt, (event) => fired.push(event))
+  }
+  assert.ok(sequence.some((frame) => !frame.routed), 'the pause routed audio, so this check proved nothing')
+  // the tolerance is a second's worth of float on 180 additions of 1/60, which is
+  // the whole of the error: a 1e-9 slack is not slack, it is the representation
+  assert.ok(
+    Math.abs(manager.ambience.get('drip').clock - routedFrames * DT) < 1e-9,
+    `the bed advanced by ${manager.ambience.get('drip').clock} s over ${routedFrames} routed frames`,
+  )
+  // ...which is exactly the 180 played frames, and the 120 paused ones contributed
+  // nothing. The old `setTimeout` chain advanced through all of them.
+  assert.ok(Math.abs(manager.ambience.get('drip').clock - 180 * DT) < 1e-9, 'the bed moved during the pause')
+  // and the manager's cursor agrees with the pure schedule for the frames it played
+  const played = sequence.filter((frame) => frame.routed).reduce((sum, frame) => sum + frame.dt, 0)
+  const expected = audioModule.ambienceStream('drip', game.seed, fired.length + 1).filter((event) => event.at <= played)
+  assert.deepEqual(fired, expected, 'the bed did not play the schedule the pause shortened')
+
+  // THE HIDDEN TAB, on the same machine: a single enormous frame must not stack a
+  // backlog, and the cursor must come out the far side of it
+  const tabbed = new audioModule.AudioManager()
+  tabbed.setSeed(game.seed)
+  const burst = []
+  const oneFrame = tabbed._advanceAmbience('drip', 900, (event) => burst.push(event))
+  assert.equal(oneFrame, audioModule.AMBIENCE_MAX_PER_FRAME, 'a fifteen-minute frame played its whole backlog')
+  assert.equal(burst.length, audioModule.AMBIENCE_MAX_PER_FRAME)
+  assert.ok(tabbed.ambience.get('drip').at >= 900, 'the cursor is still behind the clock after a hidden tab')
 })
 
 

@@ -58,6 +58,23 @@ function fmix32(h) {
 // ---------------------------------------------------------------------------
 
 /**
+ * DEFAULT_SEED — the seed a run gets when nobody names one.
+ *
+ * BEFORE: the literal `1337` written out in `world.js`. AFTER: this constant, read
+ * by `world.js` AND by `audio.js`.
+ *
+ * Pass 13 is why it moved. The world bed is *seeded* — a run's distant facility
+ * noises, its noise floor and its ambience schedule are a function of the run's
+ * seed and of nothing else — and the audio cannot invent a seed the world did not
+ * choose, so the two had to stop being two independent defaults that happen to
+ * agree. One named constant is that agreement, and `verify.mjs` asserts both
+ * modules read *this* name rather than a literal.
+ *
+ * @type {number}
+ */
+export const DEFAULT_SEED = 1337
+
+/**
  * hash32 — mix a base seed and a chunk coordinate into one 32-bit seed.
  *
  * Every chunk gets its own seed, so two chunks never share a stream even when

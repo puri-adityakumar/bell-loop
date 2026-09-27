@@ -248,6 +248,69 @@ const HAZE_BANDS = Object.freeze([
 ])
 
 /**
+ * HAZE_AUDIO_CYCLE — how much faster than its own drift a band is counted as
+ * moving when the AUDIO asks how much haze there is.
+ *
+ * BEFORE: n/a — nothing outside this file had ever asked. AFTER: 24.
+ *
+ * The three drifts are 0.0072 / -0.0049 / 0.0031 rad/s, so a band returns to where
+ * it started every 873 / 1282 / 2027 seconds. That is the right rate for a thing
+ * you look at and hopeless for a thing you hear: a wind bed that took a quarter of
+ * an hour to breathe would read as a fault rather than as air. 24 puts the
+ * shortest band's audible cycle at about 36 s and the longest at about 84, which
+ * is the range a player will actually hear as weather, and it is a MULTIPLIER on
+ * numbers this file already owns rather than a fourth drift rate nobody can trace
+ * back to a band.
+ *
+ * The claim being bought is *coupling*, not realism: the same three numbers, the
+ * same clock, the same seed. Whether 24 is the prettiest multiplier in the world
+ * is not a question this pass can answer; that the wind cannot be moving when the
+ * bands are not is.
+ */
+export const HAZE_AUDIO_CYCLE = 24
+
+/**
+ * hazeIntensityAt — how much haze is in the air, as `[0, 1]`, at a point in time.
+ *
+ * ITERATION 2, PASS 13. The three bands above are the sky's only moving air, and
+ * pass 13's wind layer needs a number to follow rather than a clock of its own —
+ * a second LFO in `audio.js` would drift against these within a minute and the
+ * two would be visibly unrelated to anyone who went looking.
+ *
+ * The model is one line: each band is a slab of haze sweeping past the eye, and a
+ * slab is at its thickest when its bearing is the reference bearing, so its
+ * contribution is `0.5 + 0.5·cos(phase)`, weighted by the same `peak` the renderer
+ * uses and normalised by the sum of the peaks. What comes out is a weighted mean
+ * of three slow cosines, which is bounded in `[0, 1]` by construction — not by a
+ * clamp applied afterwards, which would be a claim the function does not make.
+ *
+ * `phase` is `time · drift · HAZE_AUDIO_CYCLE + a per-band offset hashed from the
+ * seed`, so two runs of different seeds are not breathing in step, and a run is
+ * bit-identical to itself. Pure: no Three.js, no clock, no accumulator, exactly
+ * like every other animated value in this file, and `verify-world.mjs` drives it
+ * over an hour of clock to check the bound rather than trusting the algebra.
+ *
+ * @param {number} time seconds since the sky was built
+ * @param {number} seed the run's seed
+ * @returns {number} `[0, 1]`
+ */
+export function hazeIntensityAt(time, seed) {
+  if (!Number.isFinite(time)) return 0
+  let sum = 0
+  let total = 0
+  for (let index = 0; index < HAZE_BANDS.length; index += 1) {
+    const band = HAZE_BANDS[index]
+    // the same avalanche mix `ashDrift` uses, on a different salt, so a band's
+    // audio phase cannot correlate with where its own motes happen to be
+    const offset = (hash32(seed, index, 0x51a2b3c4) / 4294967296) * Math.PI * 2
+    const coverage = 0.5 + 0.5 * Math.cos(time * band.drift * HAZE_AUDIO_CYCLE + offset)
+    sum += band.peak * coverage
+    total += band.peak
+  }
+  return total > 0 ? sum / total : 0
+}
+
+/**
  * ASH_COUNT, ASH_BOX and ASH_MIN_Y — the near-camera motes.
  *
  * BEFORE: n/a. AFTER 90 motes in a 15 m box whose floor is 2.2 m ABOVE the eye.
@@ -909,12 +972,34 @@ export class SkyView {
   }
 
   /**
-   * The ash material.
+   * `ashMaterial()` — the ash's `THREE.PointsMaterial`, for the gate.
+   *
+   * A method rather than a field the gate reaches into, so a rename breaks this
+   * call rather than silently reading `undefined` and passing.
    *
    * @returns {THREE.PointsMaterial}
    */
   ashMaterial() {
     return this.ash.material
+  }
+
+  /**
+   * `hazeIntensity()` — how much haze is in the air this frame, `[0, 1]`.
+   *
+   * ITERATION 2, PASS 13. This is the ONE number pass 13's wind layer follows, and
+   * the reason it is a method rather than something `world.js` recomputes: the sky
+   * owns the bands' clock and the bands' table, so anything that asked the sky a
+   * question about its own animation by duplicating the formula would be a second
+   * copy of pass 9's numbers in a file that cannot see them.
+   *
+   * Read on the world's own clock, which `update(dt)` advances BEFORE
+   * `_updateAudio` runs, so the wind a frame is ducked by is the wind the frame
+   * was *drawn* with rather than the one before it.
+   *
+   * @returns {number}
+   */
+  hazeIntensity() {
+    return hazeIntensityAt(this._time, this.seed)
   }
 
   /**

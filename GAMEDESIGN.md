@@ -728,6 +728,20 @@ bell is the only sound that crosses from v1 into v2, and it crosses as the
 | Portal hum | per-portal, pitch falls as it is shut down | progress feedback in-world |
 | Creature breath | distance-attenuated; sharper as awareness rises | the awareness readout (§6.4) |
 | Portal shutdown | the sustained 25 m event above the noise threshold | the commitment tell |
+| Room tone *(pass 13)* | filtered noise, highpassed at 55 Hz and lowpassed at 520 Hz, with a 0.017 Hz LFO on the cutoff | the world's air — the bed the drone sits in, ducked on the drone's own ladder |
+| Haze wind *(pass 13)* | a noise band whose level and centre frequency both follow `skyView`'s `hazeIntensityAt` | coupling to the sky's own drifting bands; a wind layer with a clock of its own would drift against them inside a minute |
+| Distant facility *(pass 13)* | a seeded rumble, clank or thump every 20–60 s, placed in the world by seed | the city having a life of its own — placed, panned and damped through `soundStrength` and `wrapDelta` |
+| Water drip *(pass 13)* | a seeded one-shot every 2.5–8 s | pass 8's water, heard |
+
+Four of these are the **world bed**, and they are not in the player's channel:
+each is priced at `kind: null`, so §6.2's sound radius for it is 0 and the
+creature can never be drawn to a noise the player did not make. The bed is also
+the only part of the audio that is a function of the run's SEED rather than of
+the wall clock — the ambience schedule, the noise floor and the placement are all
+functions of `(seed, index)` — which is what makes two runs of the same seed the
+same run, sound included. Its ceiling is a constraint rather than a taste: the
+three layers together stay under one ordinary footstep's level, because the
+footstep is the one sound the creature navigates by.
 
 Two of these are load-bearing rather than decorative:
 
