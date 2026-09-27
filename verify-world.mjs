@@ -4283,6 +4283,9 @@ const PASS7_POOLS = Object.freeze([
   'shelterAds', 'bollards', 'bikeFrames', 'bikeWheels', 'posters', 'postersTorn',
 ])
 
+/** The five pools iteration 2 pass 8 adds, in creation order. */
+const PASS8_POOLS = Object.freeze(['wetSheen', 'puddles', 'streaks', 'canalLips', 'canalWater'])
+
 /** The families that stand on the PAVEMENT, and so are measured against the road. */
 const PASS7_PAVEMENT_POOLS = Object.freeze([
   'vendingBodies', 'vendingFaces', 'vendingLitFaces', 'vendingFlickerFaces',
@@ -4417,7 +4420,24 @@ check('every pass-7 family is placed, and every object is the pieces it claims',
   const tornShare = view.pools.postersTorn.used / (view.pools.posters.used + view.pools.postersTorn.used)
   assert.ok(tornShare > 0.2 && tornShare < 0.5, `${(tornShare * 100).toFixed(0)}% of the posters are torn, which is not one in three`)
   // ...and the pass costs exactly fifteen draw calls on top of the thirty already there.
-  assert.equal(view.streetPools.length, 30 + PASS7_POOLS.length, 'the pass added a different number of pools than it claims')
+  // The count is `30 + pass 7 + pass 8` rather than `30 + pass 7`, and that is a
+  // correction to a gate that was correct when written and wrong the moment a
+  // later pass added a pool: a hard-coded 45 means every future pass that draws
+  // anything fails a check whose subject is pass 7's draw-call budget, and the
+  // tempting repair — deleting the assertion — is how the budget stops being
+  // checked at all. Each pass's pools are named in `PASS7_POOLS`/`PASS8_POOLS`
+  // and the total is their sum, so a pass that adds a pool must add it to a list
+  // that a reviewer can read.
+  assert.equal(
+    view.streetPools.length,
+    30 + PASS7_POOLS.length + PASS8_POOLS.length,
+    'the two passes added a different number of pools than they claim',
+  )
+  for (const name of PASS8_POOLS) {
+    assert.ok(view.pools[name], `the pass-8 pool ${name} does not exist, so this pass is not in the build`)
+    assert.ok(view.pools[name].used > 0, `${name} placed nothing at all, so its rate is not a rate`)
+    assert.equal(view.pools[name].overflow, 0, `${name} overflowed and dropped ${view.pools[name].overflow} instances`)
+  }
 })
 
 check('the district table is real: three kinds are missing from a whole quadrant', () => {
@@ -4922,6 +4942,634 @@ check('pass-7 furniture stands where the §16.5 stand-offs are pointing', () => 
   const rows = ['dumpsters', 'trashBags', 'vendingBodies', 'shelterSteel', 'bikeFrames', 'bollards', 'posters']
     .map((name) => `${name} ${near(name, 45).length}/${view.pools[name].used}`)
   console.log(`\n  pass-7 furniture within 45 m of the §16.5 node: ${rows.join(', ')}`)
+})
+
+// ---------------------------------------------------------------------------
+// PASS 8 — WATER & REFLECTIONS
+//
+// Six checks, in the order the pass's claims are stated, so a failure names the
+// claim it broke rather than a symptom of it:
+//
+//   1. every pool is placed, instanced, committed, and inside the triangle
+//      budget — the pass's cost claim
+//   2. every puddle is in a band, and every band is somewhere that band exists
+//      — the brief's "natural spots"
+//   3. every drop of water is INSIDE the carriageway — the pass's own bug, and
+//      the check that was missing when it was written
+//   4. the halo is bigger, lower and darker than the water it darkens around
+//   5. the streak is additive, warm, elongated, and one per lamp — the
+//      reflection claim, and the eye-gate arithmetic
+//   6. the canal crosses a street, is a channel and not a stripe, and shimmers
+//      on the clock
+// ---------------------------------------------------------------------------
+
+/**
+ * `roadDistance` — metres from a drawn point to the nearest road centreline.
+ *
+ * The road lattice is seven axes 64 m apart and it REPEATS every `WORLD_EXTENT`,
+ * so the distance has to fold by the period before it means anything. The first
+ * version of this helper did not, and it reported 21 puddles "in a block" that
+ * were in fact 2.1 m from a kerb 448 m away — the frame error `canonicalXZ`'s own
+ * comment warns about, arrived at from the other direction. A gate that invents
+ * a defect is worse than no gate, because the repair is to delete it.
+ *
+ * @param {number} v a drawn coordinate on one axis
+ * @returns {number} metres to the nearest centreline
+ */
+function roadDistance(v) {
+  let best = Infinity
+  for (let period = -1; period <= 1; period += 1) {
+    for (let axis = 0; axis < hood.GRID; axis += 1) {
+      const gap = Math.abs(v - (hood.roadAxisToWorld(axis) + period * hood.WORLD_EXTENT))
+      if (gap < best) best = gap
+    }
+  }
+  return best
+}
+
+/** Is this drawn piece inside a carriageway, allowing for its own size? */
+function onCarriageway(piece) {
+  return (
+    roadDistance(piece.x) + piece.sx / 2 <= hood.STREET_HALF_WIDTH ||
+    roadDistance(piece.z) + piece.sz / 2 <= hood.STREET_HALF_WIDTH
+  )
+}
+
+/**
+ * How far this piece's nearest edge spills past the kerb face. Negative is inside.
+ *
+ * The BEST axis and not the worst, and the first version of this took the worst —
+ * which is a gate that invents a defect rather than one that finds one. A piece
+ * lying on a north-south road is 14 m from the nearest east-west centreline, and
+ * that is not a spill: it is a road. `min` of the two sums is the only reading
+ * under which "or" in `onCarriageway` and "how far past the kerb" agree, and the
+ * two have to agree or the message reports a distance from the wrong axis.
+ */
+function kerbSpill(piece) {
+  return hood.STREET_HALF_WIDTH - Math.min(
+    roadDistance(piece.x) + piece.sx / 2,
+    roadDistance(piece.z) + piece.sz / 2,
+  )
+}
+
+/** Rec. 709 luma of a packed 0xRRGGBB — the measure the palette comments quote. */
+function packedLuma(hex) {
+  return 0.299 * ((hex >> 16) & 255) + 0.587 * ((hex >> 8) & 255) + 0.114 * (hex & 255)
+}
+
+/**
+ * `waterNumber` — a named constant out of `streetView.js`, read from the source.
+ *
+ * The same reason `verify.mjs` has `buildingNumber`: the check and the thing it
+ * checks cannot then disagree about what the number is. It is NOT a re-derivation
+ * — the values are read, not recomputed from the geometry — because the point of
+ * several of these assertions is that the constant and the placement agree, and a
+ * helper that re-derived one from the other would be checking itself.
+ *
+ * @param {string} name the constant's name, without `const`
+ * @returns {number} its value
+ */
+function waterNumber(name) {
+  const found = new RegExp(`const ${name} = ([\\d.]+)`).exec(STREET_VIEW_SOURCE)
+  assert.ok(found, `${name} is not a named constant any more, so this check is reading nothing`)
+  return Number(found[1])
+}
+
+/** Position and scale of an instance, as one object. */
+function placed(pool) {
+  const where = instances(pool)
+  const size = scales(pool)
+  return where.map((piece, i) => ({ ...piece, sx: size[i].sx, sy: size[i].sy, sz: size[i].sz }))
+}
+
+check('pass-8 water is placed, instanced, committed, and inside the triangle budget', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  for (const name of PASS8_POOLS) {
+    const pool = view.pools[name]
+    assert.ok(pool, `the pool ${name} does not exist, so this pass is not in the build`)
+    assert.ok(pool.mesh.isInstancedMesh, `${name} is not an InstancedMesh, so it is a scene graph of ${pool.capacity} objects`)
+    assert.ok(pool.used > 0, `${name} placed nothing at all`)
+    assert.equal(pool.overflow, 0, `${name} overflowed and dropped ${pool.overflow} instances`)
+    assert.equal(pool.mesh.count, pool.used, `${name} was never committed, so its instances were never uploaded`)
+  }
+  // The budget as a number rather than a claim. A puddle is a 10-gon (20
+  // triangles) and a streak is a quad, and the whole point of the pass's
+  // geometry argument is that this stays small: the five pools together are
+  // under 8,000 triangles, a twentieth of what a smooth pond would cost for the
+  // same picture.
+  let triangles = 0
+  for (const name of PASS8_POOLS) {
+    const geometry = view.pools[name].mesh.geometry
+    const per = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
+    triangles += view.pools[name].used * per
+  }
+  assert.ok(triangles < 8000, `the water costs ${triangles} triangles, over the 8,000 this pass budgeted`)
+  // ...and the halo and the water are the SAME geometry object, which is the
+  // second half of the cost argument: two pools holding one `BufferGeometry` is
+  // one upload and one VRAM copy, and two pools holding two is two of each.
+  assert.equal(
+    view.pools.puddles.mesh.geometry,
+    view.pools.wetSheen.mesh.geometry,
+    'the halo and the water do not share one geometry, so the pass pays for the same 20 triangles twice',
+  )
+  // The discs are 10-gons, and a puddle is never a pond. The count is read off
+  // the BUILT geometry rather than the source, so a change to the segment count
+  // has to be made in both places or it fails here.
+  assert.equal(
+    view.pools.puddles.mesh.geometry.attributes.position.count,
+    12,
+    `the puddle disc has ${view.pools.puddles.mesh.geometry.attributes.position.count} vertices, so PUDDLE_SEGMENTS is not the 10 the triangle budget assumes`,
+  )
+  console.log(`\n  pass-8 water: ${triangles} triangles across ${PASS8_POOLS.length} pools`)
+})
+
+check('every puddle is in a band, and every band is somewhere that band exists', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const puddles = view.waterLog.filter((entry) => entry.kind === 'puddle')
+  assert.ok(puddles.length > 0, 'the world has no puddles at all')
+  // The LOG is the subject, not the geometry, for the reason `waterLog` gives:
+  // all three bands are legal road positions, so a geometric check cannot tell
+  // which rule placed a puddle. The band is only recoverable from the record of
+  // which rule ran — and "near a kerb" is true of a canal puddle too, which is
+  // exactly the kind of tautology that looks green.
+  const bands = [...new Set(puddles.map((entry) => entry.band))].sort()
+  assert.deepEqual(bands, ['canal', 'crossing', 'gutter'], `the bands in use are ${bands}, and the brief asks for gutter lines, intersections and the drainage channel`)
+  // ...and the LOG agrees with the GEOMETRY, entry for entry, which is what
+  // makes it evidence rather than a second opinion. `waterLog` is written in the
+  // drawn frame (the copy offset is already added) and so are the instances, so
+  // this is an exact comparison with no fold involved.
+  const drawn = placed(view.pools.puddles)
+  assert.equal(drawn.length, puddles.length, `the log has ${puddles.length} puddles and the pool has ${drawn.length}`)
+  for (let i = 0; i < puddles.length; i += 1) {
+    assert.ok(Math.abs(drawn[i].x - puddles[i].x) < 1e-3, `puddle ${i} is logged at x=${puddles[i].x} and drawn at x=${drawn[i].x}`)
+    assert.ok(Math.abs(drawn[i].z - puddles[i].z) < 1e-3, `puddle ${i} is logged at z=${puddles[i].z} and drawn at z=${drawn[i].z}`)
+  }
+  // The canal band exists at exactly one node, and that node is the §16.5 node
+  // all fourteen photographs stand on. Canal-band puddles anywhere else would be
+  // water in the middle of a road with no channel to justify it.
+  for (const entry of puddles.filter((row) => row.band === 'canal')) {
+    assert.equal(hood.streetNodeId(entry.ax, entry.az), hood.streetNodeId(1, 1), `a canal puddle sits at node (${entry.ax},${entry.az}) and the channel is at (1,1)`)
+  }
+  // ...and each of them is BESIDE THE DRAWN CHANNEL, which is the one assertion
+  // in this pass that compares the two systems to each other. The band's claim is
+  // that a trough is the one place on the street already below the water table,
+  // so water there is standing IN something; a puddle thirty metres from the
+  // nearest channel is a puddle wearing a channel's name, and the band check
+  // cannot see it (it reads the log) and the channel check cannot either (it
+  // reads the canal). The distance is taken from the drawn water instances, so
+  // it is a measurement rather than the constant agreeing with itself — which is
+  // the whole defect `CANAL_CANAL_OFFSET` is one edit away from.
+  const canalWater = placed(view.pools.canalWater)
+  const beside = waterNumber('CANAL_W') / 2 + waterNumber('CANAL_LIP_T') + waterNumber('PUDDLE_CANAL_SETBACK')
+  for (const entry of puddles.filter((row) => row.band === 'canal')) {
+    const near = Math.min(...canalWater.map((piece) => Math.abs(piece.x - entry.x)))
+    assert.ok(
+      Math.abs(near - beside) < 1e-3,
+      `a canal-band puddle is ${near.toFixed(2)} m from the channel's water, and the band exists to be the ${beside.toFixed(2)} m beside it`,
+    )
+  }
+  // Each band's radius is inside the room that band was GIVEN, and the rooms are
+  // the same constants that positioned the bands. The gutter band is the tight
+  // one and is the one that must be asserted by name: a gutter puddle 2.4 m
+  // across is a pond lying on the footway, which is the bug this pass shipped
+  // and then measured.
+  for (const [band, name] of Object.entries({ gutter: 'PUDDLE_GUTTER_INSET', crossing: 'PUDDLE_CROSSING_OFFSET', canal: 'PUDDLE_CANAL_SETBACK' })) {
+    const radii = puddles.filter((entry) => entry.band === band).map((entry) => entry.radius)
+    if (radii.length === 0) continue
+    const ceiling = waterNumber(name)
+    assert.ok(Math.max(...radii) <= ceiling + 1e-6, `the widest ${band} puddle is ${Math.max(...radii).toFixed(2)} m and that band has ${ceiling} m of room`)
+    assert.ok(Math.min(...radii) >= 0.5, `the narrowest ${band} puddle is ${Math.min(...radii).toFixed(2)} m, which is a smear rather than a puddle`)
+  }
+  // THE ROOMS ARE ORDERED, and it is the only claim in this check that is not
+  // about one band on its own. Each band's room is the SAME constant that
+  // positioned it, so `radius <= room` is an identity: it held on the build that
+  // shipped the first version of this pass, with a third of the world's puddles
+  // lying on the footway, because the room had grown along with the puddles. A
+  // band that is merely RE-WIDENED (`PUDDLE_GUTTER_INSET` 0.70 -> 0.95) is
+  // therefore invisible to every per-band identity above and leaves every puddle
+  // still on the tarmac — the band simply stops being the feature it is named
+  // after, and only a comparison BETWEEN bands can see that.
+  //
+  // The order is the street's and not an accident of three numbers: a gutter is a
+  // kerb-side channel, the canal band is the shoulder beside a trough, and a
+  // crossing puddle is in a wheel rut. Tightest to roomiest — gutter, canal,
+  // crossing — and a band that inverts it has been given a room its feature does
+  // not have, which is a puddle anywhere and a gutter puddle nowhere.
+  const rooms = {
+    gutter: waterNumber('PUDDLE_GUTTER_INSET'),
+    canal: waterNumber('PUDDLE_CANAL_SETBACK'),
+    crossing: waterNumber('PUDDLE_CROSSING_OFFSET'),
+  }
+  assert.ok(
+    rooms.gutter < rooms.canal,
+    `the gutter band has ${rooms.gutter} m of room and the canal band ${rooms.canal} m, so the tightest water on the street is the trough's shoulder and not the gutter`,
+  )
+  assert.ok(
+    rooms.canal < rooms.crossing,
+    `the canal band has ${rooms.canal} m of room and the crossing band ${rooms.crossing} m, so a puddle beside the channel is wider than one in a wheel rut`,
+  )
+  // The rate is a RATE and not a cap, which is the difference between a street
+  // and a pattern: three populations, and a continuous draw inside each.
+  const crossings = puddles.filter((entry) => entry.band === 'crossing').map((entry) => entry.radius)
+  const distinct = new Set(crossings.map((r) => r.toFixed(3))).size
+  assert.ok(distinct > 20, `${distinct} distinct crossing radii, which is not a continuous draw`)
+  const tally = ['gutter', 'crossing', 'canal'].map((band) => `${band} ${puddles.filter((e) => e.band === band).length}`).join(', ')
+  console.log(`\n  pass-8 puddles: ${puddles.length} — ${tally}`)
+})
+
+check('no drop of water is on the pavement: every puddle and streak is in the road', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  // This is the check whose absence let a third of the world's puddles sit on
+  // the footway, and the first version of it measured the wrong thing. Two
+  // distinct claims are involved and BOTH have to hold:
+  //
+  //   - a puddle is inside the carriageway (this check), and
+  //   - a piece of furniture is OUTSIDE it (the pass-6 check above).
+  //
+  // A world can satisfy either alone and look wrong in both directions, and
+  // this pass broke the first one only because the radius was drawn globally
+  // rather than per band.
+  let worst = Infinity
+  for (const name of ['puddles', 'streaks']) {
+    const pieces = placed(view.pools[name])
+    assert.ok(pieces.length > 0, `${name} placed nothing, so this check would pass vacuously`)
+    for (let i = 0; i < pieces.length; i += 1) {
+      const spill = kerbSpill(pieces[i])
+      if (spill < worst) worst = spill
+      assert.ok(
+        onCarriageway(pieces[i]),
+        `${name} ${i} is ${(-spill).toFixed(2)} m past the kerb: ` +
+          `${roadDistance(pieces[i].x).toFixed(2)} m from the nearest x centreline, ` +
+          `${roadDistance(pieces[i].z).toFixed(2)} from the nearest z, and the carriageway is ${hood.STREET_HALF_WIDTH} m either side`,
+      )
+    }
+  }
+  // The wet halo is DELIBERATELY allowed past the kerb, because a damp road
+  // fades out over 0.7 m and the fade is the whole point — so it gets a
+  // separate, weaker bound rather than being folded into the one above. A halo
+  // that stopped sharply at the kerb would be a visible disc edge on the
+  // pavement, which is the artefact the halo exists to avoid.
+  for (const piece of placed(view.pools.wetSheen)) {
+    assert.ok(kerbSpill(piece) > -1.6, `a wet halo reaches ${(-kerbSpill(piece)).toFixed(2)} m past the kerb, which is a damp road reaching onto the footway`)
+  }
+  // ...and the GUTTER band is measured against the KERB FACE rather than against
+  // the constant that placed it. A band's room and the place the band is put are
+  // one number, so every radius-versus-that-number comparison above is the code
+  // agreeing with itself; the only free measurement is the one taken off the
+  // drawn frame, and this is it. Per instance: how much road is left between
+  // this puddle and the kerb, and does the puddle fit in it.
+  //
+  // It catches the direction that IS reachable by editing one side — a band moved
+  // off the kerb with its bound left behind, which is how a row of discs ends up
+  // in the middle of the carriageway wearing a gutter's name. Widening the band
+  // and its bound together is NOT caught here and is not supposed to be: that is
+  // the band check's room ordering, one file section up.
+  const gutterRoom = waterNumber('PUDDLE_GUTTER_INSET')
+  const gutterPuddles = view.waterLog.filter((row) => row.kind === 'puddle' && row.band === 'gutter')
+  assert.ok(gutterPuddles.length > 0, 'the gutter band placed nothing, so this measurement is vacuous')
+  for (const entry of gutterPuddles) {
+    const room = hood.STREET_HALF_WIDTH - Math.min(roadDistance(entry.x), roadDistance(entry.z))
+    assert.ok(
+      Math.abs(room - gutterRoom) < 1e-3,
+      `a gutter puddle at (${entry.x.toFixed(1)},${entry.z.toFixed(1)}) has ${room.toFixed(2)} m of road between it and the kerb, and the band was given ${gutterRoom} m`,
+    )
+    assert.ok(entry.radius <= room + 1e-6, `a gutter puddle is ${entry.radius.toFixed(2)} m in a ${room.toFixed(2)} m gutter, so it is wider than the gutter it is in`)
+  }
+  console.log(`\n  pass-8 clearance: worst water ${worst.toFixed(2)} m inside the kerb over ${placed(view.pools.puddles).length} puddles + ${placed(view.pools.streaks).length} streaks`)
+})
+
+check('the wet halo is bigger, lower and darker than the water it darkens around', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  // ONE halo per puddle, written in the same call, and the count IS the claim. A
+  // halo pool that drifted out of step — a puddle whose halo was dropped by an
+  // over-capacity pool — would be a bright disc on dry road, and the brief's
+  // "wet-road darkening near the puddles" is exactly what would be missing.
+  assert.equal(
+    view.pools.wetSheen.used,
+    view.pools.puddles.used,
+    `${view.pools.wetSheen.used} halos for ${view.pools.puddles.used} puddles, so some water is standing on dry road`,
+  )
+  const water = placed(view.pools.puddles)
+  const halo = placed(view.pools.wetSheen)
+  for (let i = 0; i < water.length; i += 1) {
+    assert.ok(Math.abs(water[i].x - halo[i].x) < 1e-3, `halo ${i} is not under puddle ${i}`)
+    assert.ok(Math.abs(water[i].z - halo[i].z) < 1e-3, `halo ${i} is not under puddle ${i}`)
+    assert.ok(halo[i].y < water[i].y, `halo ${i} is at y=${halo[i].y} and the water at ${water[i].y}, so the damp is drawn on top of the puddle`)
+    // `PUDDLE_HALO_SPREAD` on BOTH axes, not one: an oval halo on a round
+    // puddle reads as a shadow, and a round halo on an oval puddle is invisible.
+    assert.ok(halo[i].sx > water[i].sx * 1.5, `halo ${i} is ${halo[i].sx.toFixed(2)} m across and the water ${water[i].sx.toFixed(2)}`)
+    assert.ok(halo[i].sz > water[i].sz * 1.5, `halo ${i} is not wider than its puddle across the short axis`)
+  }
+  // The halo is a BLEND, not a disc of paint: transparent, an opacity under 1,
+  // and no depth write. At 1.0 it would be a painted circle of `wetSheen` and
+  // the sodium pool would stop landing on the road.
+  const sheen = view._materials.wetSheen
+  assert.equal(sheen.transparent, true, 'the wet halo is not transparent, so it is paint rather than damp')
+  assert.ok(sheen.opacity > 0.2 && sheen.opacity < 0.8, `the halo blends at ${sheen.opacity}, which is either invisible or opaque`)
+  assert.equal(sheen.depthWrite, false, 'the halo writes depth, so it can occlude the puddle above it')
+  // ...and it is DARKER than the asphalt, which is the brief's "wet-road
+  // darkening" stated as a number rather than as a name. A wet road goes dark
+  // because the water film takes away the diffuse bounce; a puddle lighter than
+  // the road around it is a puddle of paint.
+  assert.ok(
+    lumaOf(sheen.color) < lumaOf(view._materials.asphalt.color),
+    `the wet halo is luma ${lumaOf(sheen.color).toFixed(1)} and the asphalt ${lumaOf(view._materials.asphalt.color).toFixed(1)}, so a wet road would be a dry one with a stain on it`,
+  )
+  // THE RENDER ORDERS, which are the pass's own and which three.js would
+  // otherwise decide by depth: at 11 m all four water surfaces are within 2 m of
+  // each other, and left to the automatic sort the additive streak lands UNDER
+  // the dark halo on roughly half the frames — a reflection that vanishes when
+  // the camera moves, which no single screenshot reveals.
+  const order = ['wetSheen', 'puddles', 'canalWater', 'streaks'].map((name) => view.pools[name].mesh.renderOrder)
+  assert.deepEqual(order, [1, 2, 3, 4], `the water render order is ${order}, and it must be halo, puddle, canal, streak`)
+})
+
+check('the streak is one additive warm quad per lamp, and it cannot become an eye', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  // ONE PER LAMP, and the count is a function of the lamp grid rather than of
+  // the puddles. A per-puddle scheme would place several hundred, and a reviewer
+  // reading `streaks.used` could not tell which rule produced the number.
+  assert.equal(
+    view.pools.streaks.used,
+    view.lampPositions.length * 3,
+    `${view.pools.streaks.used} streaks for ${view.lampPositions.length} lamps in three copies, so the reflection is not one per light`,
+  )
+  // ADDITIVE and unfogged-bright is what makes it a light rather than a painted
+  // stripe; `fog: true` because it lies on the ground and has to recede, which
+  // is the same combination as the sodium pool it reflects.
+  const material = view._materials.streak
+  assert.equal(material.blending, 2, 'the streak is not additive, so it is a decal and not a reflection')
+  assert.equal(material.fog, true, 'the streak is unfogged, so a reflection is visible from the far end of an avenue')
+  assert.equal(material.depthWrite, false, 'the streak writes depth, so it can occlude the puddle it reflects in')
+  // WARM, and this is the palette authority the brief names: §12.2 is explicit
+  // that cyan belongs to the portals alone, so a blue reflection would be a
+  // second cold light family in a game that has exactly one.
+  const { r, g, b } = material.color
+  assert.ok(r > g && g > b, `the reflection is rgb(${r},${g},${b}), which is not a warm amber`)
+  // ELONGATED, and the RATIO is the claim rather than the two numbers: a disc is
+  // a mirror and a smear is a reflection in a rough surface, and 1 x 9 is 9:1
+  // whichever way round it is measured.
+  const sizes = scales(view.pools.streaks)
+  for (const piece of sizes) {
+    assert.ok(Math.max(piece.sx, piece.sz) / Math.min(piece.sx, piece.sz) > 4, `a streak is ${piece.sx.toFixed(2)} x ${piece.sz.toFixed(2)} m, which is not a streak`)
+  }
+  // ...and BOTH axes occur, so the world is not a comb of parallel streaks. The
+  // axis is a per-node hash precisely so that it is not.
+  const alongX = sizes.filter((piece) => piece.sx > piece.sz).length
+  assert.ok(alongX > 0 && alongX < sizes.length, `${alongX} of ${sizes.length} streaks run along x, so every lamp in the world reflects the same way`)
+  // THE EYE ARITHMETIC, and it is the reason the streak is drawn at `STREAK_PEAK`
+  // rather than at full `waterStreak`. `tools/png-luma.mjs` finds the creature's
+  // eye by flood-filling compact blobs at or above `EYE_MIN`, and a warm additive
+  // quad on the ground is exactly the sort of thing that becomes one. Asserted
+  // here as a MATERIAL fact and in `verify.mjs` as arithmetic against the same
+  // constant, so the number cannot drift above the threshold in one place and
+  // not in the other.
+  assert.ok(material.map, 'the streak has no falloff texture, so it is a hard-edged rectangle of light on the road')
+  // `lumaOf` takes a `THREE.Color` and does the sRGB ENCODE, which is the form the
+  // eye finder measures in — a raw 0-1 average would read 0.30 where the frame
+  // reads 194, and a gate written that way passes a streak that blows the eye
+  // gate. The first version of this line divided an already-normalised colour by
+  // 255 a second time and reported a peak of 4.0, which is green and passed.
+  const peak = lumaOf(material.color) * waterNumber('STREAK_PEAK')
+  assert.ok(peak < 150, `a streak peaks at luma ${peak.toFixed(1)} and EYE_MIN is 150, so a reflection can be found as the creature's eye`)
+  // ...and not trivially under it either, because a floor is the other half of a
+  // bound: a streak at luma 4 is not a reflection, it is a rounding error, and
+  // the assertion above would have called that a pass.
+  assert.ok(peak > 60, `a streak peaks at luma ${peak.toFixed(1)}, too dim to read as a reflection of a ${lumaOf(view._materials.sodium.color).toFixed(0)} lamp head`)
+  console.log(`\n  pass-8 streak: ${sizes.length} quads, ${alongX} along x, peak luma ${peak.toFixed(1)} against EYE_MIN 150`)
+})
+
+check('the canal crosses a street, is a channel and not a stripe, and shimmers on the clock', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  // ONE channel per wrapped copy, and it is the SAME channel: three instances
+  // exactly `WORLD_EXTENT` apart. A canal scattered per node would be a puddle
+  // field wearing a channel's name, and the brief asks for ONE.
+  const water = placed(view.pools.canalWater)
+  const lips = placed(view.pools.canalLips)
+  assert.equal(water.length, 3, `the world has ${water.length} channels and the brief asks for one`)
+  assert.equal(lips.length, 6, `the channel has ${lips.length} lips and a channel is two`)
+  for (let copy = 1; copy < 3; copy += 1) {
+    // CONSECUTIVE pairs, and not "each against the first": the copies are laid
+    // down at -448, 0 and +448, so the third is two periods from the first. The
+    // first version compared every copy to copy 0 and reported 896 m for a
+    // channel that is 448 m from its neighbour — a gate that cannot count.
+    //
+    // The offset is on X, not z, because the channel runs ALONG z and the copies
+    // differ on the axis PERPENDICULAR to the run. Checking z (as an earlier
+    // version did) reports 0 m, because all three copies genuinely share a z.
+    assert.ok(Math.abs(Math.abs(water[copy].x - water[copy - 1].x) - hood.WORLD_EXTENT) < 1e-3, `copy ${copy} is ${Math.abs(water[copy].x - water[copy - 1].x)} m from copy ${copy - 1}, which is not one world period`)
+  }
+  // IT CROSSES A STREET. The channel's long axis is perpendicular to the road it
+  // crosses and its centre passes within the carriageway — the first version of
+  // this pass ran the channel ALONG the street, 21 m from the nearest
+  // centreline, which put 26 m of standing water in the middle of a block
+  // between two houses. Every count was right and the water was in the scene.
+  const long = Math.max(lips[2].sx, lips[2].sz)
+  assert.ok(roadDistance(water[1].z) <= hood.STREET_HALF_WIDTH, `the channel crosses the street ${roadDistance(water[1].z).toFixed(1)} m from its centreline, which is off the road entirely`)
+  assert.ok(long > hood.STREET_HALF_WIDTH * 2, `the channel is ${long.toFixed(1)} m long, which does not span the ${hood.STREET_HALF_WIDTH * 2} m carriageway it crosses`)
+  // ...and it is dug in the BLOCK of the junction it drains, which is what makes
+  // it a feature of this street rather than a channel somewhere on the map. A
+  // drainage channel belongs to the block it runs down — half the road spacing
+  // either side of the node — and everything this pass built for it lives there:
+  // the canal-band puddles, which are only placed at `CANAL_NODE`, and the
+  // fourteen captures, which all stand on that same node. `CANAL_CANAL_OFFSET` is
+  // one edit from 9 m to a number that carries the channel and its puddles
+  // together into the next block, where every count above is still correct, the
+  // channel still crosses streets, and nothing photographs it.
+  //
+  // The bound is the DERIVED spacing and not a number typed in here, so it moves
+  // with the map, and the comparison is per copy because the copies are a
+  // `WORLD_EXTENT` apart and a copy-2 channel is not 440 m from its own node.
+  const canalNode = hood.streetNodeToWorld(hood.streetNodeId(1, 1))
+  const spacing = Math.abs(hood.roadAxisToWorld(1) - hood.roadAxisToWorld(0))
+  for (const row of view.waterLog.filter((entry) => entry.kind === 'canal')) {
+    const off = Math.abs(row.x - (canalNode.x + row.copy * hood.WORLD_EXTENT))
+    assert.ok(off < spacing / 2, `copy ${row.copy}'s channel is ${off.toFixed(1)} m from the junction it drains, and a block is half a road spacing, ${(spacing / 2).toFixed(1)} m`)
+  }
+  // A CHANNEL AND NOT A STRIPE: the lips have HEIGHT, and that is the only thing
+  // giving the water an edge to sit behind. A flat dark line on a road is a
+  // painted line, and no amount of shimmer makes it water.
+  for (const lip of lips) {
+    assert.ok(lip.sy > 0.05, `a lip is ${lip.sy.toFixed(3)} m tall, so the channel has no wall to sit in`)
+  }
+  // The water is BELOW both lips and ABOVE the road, and it is the DERIVED
+  // difference rather than a third independent number: writing `0.01` literally
+  // left `CANAL_DEPTH` unused, and a later edit to the lip height would have
+  // left the water floating in its own channel with nothing failing.
+  const lipTop = lips[0].y + lips[0].sy / 2
+  const derived = waterNumber('CANAL_LIP_H') - waterNumber('CANAL_DEPTH')
+  for (const piece of water) {
+    assert.ok(piece.y < lipTop, `the canal's water is at y=${piece.y.toFixed(3)} and the lip tops are at ${lipTop.toFixed(3)}, so the water is above its own walls`)
+    assert.ok(piece.y > 0, `the canal's water is at y=${piece.y.toFixed(3)}, which is below the road plane it is cut into`)
+    assert.ok(Math.abs(piece.y - derived) < 1e-3, `the canal's water is at ${piece.y.toFixed(4)} and CANAL_LIP_H - CANAL_DEPTH is ${derived.toFixed(4)}`)
+  }
+  // The two lips are `CANAL_W` apart on their INNER faces, so the channel is
+  // exactly as wide as the water in it. A channel narrower than its own water is
+  // water running through a wall.
+  const inner = Math.abs(lips[0].x - lips[1].x) - lips[0].sx
+  assert.ok(Math.abs(inner - waterNumber('CANAL_W')) < 1e-3, `the channel's inner width is ${inner.toFixed(3)} m and CANAL_W is ${waterNumber('CANAL_W')}`)
+  // ...and darker than the road it is cut into, or the channel is a light stripe.
+  assert.ok(
+    lumaOf(view._materials.canalWater.color) < lumaOf(view._materials.asphalt.color),
+    'the canal is lighter than the road, so a channel is a painted stripe',
+  )
+  // It is a lit SURFACE with fog on and not a `_glow`: an unfogged water surface
+  // is visible from the far end of the avenue, which is the same fault
+  // `vendingFaceLit` was fixed for.
+  assert.equal(view._materials.canalWater.type, 'MeshStandardMaterial', 'the canal is not a lit surface')
+  assert.equal(view._materials.canalWater.fog, true, 'the canal is unfogged')
+  // THE SHIMMER, the only animated thing in the pass. Driven off `this._time` and
+  // not off an accumulated `dt`, so a capture that steps to a given time gets a
+  // given shimmer — and so the determinism check below can exist at all.
+  const map = view._materials.canalWater.map
+  assert.ok(map, 'the canal has no map, so its surface cannot shimmer')
+  // The offset asserted below is only MEANINGFUL if the map repeats along the
+  // channel, and this is the assertion that says so. Clamped, the scroll is not a
+  // scroll: the last tile smears down the whole 26 m of water and the canal stops
+  // shimmering and starts stretching. `CANAL_SHIMMER_TILES` copies of a tile on a
+  // channel `CANAL_LEN` long only tile if the length axis wraps, so the wrap is
+  // the claim and the scrolling offset is the consequence of it.
+  assert.equal(map.wrapS, THREE.RepeatWrapping, `the canal's map wraps its length as ${map.wrapS}, so a shimmer scroll smears one tile down the whole channel`)
+  const before = map.offset.x
+  run(game, 4)
+  const after = map.offset.x
+  // The DELTA and not the absolute value, and the reason is that this file
+  // drives ONE shared `game`: every check above has already called `run()`, so
+  // `this._time` is tens of seconds old by the time this check runs. Comparing
+  // the absolute offset against a four-second expectation reports a quarter of
+  // a tile and fails; comparing the delta is the claim anyway, which is "four
+  // seconds of play moved the water by this much".
+  const moved = after - before
+  const expected = 4 * waterNumber('CANAL_SHIMMER_MPS') / (waterNumber('CANAL_LEN') / waterNumber('CANAL_SHIMMER_TILES'))
+  assert.ok(moved > 0, `four seconds of play moved the canal by ${moved.toFixed(4)}, so the shimmer is not running`)
+  assert.ok(Math.abs(moved - expected) < 1e-6, `the canal moved ${moved.toFixed(4)} in 4 s and CANAL_SHIMMER_MPS implies ${expected.toFixed(4)}`)
+  // SLOW: 4 s at 0.06 m/s is 0.24 m of a 3.7 m tile, so the water has not wrapped
+  // and is nowhere near doing so. A scroll that wrapped inside four seconds is a
+  // swimming pool, and this is the number that says which it is.
+  assert.ok(moved < 0.2, `the canal moved ${moved.toFixed(3)} in 4 s, so the water moves faster than a canal moves`)
+  // ...and the same time twice gives the same offset, bit for bit. An accumulator
+  // that summed `dt` would drift by a different amount every run and this
+  // assertion could not exist.
+  view._time = 12.5
+  view.update(0)
+  const first = view._materials.canalWater.map.offset.x
+  view._time = 0
+  view.update(0)
+  view._time = 12.5
+  view.update(0)
+  assert.equal(view._materials.canalWater.map.offset.x, first, 'two runs to t=12.5 gave two different shimmers, so the scroll is not a function of the clock')
+  // THE PORTAL EXCLUSION, asked as a PREDICATE and not as a count. On this seed
+  // no candidate spot falls within `PORTAL_FURNITURE_CLEAR` of a portal, so
+  // `waterRejected` is 0 — and a gate requiring the filter to have fired would
+  // be requiring this seed to have a near miss, which is a claim about the map
+  // and not about the filter. The direct question is the honest one: at a
+  // portal's own front door, does the predicate say no?
+  const portal = view.objectives.portals[0].position
+  const rejectedBefore = view.waterRejected
+  // Canonical coordinates with `copy: 0`, because `_waterClear` takes a DRAWN
+  // position and subtracts `copy * WORLD_EXTENT` itself. Passing `copy: 1` with a
+  // canonical point asks the question 448 m from where the portal is, and the
+  // first version of this check did exactly that and reported that a puddle may
+  // stand in a portal doorway.
+  assert.equal(view._waterClear(portal.x, portal.z, 0), false, 'the water exclusion lets a puddle stand in a portal doorway')
+  // The same doorway in a WRAPPED copy, which is the half that is easy to get
+  // wrong: the exclusion has to fold, or it silently exists in one ninth of the
+  // world and every other copy is unwetted.
+  assert.equal(view._waterClear(portal.x + hood.WORLD_EXTENT, portal.z + hood.WORLD_EXTENT, 1), false, 'the exclusion does not fold, so a portal in copy 1 has water in front of it')
+  assert.ok(view.waterRejected > rejectedBefore, 'the exclusion refused a doorway without recording it, so nothing can tell the filter ran')
+  // ...and it says yes a long way out, or it is a filter that refuses everything.
+  assert.equal(view._waterClear(portal.x + 40, portal.z, 0), true, 'the water exclusion refuses a spot 40 m from a portal, so it is refusing everything')
+  console.log(`\n  pass-8 canal: ${long.toFixed(1)} m long, crossing ${roadDistance(water[1].z).toFixed(1)} m from the centreline, shimmer ${after.toFixed(4)} after 4 s`)
+})
+
+check('the portal exclusion is CALLED, and not merely correct when asked', () => {
+  // The check above proves `_waterClear(portalX, portalZ, copy)` is FALSE at a
+  // portal's own front door. It says nothing about whether `_addStreak` ever ASKS
+  // — and the difference is a line of code, not a bug you can see. Deleting
+  // `if (!this._waterClear(x, z, copy)) continue` from `_addStreak` and running
+  // the suite leaves 76/76 green, because a predicate that is only ever tested
+  // directly has no call site left to remove. That mutation was found by running
+  // it, and this check is the one that catches it.
+  //
+  // The method is a PLANT, in the same shape as the pass-7 furniture probe: move
+  // a real portal onto a real piece of water, rebuild, and require that exact
+  // piece to be gone. It is the only form of this assertion that is independent
+  // of the seed — `waterRejected` is 0 on this seed by design, and a check that
+  // counted rejections would be a claim about the map rather than about the
+  // filter, which is the mistake the comment above this one is warning about.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const POOLS = ['puddles', 'wetSheen', 'streaks', 'canalWater', 'canalLips']
+  const rebuild = () => {
+    for (const name of POOLS) view.pools[name].clear()
+    view._buildWater()
+  }
+  const anchor = view.objectives.portals[0]
+  // Three numbers and not `.clone()`: `anchor.position` is a plain `{x, y, z}`
+  // record, not a `THREE.Vector3`, so the Vector3 method is not there to call.
+  // Saving the components also survives whatever type it is.
+  const saved = { x: anchor.position.x, y: anchor.position.y, z: anchor.position.z }
+
+  const place = (x, y, z) => { anchor.position.x = x; anchor.position.y = y; anchor.position.z = z }
+  const restoreAnchor = () => place(saved.x, saved.y, saved.z)
+
+  for (const kind of ['streak', 'puddle']) {
+    // BACK TO THE UNPLANTED WORLD before every iteration, and this is not tidiness.
+    // The first version picked its two victims in sequence from a log that the
+    // first plant had already edited, and the count assertion came back 447
+    // before and 447 after — because planting the portal back near the street
+    // RESTORED the water the streak plant had removed while excluding a
+    // different set. The specific-victim assertion still passed, so the check
+    // would have shipped with a count gate that measures the difference between
+    // two plants rather than the cost of one. Each iteration is now its own
+    // baseline, and `baseline` is that world.
+    restoreAnchor()
+    rebuild()
+    const baseline = view.waterLog.length
+    const victim = view.waterLog.find((entry) => entry.kind === kind)
+    assert.ok(victim, `this world placed no ${kind} to plant a portal on, so this check would pass vacuously`)
+    // The log records the DRAWN position and the copy, and `_waterClear` folds by
+    // `copy * WORLD_EXTENT` back to canonical — so the portal has to be planted
+    // at the canonical point, not at the drawn one. Planting at `victim.x` in
+    // copy 2 would ask the question 896 m from where the filter looks.
+    place(victim.x - victim.copy * hood.WORLD_EXTENT, victim.y ?? 0, victim.z - victim.copy * hood.WORLD_EXTENT)
+    rebuild()
+    const survivor = view.waterLog.find(
+      (entry) => entry.kind === kind && Math.abs(entry.x - victim.x) < 1e-6 && Math.abs(entry.z - victim.z) < 1e-6,
+    )
+    assert.equal(survivor, undefined, `a portal planted on a ${kind} at (${victim.x.toFixed(1)}, ${victim.z.toFixed(1)}) left that ${kind} standing in its own doorway`)
+    assert.ok(view.waterLog.length < baseline, `planting a portal on a ${kind} removed nothing: ${baseline} pieces before, ${view.waterLog.length} after`)
+    // ...and the halo went with the puddle, because the halo is written in the
+    // same call. A plant that removed the water and left a damp disc on the
+    // carriageway would be the pass-8 version of the artefact the halo exists to
+    // avoid, and the count below is how that would be caught.
+    if (kind === 'puddle') {
+      assert.equal(view.pools.wetSheen.used, view.pools.puddles.used, `${view.pools.wetSheen.used} halos for ${view.pools.puddles.used} puddles after a plant, so the halos and the water are out of step`)
+    }
+  }
+
+  // RESTORE, and prove the restore worked rather than assuming it: a check that
+  // left a portal on top of a puddle would corrupt every check after it, and the
+  // count is the only thing that would say so.
+  restoreAnchor()
+  rebuild()
+  const streaks = view.waterLog.filter((entry) => entry.kind === 'streak').length
+  assert.equal(streaks, view.lampPositions.length * 3, `after restoring the portal the world has ${streaks} streaks, so the plant was not undone and every later check is reading a different world`)
+  for (const name of POOLS) view.pools[name].commit()
+  console.log(`\n  pass-8 portal plant: both water families re-filtered, ${streaks} streaks restored`)
 })
 
 check('dispose() tears the whole world down without throwing', () => {

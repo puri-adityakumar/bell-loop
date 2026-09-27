@@ -8598,7 +8598,357 @@ test('the six furniture colours are variations on a dark, and none of them is a 
   assert.equal((code.match(/new THREE\.ShaderMaterial\(/g) ?? []).length, 1, 'something other than the wire is a ShaderMaterial')
 })
 
+section('Water and reflections (iteration 2, pass 8)')
+
+/** Rec. 709 luma of a `PALETTE` key, the measure every palette comment quotes. */
+function paletteLuma(key) {
+  const hex = paletteHex(key)
+  return 0.299 * ((hex >> 16) & 255) + 0.587 * ((hex >> 8) & 255) + 0.114 * (hex & 255)
+}
+
+/**
+ * `waterClaims` — pass 8's claims, as predicates over a source string.
+ *
+ * The same shape as `dressingClaims` and `furnitureClaims`, and for the same
+ * reason: a gate expressed as `assert.ok` can only ever run on the real file, and
+ * a gate that can only run on the real file cannot be asked whether it would
+ * have caught the bug. Each returns `ok` and a `why`, so a mutation names the
+ * claim it broke.
+ *
+ * These are ABOUT THE SOURCE because three of this pass's properties are
+ * invisible to any measurement of the built world: the reflection is DRAWN rather
+ * than sampled, so "there is no render target" can only be read out of the file;
+ * the shimmer is a function of `this._time` and not of a frame counter, which is
+ * visible only as a pattern of what is written; and the streak shares
+ * `makePoolTexture` with the sodium pool it reflects, so that a later edit to one
+ * cannot leave the other behind.
+ *
+ * @param {string} source `streetView.js`, comments NOT yet stripped
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function waterClaims(source) {
+  const code = stripProse(source)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+
+  // 1. THE HEADLINE, and the only whole-file negative in the set. It is safe as
+  // one because the words are unique to the technique and appear nowhere else:
+  // pass 6's wire is a `ShaderMaterial` and pass 3's portal is geometry, and
+  // neither has ever had a render target. A second camera would be the other way
+  // to do a reflection, so both are named.
+  claim(
+    'the reflection is drawn, not sampled: no render target, no second pass',
+    !/WebGLRenderTarget|new THREE\.WebGLRenderTarget|renderTarget/.test(code)
+      && !/setRenderTarget/.test(code)
+      && !/ReflectionProbe|PMREMGenerator/.test(code),
+    'a render target or a second camera is a real reflection, which costs a second pass and breaks the draw-call budget this world is measured against',
+  )
+  // 2. THE STREAK IS ADDITIVE, and it is the reflection rather than a decal. A
+  // `MeshStandardMaterial` streak would be lit by the four point lights and read
+  // as a painted stripe; the sodium family is additive everywhere else in this
+  // file and this is the one place it has to be again.
+  claim(
+    'the streak is additive and shares the sodium pool falloff curve',
+    /streak: this\._glow\(PALETTE\.waterStreak, \{/.test(code)
+      && /map: makePoolTexture\(\{ rim: STREAK_RIM, peak: STREAK_PEAK \}\)/.test(code)
+      && /blending: THREE\.AdditiveBlending/.test(code)
+      && /fog: true/.test(code),
+    'a lit streak is a painted stripe, and a streak with its own falloff curve is a second law of optics for one quad — a reflection and the light it reflects have the same angular falloff',
+  )
+  // 3. WARM, and this is the AESTHETIC-NOTES authority the brief names: §12.2 is
+  // explicit that cyan belongs to the portals alone.
+  claim(
+    'the reflection is warm, and never the portal colour',
+    /waterStreak: 0x([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/.test(code)
+      && (() => {
+        // `parseInt(_, 16)` and NOT `Number(_)`: the capture is the two hex
+        // DIGITS as a string, and `Number('ff')` is NaN, so the first version of
+        // this claim compared NaN > NaN and reported every reflection cold —
+        // including the real one. A gate whose predicate is always false is
+        // indistinguishable from a gate that is always green, which is why the
+        // mutation below swaps the colour to a genuinely cold one: it has to fail
+        // for a reason, not for a NaN.
+        const [, r, g, b] = /waterStreak: 0x([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/.exec(code)
+        return Number.parseInt(r, 16) > Number.parseInt(g, 16) && Number.parseInt(g, 16) > Number.parseInt(b, 16)
+      })()
+      && !/streak:[\s\S]{0,120}PALETTE\.portal/.test(code),
+    'a blue reflection is a second cold light family in a game whose §12.2 contract is that cyan belongs to the portals alone',
+  )
+  // 4. THE EYE GATE, as source rather than as arithmetic: the peak has to be a
+  // named constant applied to the texture, and not a literal. A literal `peak: 1`
+  // is a streak at full lamp brightness — a warm additive quad on the ground at
+  // the exact luma `tools/png-luma.mjs` flood-fills to find a creature's eye.
+  claim(
+    'the streak is drawn at a named peak, never at full brightness',
+    /peak: STREAK_PEAK/.test(code)
+      && /const STREAK_PEAK = 0\.[0-9]+/.test(code)
+      && !/makePoolTexture\(\{[^}]*peak: 1[^}]*\}\)/.test(code),
+    'a reflection at full `waterStreak` luma is a warm additive blob on the road, and the eye finder takes the brightest compact blob in the frame — so it would measure the reflection and report no creature',
+  )
+  // 5. THE SHIMMER IS A FUNCTION OF THE CLOCK. An accumulator that sums `dt`
+  // drifts by a different amount every run, and `verify-world.mjs` drives the
+  // world to the same time twice and requires the offset back bit-identical — an
+  // assertion that could not exist at all if this were false.
+  claim(
+    'the shimmer is a function of the clock, and divides by the tile length',
+    /const shimmer = \(t \* CANAL_SHIMMER_MPS\) \/ \(CANAL_LEN \/ CANAL_SHIMMER_TILES\)/.test(code)
+      && /this\._materials\.canalWater\.map\.offset\.x = shimmer % 1/.test(code)
+      && !/canalWater\.map\.offset\.x \+=/.test(code),
+    'a scroll in texture units is 3.7x too fast (one unit is CANAL_LEN / CANAL_SHIMMER_TILES metres) and an accumulator drifts against this._time by a different amount every run',
+  )
+  // 6. NO UNSEEDED RANDOM, which is D10 stated as a claim over the pass's own
+  // methods rather than over the file. `Math.random` appears nowhere in
+  // `streetView.js` today, so a whole-file negative would pass for the wrong
+  // reason; scoping it to the water methods is what makes it mean "this pass did
+  // not add one".
+  const water = ['_buildWater', '_addPuddles', '_addPuddle', '_addStreak', '_addCanal', '_waterClear']
+    .map((name) => methodBody(code, name)).join('\n')
+  claim(
+    'the water reads a seeded stream and never an unseeded one',
+    water.length > 0
+      && /streamAt\(hash32\(this\.seed, ax, az \+ WATER_SALT\), 0, 0\)/.test(water)
+      && /hash32\(0x5354524b, ax, az\) % 2 === 0/.test(water)
+      && !/Math\.random|Date\.now|performance\.now/.test(water),
+    'an unseeded or clocked draw is D10, and it also means a shuffled build produces a different street',
+  )
+  // 7. EVERY FAMILY IS FILTERED AGAINST THE PORTAL EXCLUSION, which is the
+  // structural form of the pass-3 pupil gate (luma <= 20, measured in
+  // `portal-located.png` from 4.5 m). A bright additive streak on the road
+  // between that camera and the gate does not merely look wrong — it invalidates
+  // the gate the whole iteration is measured against.
+  claim(
+    'both puddles and streaks are filtered against the portal exclusion',
+    (code.match(/this\._waterClear\(/g) || []).length >= 2
+      && /_waterClear\(x, z, copy\) \{/.test(code)
+      && /PORTAL_FURNITURE_CLEAR/.test(methodBody(code, '_waterClear')),
+    'the streak is the ADDITIVE element, so filtering only the puddles leaves the one surface that can raise a portal pupil past 20 unfiltered',
+  )
+  // 8. THE PUDDLE BANDS ARE THE ONLY BANDS, and each band's room is the constant
+  // that positioned it. The first version drew one global radius for all three
+  // and put a third of the world's puddles on the pavement; the fix is visible
+  // here as `room` travelling with the candidate.
+  //
+  // AND NONE OF THESE PATTERNS MAY NAME A STRING. `stripProse` blanks every
+  // literal in the file — it is the same function pass 3 and pass 7's claims use,
+  // and it is what lets a negative claim fail on prose instead of on code — so a
+  // pattern like `/'gutter',\s*PUDDLE_GUTTER_INSET,/` is matching text that no
+  // longer exists and the claim is false for every input. The band NAME is
+  // matched by `verify-world.mjs` against `waterLog`, where it is data; here the
+  // claim is about the number that travels with it, and the number is enough.
+  claim(
+    "each band's radius is drawn into the room that band was given",
+    /\[cx, cz, yaw, band, room\] of candidates/.test(water)
+      && /const span = Math\.max\(0, room - PUDDLE_R_MIN\)/.test(water)
+      && /PUDDLE_GUTTER_INSET,\s*\n\s*\]\)/.test(water)
+      && /PUDDLE_CROSSING_OFFSET,\s*\n\s*\]\)/.test(water)
+      && /PUDDLE_CANAL_SETBACK,\s*\n\s*\]\)/.test(water),
+    'one global radius fits the crossing band and overruns the gutter band, and a puddle that reaches past the kerb face is a pond lying on the footway',
+  )
+  // 9. THE CANAL CROSSES A STREET rather than running along one, which is the
+  // brief's own wording and the bug the first version shipped. The claim is on
+  // the placement: the channel's LENGTH goes on the axis it runs along and its
+  // WIDTH on the axis it is offset by, so swapping the two is a visible edit.
+  claim(
+    'the canal runs ACROSS a street, not along one',
+    /const cx = node\.x \+ CANAL_CANAL_OFFSET/.test(code)
+      && /canalWater\.place\(\s*x, waterY, node\.z, CANAL_W, 1, CANAL_LEN,/.test(code)
+      && !/const cz = node\.z \+ CANAL_CANAL_OFFSET/.test(code),
+    "a channel parallel to the road it drains is a puddle field wearing a channel's name, and this one ran 21 m from the nearest centreline — in a block, between two houses",
+  )
+  // 10. THE RENDER ORDERS ARE SET, and this is the property no measurement of the
+  // built world can find: three.js sorts transparent objects by depth, and at
+  // 11 m the four water surfaces are within 2 m of each other. Left to the
+  // automatic sort the additive streak lands UNDER the dark halo on about half
+  // the frames — a reflection that vanishes as the camera moves, which no single
+  // screenshot shows.
+  claim(
+    'the four water surfaces are given an explicit render order',
+    /wetSheen\.mesh\.renderOrder = 1/.test(code)
+      && /puddles\.mesh\.renderOrder = 2/.test(code)
+      && /canalWater\.mesh\.renderOrder = 3/.test(code)
+      && /streaks\.mesh\.renderOrder = 4/.test(code),
+    'three.js sorts transparents by depth, so the additive streak lands under the dark halo on some frames and the reflection disappears when the camera moves',
+  )
+  // 11. THE HALO AND THE WATER SHARE ONE GEOMETRY, which is the second half of
+  // the cost argument and the one a triangle count alone would not catch: two
+  // pools holding one `BufferGeometry` is one upload, and two pools holding two
+  // is two.
+  claim(
+    'the halo and the water share one geometry object',
+    /const wetDisc = disc\(\)/.test(code)
+      && /wetDisc, this\._materials\.wetSheen/.test(code)
+      && /wetDisc, this\._materials\.puddle/.test(code),
+    'two identical 10-gons are two uploads and two VRAM copies for the same 20 triangles',
+  )
+  // 12. THE SHIMMER MAP REPEATS, because `update()` scrolls it and a clamped edge
+  // is a hard seam travelling down the canal. Asserted on the shimmer's own
+  // constructor rather than as a file-wide negative, since `makePoolTexture` has
+  // the opposite requirement: a radial falloff was never written to tile.
+  claim(
+    'the shimmer map repeats on both axes, because it is scrolled',
+    /function makeShimmerTexture[\s\S]{0,2600}?texture\.wrapS = THREE\.RepeatWrapping\s*\n\s*texture\.wrapT = THREE\.RepeatWrapping/.test(code)
+      && /function makeShimmerTexture[\s\S]{0,2600}?texture\.repeat\.set\(repeat, 1\)/.test(code),
+    'a clamped edge on a scrolled map is a hard seam travelling down the canal, and the shimmer is the one texture in this file whose offset is animated',
+  )
+  return claims
+}
+
+test('the water and reflections claims hold, and each one is a claim a comment would not', () => {
+  const claims = waterClaims(STREET_VIEW_SOURCE)
+  assert.ok(claims.length >= 12, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
+  }
+})
+
+test('every water claim can fail, and a mutation names the one it breaks', () => {
+  // Twelve mutations for twelve claims, and the third field says which claim each
+  // is expected to break. Asserting the SPECIFIC claim and not merely "some
+  // claim" is the part that matters: a mutation that trips an unrelated predicate
+  // still proves the suite has teeth, but it does not prove the claim under test
+  // has any.
+  const mutations = [
+    ['a render target', 'a real reflection is a second pass', 'the reflection is drawn, not sampled: no render target, no second pass',
+      'wire: makeWireMaterial(this.resolution.x, this.resolution.y),', 'wire: new THREE.WebGLRenderTarget(4, 4),'],
+    ['a lit streak', 'a lit streak is a painted stripe', 'the streak is additive and shares the sodium pool falloff curve',
+      'streak: this._glow(PALETTE.waterStreak, {', 'streak: this._material({ color: PALETTE.waterStreak,'],
+    ['a cold reflection', 'cyan belongs to the portals alone', 'the reflection is warm, and never the portal colour',
+      'waterStreak: 0xffb877,', 'waterStreak: 0x6fd8e8,'],
+    ['a full-brightness streak', 'a reflection at full luma is a candidate eye', 'the streak is drawn at a named peak, never at full brightness',
+      'peak: STREAK_PEAK }', 'peak: 1 }'],
+    ['a frame-counted shimmer', 'an accumulator drifts against the clock', 'the shimmer is a function of the clock, and divides by the tile length',
+      'const shimmer = (t * CANAL_SHIMMER_MPS) / (CANAL_LEN / CANAL_SHIMMER_TILES)', 'const shimmer = (this._frames++ * CANAL_SHIMMER_MPS) / (CANAL_LEN / CANAL_SHIMMER_TILES)'],
+    ['an unseeded draw', 'D10, and a shuffled build changes the street', 'the water reads a seeded stream and never an unseeded one',
+      'const rng = streamAt(hash32(this.seed, ax, az + WATER_SALT), 0, 0)', 'const rng = streamAt(Math.random(), 0, 0)'],
+    ['an unfiltered streak', 'the additive element is the one that raises a pupil', 'both puddles and streaks are filtered against the portal exclusion',
+      'if (!this._waterClear(x, z, copy)) continue', 'if (x + z === 0) continue', 2],
+    ['one global puddle radius', 'a gutter puddle is a pond on the footway', "each band's radius is drawn into the room that band was given",
+      'const span = Math.max(0, room - PUDDLE_R_MIN)', 'const span = PUDDLE_CROSSING_OFFSET - PUDDLE_R_MIN'],
+    ['a canal along the street', 'a channel parallel to its road is a pond in a block', 'the canal runs ACROSS a street, not along one',
+      'this.pools.canalWater.place(\n        x, waterY, node.z, CANAL_W, 1, CANAL_LEN,\n      )', 'this.pools.canalWater.place(\n        node.x, waterY, x, CANAL_LEN, 1, CANAL_W,\n      )'],
+    ['no render order', 'the streak sorts under the halo', 'the four water surfaces are given an explicit render order',
+      'this.pools.streaks.mesh.renderOrder = 4', 'this.pools.streaks.mesh.renderOrder = 0'],
+    ['two geometries', 'the same 20 triangles uploaded twice', 'the halo and the water share one geometry object',
+      "names, 'puddles', wetDisc, this._materials.puddle", "names, 'puddles', disc(), this._materials.puddle"],
+    ['a clamped shimmer', 'a hard seam travels down the canal', 'the shimmer map repeats on both axes, because it is scrolled',
+      'texture.wrapS = THREE.RepeatWrapping\n  texture.wrapT = THREE.RepeatWrapping\n  texture.repeat.set(repeat, 1)', 'texture.wrapS = THREE.ClampToEdgeWrapping\n  texture.wrapT = THREE.ClampToEdgeWrapping\n  texture.repeat.set(repeat, 1)'],
+  ]
+  for (const [label, why, claim, from, to, expectedHits = 1] of mutations) {
+    assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches streetView.js, so it is not testing anything`)
+    // EXACTLY `expectedHits`, and this is not pedantry. `replace` with a string
+    // pattern rewrites the FIRST match, and `STREET_VIEW_SOURCE` is the raw file,
+    // so a fragment quoted in a doc comment is rewritten instead of the code and
+    // the mutation is a no-op — `waterClaims` then reports the mutated build as
+    // clean, and the test fails with "broke [nothing]", which reads like the
+    // claim is unbreakable when in fact nothing was changed. The first version of
+    // the unseeded-draw mutation quoted the `streamAt(hash32(...))` call that
+    // its own WATER_SALT doc comment also quotes, and did exactly this.
+    //
+    // The one mutation that declares 2 is 'an unfiltered streak': the call it
+    // removes is in `_addPuddles` AND in `_addStreak`, the claim counts them, and
+    // dropping one of two is the failure. That is a fact about the code and not a
+    // licence, so the count is stated per mutation and every other one stays at 1.
+    const hits = STREET_VIEW_SOURCE.split(from).length - 1
+    assert.equal(hits, expectedHits, `the mutation "${label}" matches ${hits} places in streetView.js, not ${expectedHits}; \`replace\` would rewrite only the first, which may be a comment`)
+    const broken = waterClaims(STREET_VIEW_SOURCE.replace(from, to)).filter((entry) => !entry.ok)
+    assert.ok(
+      broken.some((entry) => entry.name === claim),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ') || 'nothing'}] rather than [${claim}] — ${why}`,
+    )
+  }
+})
+
+test('the water constants are real dimensions, and the streak cannot out-shine an eye', () => {
+  // Every number this pass introduced is held to a real range, for the reason
+  // pass 6's are: a comment saying "a real 側溝 is 300-600 mm" beside a constant
+  // reading 1.1 is a lie the comment cannot prevent.
+  const between = (name, low, high) => {
+    const value = buildingNumber(name)
+    assert.ok(value >= low && value <= high, `${name} is ${value}, which is not between ${low} and ${high}`)
+    return value
+  }
+  // A drainage channel (側溝) is 300-900 mm of water in a precast U, so the OUTSIDE
+  // is 450-1,200 mm and 1.1 m is the real figure. It is also the minimum that
+  // reads at 11 m: below about 0.8 m a channel is a line, and above about 2 m it
+  // is a river the player has to walk around.
+  const width = between('CANAL_W', 0.8, 1.6)
+  const length = between('CANAL_LEN', 12, 40)
+  assert.ok(length > width * 10, `the channel is ${length} m long and ${width} m wide, which is a puddle rather than a crossing`)
+  // The lips have HEIGHT and the water sits below them: a flat dark line on a
+  // road is a painted line, and no amount of shimmer makes it water.
+  const lip = between('CANAL_LIP_H', 0.06, 0.2)
+  const depth = between('CANAL_DEPTH', 0.03, lip)
+  assert.ok(depth < lip, `the channel is ${depth} m deep inside a ${lip} m lip, so the water is above its own walls`)
+  // A 10-gon: below about 8 the silhouette is visibly a polygon at 11 m, and
+  // above about 16 the extra triangles buy a sub-pixel improvement.
+  between('PUDDLE_SEGMENTS', 8, 16)
+  // The three ROOMS, and they are the whole of the size story now that there is
+  // no global `PUDDLE_R_MAX`. Each is the same constant that positioned its band,
+  // and each has to be small: the biggest is the crossing band's, and a puddle
+  // wider than the road it stands in is a lake.
+  const gutterRoom = between('PUDDLE_GUTTER_INSET', 0.3, 1.2)
+  between('PUDDLE_CROSSING_OFFSET', 1.2, 3.0)
+  between('PUDDLE_CANAL_SETBACK', 0.4, 1.5)
+  assert.ok(buildingNumber('PUDDLE_R_MIN') < gutterRoom, `the smallest puddle is ${buildingNumber('PUDDLE_R_MIN')} m and the gutter band has ${gutterRoom} m of room, so every gutter puddle is the same size`)
+  // The ELONGATION: 1.9 is an ellipse and 4x would be a lens. Below 1.4 a gutter
+  // puddle is a circle in a straight channel, which is a painted disc.
+  between('PUDDLE_ELONGATION', 1.4, 3.0)
+  // The streak: long, narrow, and inside the carriageway. The inset is measured
+  // from the kerb face, so it has to be under the half-width or the streak is on
+  // the footway — which is exactly where the first version put all 147 of them.
+  const len = between('STREAK_LEN', 4, 14)
+  const wide = between('STREAK_W', 0.6, 2.5)
+  assert.ok(len > wide * 4, `the streak is ${len} x ${wide} m, which is a smear and not a streak`)
+  between('STREAK_ROAD_INSET', 0.5, 3)
+  // The halo spread and opacity: below about 1.5 the halo is invisible against
+  // the puddle it is meant to extend, and above 2.2 it is a second, larger
+  // puddle. The opacity is a BLEND, so it can never reach 1.
+  between('PUDDLE_HALO_SPREAD', 1.5, 2.2)
+  const opacity = between('PUDDLE_HALO_OPACITY', 0.3, 0.7)
+  assert.ok(opacity < 1, 'the halo is opaque, so a wet road is a painted circle of wetSheen')
+  // The two LIFTS and the gap between them. The halo has to be above the road
+  // plane or it z-fights with it, and the water above the halo or the halo draws
+  // over the puddle. Four millimetres is 8% of the camera's 0.05 m near plane,
+  // which is well outside the depth buffer's error at any distance a player
+  // stands — and pass 6's grate is the thing this must not float above.
+  const haloLift = between('PUDDLE_HALO_LIFT', 0.005, 0.02)
+  between('PUDDLE_LIFT_GAP', 0.002, 0.02)
+  assert.ok(haloLift > buildingNumber('DRAIN_LIFT'), "the water sits higher than pass 6's drain grate, so this pass raised the ground")
+  // THE SHIMMER RATE, and it is the number the brief's "slow" hangs on. 0.06 m/s
+  // takes 433 s to move the channel's own length, so the loop is unobservable;
+  // above about 0.5 m/s a player watching for four seconds sees a whole tile.
+  const mps = between('CANAL_SHIMMER_MPS', 0.02, 0.2)
+  const tiles = between('CANAL_SHIMMER_TILES', 3, 12)
+  assert.ok(length / mps > 120, `the canal takes ${(length / mps).toFixed(0)} s to move its own length, which a player can watch`)
+  assert.ok(tiles > 2, `${tiles} tiles along the canal is not enough structure to read as moving water at 11 m`)
+  // THE STREAK'S PEAK IS THE EYE GATE, asserted here as arithmetic against the
+  // same 150 `tools/png-luma.mjs` flood-fills to, as well as against the built
+  // material in `verify-world.mjs`. Two places, because a streak that out-greened
+  // the creature's eye would make `creatureContrast` measure the body of nothing
+  // and report no creature in `creature-stalking.png`.
+  const peak = paletteLuma('waterStreak') * buildingNumber('STREAK_PEAK')
+  assert.ok(peak < 150, `a streak peaks at luma ${peak.toFixed(1)} and EYE_MIN is 150`)
+  // ...and a FLOOR, because a ceiling alone is satisfied by a streak too dim to
+  // see, which is the same vacuous pass in the other direction.
+  assert.ok(peak > 60, `a streak peaks at luma ${peak.toFixed(1)}, too dim to read as a reflection of a ${paletteLuma('sodium').toFixed(0)} lamp head`)
+  assert.ok(buildingNumber('STREAK_PEAK') <= 1, 'STREAK_PEAK is above 1, so the streak ADDS light to itself')
+  // The reflection is a paler sodium than the lamp, which is what a second
+  // interface does to it — and it is a NEW colour rather than `sodium` reused, so
+  // a later edit to the lamp cannot silently repaint the reflection.
+  assert.notEqual(paletteHex('waterStreak'), paletteHex('sodium'), 'the reflection reuses the lamp colour, so editing one repaints the other')
+  assert.ok(paletteLuma('waterStreak') > paletteLuma('sodium'), 'a reflection is paler than its source, so waterStreak must be lighter than sodium')
+  // The three dark values, and the ORDER of them: a puddle is darker than the
+  // road, the wet halo darker than the puddle, and all three darker than the
+  // asphalt. A wet road lighter than a dry one is a rendering error.
+  for (const key of ['puddle', 'wetSheen', 'canalBed']) {
+    assert.ok(paletteLuma(key) < paletteLuma('asphalt'), `PALETTE.${key} is luma ${paletteLuma(key).toFixed(1)} and the asphalt is ${paletteLuma('asphalt').toFixed(1)}, so water is lighter than the road it sits in`)
+  }
+  assert.ok(paletteLuma('wetSheen') < paletteLuma('puddle'), 'the wet halo is lighter than the water, so a wet road reads as a dry one with a stain on it')
+  console.log(`\n  water constants: streak peak luma ${peak.toFixed(1)} (EYE_MIN 150), channel ${length} x ${width} m, shimmer ${mps} m/s over ${(length / mps).toFixed(0)} s`)
+})
+
 section('Captures and cleanup (v2 slice 16)')
+
 
 const SRC_SOURCES = readdirSync(new URL('./src', import.meta.url), {
   recursive: true,

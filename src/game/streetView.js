@@ -347,6 +347,54 @@ export const PALETTE = Object.freeze({
   shelter: 0x2f343b,
   adPanel: 0x4e4839,
   poster: 0x5c5749,
+  // ITERATION 2, PASS 8 — WATER & REFLECTIONS
+  // ---------------------------------------
+  // BEFORE: nothing. Seven passes had put hardware on the pavement, joinery on
+  // the buildings and markings on the ground, and the ground itself was still one
+  // flat asphalt plane at one value: `asphalt` 0x17151b, luma 22.3, under every
+  // surface in the frame. AESTHETIC-NOTES §5 mechanism 6 is explicit that "the
+  // ground is a designed surface, not a plane" and lists gutters, drainage
+  // channels with grates and lids, and oil stains among the things the reference
+  // draws — and this pass is the water half of that list.
+  //
+  // Four entries, and the ORDER OF THEM IS THE CLAIM. Three of the four are
+  // darker than `asphalt` and the fourth is the only warm one, because a puddle
+  // is a hole in the value structure and a reflection is the sodium family
+  // coming back off it:
+  //
+  //   puddle     0x0d0e11   luma 13.6  the water SURFACE. Darker than the road it
+  //                                  sits in, because a puddle is a hole where
+  //                                  the diffuse bounce goes and only the
+  //                                  specular survives. This is the number that
+  //                                  makes standing water read as a *depth*
+  //                                  rather than as a pale blue decal.
+  //   wetSheen   0x0a0a0c   luma  9.8  the wet halo AROUND it, darker again: the
+  //                                  road under a film of water loses its
+  //                                  diffuse too, and the halo has to be
+  //                                  subtler than the water or the puddle reads
+  //                                  as a bright island on a *dry* road.
+  //   canalBed   0x0c0c0e   luma 12.0  the channel floor, the darkest large
+  //                                  surface in the world. It is in shadow by
+  //                                  construction — a 100 mm channel with 100 mm
+  //                                  lips on both sides is a slot, and a slot's
+  //                                  floor never sees the sky.
+  //   waterStreak 0xffb877  luma 197.8  THE REFLECTION, and the only warm value
+  //                                  in the pass. Deliberately NOT `sodium`
+  //                                  (0xffa54a, 181.5): a reflection in water is
+  //                                  the source with a second interface in the
+  //                                  way, so it is paler and less saturated, the
+  //                                  same relationship `bounce` has to `sodium`.
+  //                                  And it is the ONE number here that is
+  //                                  checked against a threshold from another
+  //                                  module — see `STREAK_PEAK` and the eye gate
+  //                                  in `verify.mjs`. A blue reflection would be
+  //                                  a second cold light family in a game whose
+  //                                  §12.2 contract is that cyan belongs to the
+  //                                  portals alone.
+  puddle: 0x0d0e11,
+  wetSheen: 0x0a0a0c,
+  canalBed: 0x0c0c0e,
+  waterStreak: 0xffb877,
 })
 
 /** §5.1: one portal per liminal structure, in PORTAL_IDS order. */
@@ -1758,6 +1806,409 @@ const VENDING_FLICKER_PHASE_SALT = 0x50484153
 
 
 // ---------------------------------------------------------------------------
+// ITERATION 2, PASS 8 — WATER & REFLECTIONS
+//
+// AESTHETIC-NOTES §5 mechanism 6: "The ground is a designed surface, not a
+// plane. Gutters, drainage channels with grates and lids, manhole covers,
+// repair patches, trenches, seals, oil stains, worn tyre paths, centre dashes,
+// stop lines, crossings, tactile paving."
+//
+// The ground already had pass 6's grates and pass 7's furniture on it. What it
+// had never had was WATER, and water is the cheapest way to make an asphalt
+// plane read as a surface: a dry road is a colour, a wet one is a MIRROR, and a
+// mirror is the only thing in this world that gives the sodium back to the
+// player as a shape rather than as a wash.
+//
+// THE TECHNIQUE, AND WHY IT IS NOT A RENDER TARGET
+// ------------------------------------------------
+// A real reflection needs a second camera and a render target. This pass uses
+// the trick every real-time game used before render targets were cheap: the
+// reflection is DRAWN, as a stretched additive quad lying on the ground with
+// its long axis pointing away from the viewer along the line between the lamp
+// and the eye. At 11 m that is a 9 x 1.3 m streak of `waterStreak` and it
+// reads as a sodium lamp smeared down a wet road. It costs two triangles and
+// no second pass, and `verify-world.mjs` asserts there is no render target and
+// no second render pass anywhere in the world.
+// ---------------------------------------------------------------------------
+
+/**
+ * Puddles and where they are allowed to be.
+ *
+ * BEFORE: n/a — there was no water. AFTER three named bands, and the bands are
+ * the claim: a puddle is only ever in one of them, because water on a cambered
+ * street runs to the low points and nowhere else.
+ *
+ *   GUTTER   `STREET_HALF_WIDTH - PUDDLE_GUTTER_INSET` from a road centreline,
+ *            i.e. in the 200 mm channel between the kerb face and the tarmac.
+ *            The gutter is the lowest line on the road by construction: the
+ *            camber is 2.5% and the kerb is 150 mm proud, so the water has
+ *            exactly one place to go and that place is against the kerb.
+ *   CROSSING the carriageway of the avenue, in the wheel tracks. Water stands
+ *            in a dip, and a cambered road has two of them across its width.
+ *   CANAL    beside the drainage channel, which is a trough and therefore the
+ *            one place on the street already below the water table.
+ *
+ * The three are the WHOLE list. A puddle in the middle of a lane on a cambered
+ * road is a rendering artefact, and `verify-world.mjs` measures every instance
+ * against all three bands rather than trusting this comment.
+ */
+const PUDDLE_GUTTER_INSET = 0.7
+const PUDDLE_CROSSING_OFFSET = 2.1
+const PUDDLE_CANAL_SETBACK = 0.85
+
+/**
+ * Puddle sizes, in metres, as a radius on the short axis.
+ *
+ * BEFORE: n/a. AFTER 0.55 to 2.4 m, which is the real range for a puddle in a
+ * gutter after rain: a 1.1 m disc is a full stop across a 0.4 m gutter, and
+ * 2.4 m is a sheet that has found the low point of a whole intersection. The
+ * LONG axis is `radius * PUDDLE_ELONGATION` because every one of these is
+ * stretched by the thing that made it — a gutter puddle is a stripe, a
+ * crossing one a long oval across the road, and a circular puddle against a
+ * straight kerb is a painted disc.
+ *
+ * `PUDDLE_ELONGATION` 1.9 and NOT a big number, for the reason the reference
+ * gives its own stretched gutters: "stretched gutters (to stop mip bleed)". A
+ * circle scaled 1.9x is an ellipse, and an ellipse in a gutter is what water
+ * does. 4x would be a lens.
+ *
+ * THERE IS NO `PUDDLE_R_MAX`, and there was one until this pass was measured.
+ * The radius used to be drawn from `[PUDDLE_R_MIN, 2.4]` for every band, which
+ * is fine for the crossing band (which has 2.1 m of road either side of its
+ * centre) and absurd for the gutter band (which has 0.7 m) — a third of the
+ * world's puddles were lying on the pavement. Rather than shrink the global
+ * number, which would have made the crossing puddles small to compensate for a
+ * mistake the crossing band was not making, each band now draws into the room it
+ * was GIVEN, and those three constants are the whole of the size story:
+ *
+ *     gutter   PUDDLE_GUTTER_INSET      0.70 m
+ *     canal    PUDDLE_CANAL_SETBACK    0.85 m
+ *     crossing PUDDLE_CROSSING_OFFSET  2.10 m   (the largest, and the only one
+ *                                                    that is a puddle a person
+ *                                                    would call a puddle)
+ *
+ * One fewer constant, three named bounds, and a band moved further out from the
+ * kerb gets more room with no edit here. `verify.mjs` asserts each is in a real
+ * range and `verify-world.mjs` measures what was placed.
+ */
+const PUDDLE_R_MIN = 0.55
+const PUDDLE_ELONGATION = 1.9
+
+/**
+ * `PUDDLE_SEGMENTS` and `PUDDLE_CANDIDATES_PER_NODE` — the disc's resolution
+ * and the size of the candidate list.
+ *
+ * BEFORE: n/a. AFTER 10 segments (20 triangles) and 8 candidates per node.
+ *
+ * `PUDDLE_SEGMENTS` 10 and not 32, and the reason is the same one that puts
+ * `BOLLARD_SETBACK` at 2.4 rather than 1.2: a puddle is at most 2.4 m and is
+ * seen at 11-60 m, where 2.4 m is 105 px across and a 10-gon's edge subtends
+ * about 1.7 px. A 32-segment disc would spend 64 triangles to move that edge
+ * inside a pixel, on a surface whose value differs from the asphalt around it
+ * by less than the eye resolves there anyway. 10 is the number at which the
+ * silhouette stops being a polygon, and `verify-world.mjs` asserts it has not
+ * been raised without the triangle budget moving with it.
+ *
+ * `PUDDLE_CANDIDATES_PER_NODE` 8 is 2 per gutter line (one each side of both
+ * roads) and is the denominator `PUDDLE_ONE_IN` draws against. It is a MAXIMUM
+ * and the capacity multiplies it out, so a seed that hits 0 on all eight draws
+ * 8 puddles at a node and loses nothing. The alternative — sizing the pool to
+ * the 190 this seed actually places — is the pass-5 window-frame bug with the
+ * serial numbers filed off.
+ */
+const PUDDLE_SEGMENTS = 10
+const PUDDLE_CANDIDATES_PER_NODE = 8
+
+/**
+ * `PUDDLE_ONE_IN` — how many of a node's candidate spots actually get water.
+ *
+ * BEFORE: n/a. AFTER 3, so roughly a third of the candidates. This is the
+ * number that decides whether a street reads as WET or as DECORATED, and the
+ * reference is unambiguous that it is the second: it draws drainage because the
+ * street drains, not because puddles are a feature. One in three across a 49
+ * node map is about 190 puddles over three wrapped copies — one every 2.3 m of
+ * kerb, enough that a player walking a block meets water, few enough that the
+ * road is still mostly road.
+ */
+const PUDDLE_ONE_IN = 3
+
+/**
+ * The wet halo: how far the darkened road reaches past the water, and how dark.
+ *
+ * BEFORE: n/a — `asphalt` is one flat value everywhere. AFTER a second, LARGER,
+ * DARKER disc under every puddle, and the brief's "wet-road darkening near the
+ * puddles (roughness modulation via a blended darker overlay disc)" is this
+ * constant pair.
+ *
+ * `PUDDLE_HALO_SPREAD` 1.75 and NOT 1.0, and the reason is that a halo the same
+ * size as the water is invisible: the eye reads such a pair as one shape. The
+ * halo has to extend past the puddle on every side, because what a viewer
+ * actually notices is the DARKENING of the road, not the puddle — a wet road
+ * goes dark for a metre either side of the water and that gradient is the whole
+ * read. 1.75 puts the visible edge of the damp at 0.75 of a radius beyond the
+ * water, which on the mean puddle is about 0.7 m of visible damp.
+ *
+ * `PUDDLE_HALO_OPACITY` 0.55: the halo is a BLEND over the asphalt, not a
+ * replacement for it, and the number is a fraction rather than a colour because
+ * the asphalt underneath is already textured and lit. At 1.0 the halo would be
+ * a painted disc of `wetSheen`; at 0.55 the road is still asphalt under a film
+ * of water, and the sodium pool still lands on it.
+ */
+const PUDDLE_HALO_SPREAD = 1.75
+const PUDDLE_HALO_OPACITY = 0.55
+
+/**
+ * The two LIFTS, in metres, and the reason they are 10 mm apart.
+ *
+ * BEFORE: n/a. AFTER the halo at `PUDDLE_HALO_LIFT` and the water at
+ * `PUDDLE_HALO_LIFT + PUDDLE_LIFT_GAP`, both above the road plane at y = 0.
+ *
+ * The pass-6 review's residual risk was z-fighting: "a 2 cm proud grate is
+ * exactly the 'floating object' the reference's own failure list names", and
+ * the drain grate answered it with `DRAIN_LIFT` 0.005. Water cannot use 5 mm,
+ * because a puddle at 5 mm and its halo at 3 mm are 2 mm apart over a 4 m disc
+ * and a 1280x720 buffer with a 0.05-260 m near/far range resolves that at
+ * grazing angles — which is the ONLY angle a puddle is ever seen from. So:
+ *
+ *  - `PUDDLE_HALO_LIFT` 0.010 — twice the grate's, and still 6 mm below the
+ *    0.016 the drain's own kerb sits at, so nothing in this pass rises above
+ *    pass 6's hardware.
+ *  - `PUDDLE_LIFT_GAP` 0.004 — the separation between the halo and the water.
+ *    Four millimetres at a 0.05 m near plane is 8% of the near plane, which is
+ *    well outside the depth buffer's error at any distance a player stands.
+ *
+ * And the halo's own disc is `PUDDLE_HALO_SPREAD` larger than the water, so
+ * even where the two are coplanar in screen space the halo's edge is 0.75 of a
+ * radius outside the water and the overlap is a broad annulus rather than a
+ * seam.
+ */
+const PUDDLE_HALO_LIFT = 0.01
+const PUDDLE_LIFT_GAP = 0.004
+
+/**
+ * `STREAK_RIM` — the reflection streak's falloff floor.
+ *
+ * BEFORE: n/a (the streak did not exist). AFTER 0.45, i.e. the streak is built
+ * from `makePoolTexture` with the SAME `rim + (1 - rim)(1 - r²)²` curve pass 2
+ * gave the sodium pools, at 45% of that rim.
+ *
+ * Why a shared curve rather than a new one: a reflection and the light it
+ * reflects have the same angular falloff, because both are the same lamp seen
+ * through the same air. Giving the streak its own profile would be inventing a
+ * second law of optics for one quad, and `verify.mjs` asserts the two share
+ * `makePoolTexture` so a future edit to one cannot leave the other behind.
+ *
+ * Why 0.45 and not `LAMP_POOL_RIM`'s 0.82: the pool's rim was raised in pass 2
+ * so an 18 m disc would read as a pool rather than a smudge. A streak is a
+ * streak — a bright head and a long tail is the entire phenomenon — and a high
+ * rim on a 9 x 1.3 m quad turns the tail into a second, brighter, parallel
+ * streak. 0.45 keeps the tail visibly dimmer than the head, which is what makes
+ * the eye read it as one object receding.
+ */
+const STREAK_RIM = 0.45
+
+/**
+ * `CANAL_SHIMMER_TILES` — how many times the shimmer map repeats along the
+ * channel, and `CANAL_LIP_*` the concrete that contains the water.
+ *
+ * BEFORE: n/a. AFTER 7 tiles over 26 m (3.7 m per tile) and a 100 mm lip on
+ * each side of a 90 mm-deep, 1.1 m-wide channel.
+ *
+ * `CANAL_SHIMMER_TILES` 7 is derived from the band count rather than picked:
+ * `makeShimmerTexture` puts 1, 2.3 and 4.1 cycles across the channel's WIDTH,
+ * which is 1.1 m, so the three bands repeat every 1.1 m along the channel and a
+ * 3.7 m tile shows three and a half of each — enough structure to read as moving
+ * water at 11 m (48 px) without a repeat a player can catch. `update()` scrolls
+ * `offset.x` by `CANAL_SHIMMER_MPS * dt / (CANAL_LEN / CANAL_SHIMMER_TILES)`, so
+ * the metres-per-second on the constant really is metres per second on the
+ * ground and not tiles per second, which is the mistake that makes a "slow"
+ * scroll 7x too fast.
+ *
+ * `CANAL_LIP_H` 0.1 and `CANAL_DEPTH` 0.09: a 100 mm upstand with the water
+ * 10 mm below its top. A real 側溝 is a precast concrete U — a 450-900 mm
+ * channel in a 300 mm wall — and the lip is what makes it a CHANNEL rather than
+ * a dark stripe painted on the road. It is also the cheapest possible depth cue:
+ * two 100 mm edges with a 90 mm gap between them parallax against each other the
+ * moment the camera moves, and that parallax is the entire difference between
+ * "water" and "a dark line".
+ */
+const CANAL_SHIMMER_TILES = 7
+const CANAL_LIP_T = 0.12
+
+/**
+ * Where the canal's candidates and the streak sit, in metres from the node.
+ *
+ * BEFORE: n/a. AFTER a gutter range of 9-26 m along the block, a crossing
+ * 14 m out, a canal 21 m out, and a streak 1.2 m from the lamp.
+ *
+ * `PUDDLE_GUTTER_ALONG_MIN` 9 and `MAX` 26 is a RANGE and not a fixed distance
+ * for the reason `DRAIN_ALONG` is fixed at 2.5: a gully is at the kerb's low
+ * point, which is a fixed offset, but a PUDDLE is wherever the water happened to
+ * stop, and a street where every puddle is 15 m from every corner is a street
+ * with a rule instead of a puddle. 9-26 m puts them in the middle two thirds of
+ * a 64 m block, which is where a viewer walking the block meets them.
+ *
+ * `PUDDLE_CROSSING_ALONG` 14: the crossing candidates sit 14 m up the avenue
+ * from the junction, clear of the 12 m carriageway box, so they are in the road
+ * a player drives along rather than standing in the middle of an intersection.
+ *
+ * `CANAL_CANAL_OFFSET` 9: the channel is 9 m along the east-west street from
+ * the junction, so it CROSSES that street's carriageway (which ends 6 m either
+ * side of the node) and then runs 7 m into the block on each side. That is the
+ * "crossing a street segment" the brief asks for, and 9 is clear of the 6 m
+ * carriageway box so the channel is not lying across the middle of an
+ * intersection. A channel that crosses a road runs PERPENDICULAR to it, so this
+ * one runs in z — the first version ran it in x, which put 26 m of standing
+ * water 21 m from the nearest road centreline, in the middle of a block.
+ *
+ * `CANAL_CANAL_PUDDLE_ALONG` 4: the canal band's own two puddles sit 4 m along
+ * the channel from the node, INSIDE the 12 m of carriageway the channel crosses
+ * (which is `STREET_HALF_WIDTH` = 6 either side). The first version used 8, on
+ * the reasoning that "further along the channel" read as more clearly part of
+ * the channel — and 8 is 2 m past the kerb, so both puddles sat on the pavement
+ * of the block the channel runs into. The measurement is what caught it: the
+ * band is 2 candidates wide, so being entirely off the road reads as "the canal
+ * has no water in it" and is easy to mistake for a counting error. Water
+ * standing against a channel is standing in the road, where a viewer at the
+ * §16.5 node is looking.
+ *
+ * `STREAK_LIFT` 0.026 — the streak is the TOPMOST thing on the road, above the
+ * puddle at 0.014 and the halo at 0.010, because it is additive and additive
+ * geometry that is occluded by its own puddle is a reflection you cannot see
+ * from any angle but directly above.
+ */
+const PUDDLE_GUTTER_ALONG_MIN = 9
+const PUDDLE_GUTTER_ALONG_MAX = 26
+const PUDDLE_CROSSING_ALONG = 14
+const CANAL_CANAL_OFFSET = 9
+const CANAL_CANAL_PUDDLE_ALONG = 4
+const STREAK_LIFT = 0.026
+
+/**
+ * The reflection streak, in metres: length along the lamp-to-eye line, width
+ * across it, and how far out from the lamp's own ground point it starts.
+ *
+ * BEFORE: n/a. AFTER 9.0 x 1.3, starting 1.2 m out from under the lamp head.
+ *
+ * This is the whole "elongated vertical streak" the brief asks for, and the
+ * three numbers are one geometric fact rather than three tunings:
+ *
+ *  - The streak is LONG (9.0 m) and NARROW (1.3 m) because the specular
+ *    reflection of a point source in a rough horizontal surface is a streak
+ *    ALONG the view line, not a disc. A disc would be a mirror, and the world
+ *    has four point lights for 49 lamps, so a mirror is not available — and a
+ *    streak is more truthful besides, because real asphalt is not a mirror.
+ *  - The width is 1.3 m because that is a 1.9 m sodium head smeared by the
+ *    surface roughness of asphalt, and not less: a sub-metre streak on an 18 m
+ *    light pool is a thread, and a thread reads as an artefact, not a
+ *    reflection.
+ *  - It starts at the KERB FACE and not at the lamp's own ground point. The lamp
+ *    stands `STREET_HALF_WIDTH + 1.6` = 7.6 m off the centreline and the kerb
+ *    face is at `STREET_HALF_WIDTH + KERB_WIDTH` = 6.4, so a head placed under
+ *    the lamp is 1.2 m OUTSIDE the carriageway — on the pavement, which is
+ *    where the first version of this pass put the entire streak. A reflection of
+ *    a streetlight appears in the road, not on the footway beside it, and the
+ *    error is invisible to every structural check: the geometry is well formed,
+ *    the count is right, and only a screenshot shows a bright smear on the
+ *    concrete. `verify-world.mjs` measures every streak against the kerb face
+ *    now, from the side the pass-6 furniture check does not look at.
+ *
+ * `STREAK_ROAD_INSET` 1.5 and not 0: the streak lies 1.5 m in from the kerb face
+ * rather than on it, because the outermost 0.4 m of a carriageway is where the
+ * camber is steepest and where a gutter puddle already is. Putting the
+ * reflection in the same band as the puddles is what makes the two read as one
+ * phenomenon — wet road with standing water in it — rather than as a lit strip
+ * and some unrelated puddles.
+ *
+ * `STREAK_PEAK` is the one number here checked against a threshold owned by
+ * another module. `tools/png-luma.mjs` finds the creature's eye by flood-filling
+ * blobs at or above `EYE_MIN` (150) and rejecting anything wider or taller than
+ * `EYE_MAX_SPAN` (14 px). A reflection streak is a WARM, ADDITIVE, unfogged-
+ * bright quad on the ground, and if it can reach 150 luma in a patch compact
+ * enough it becomes a candidate eye — and a candidate eye out-brighter than the
+ * real one makes `creatureContrast` measure the body of nothing and report no
+ * creature in a frame that has one.
+ *
+ * So the ceiling is derived, not guessed: `waterStreak` is luma 197.8 and
+ * `STREAK_PEAK` 0.55 puts the peak contribution at 108.8, which is 27% below the
+ * 150 the eye finder starts at — before the ACES curve at `EXPOSURE_BASE` and
+ * the fog at 11 m have taken any of it. `verify.mjs` asserts the product stays
+ * under `EYE_MIN` and `verify-world.mjs` asserts the material really is
+ * additive and really is warm, so the arithmetic cannot quietly stop holding.
+ */
+const STREAK_LEN = 9.0
+const STREAK_W = 1.3
+const STREAK_ROAD_INSET = 1.5
+const STREAK_PEAK = 0.55
+
+/**
+ * The drainage canal — the one long piece of standing water in the world.
+ *
+ * BEFORE: n/a. AFTER a 26 m channel crossing the carriageway at `CANAL_NODE`,
+ * with `CANAL_W` of standing water between two 100 mm lips.
+ *
+ * It is placed at ONE node rather than scattered, and that is the brief's own
+ * wording: "one long drainage canal or flooded gutter crossing a street
+ * segment". A drainage channel is infrastructure — it follows the low gradient
+ * of a real street, and infrastructure is singular. A puddle field is the
+ * opposite: water is everywhere after rain, and everywhere is not a feature.
+ *
+ * `CANAL_NODE` is the §16.5 node, and the reason is stated rather than hidden:
+ * the fourteen photographs stand on that intersection, so a canal anywhere else
+ * is a canal no gate and no reviewer ever sees. Pass 7's review made exactly
+ * this point about furniture — "the whole gallery photographs a single corner of
+ * a 448 m world" — and this is the first pass to act on it.
+ *
+ * `CANAL_W` 1.1 m: a real roadside drainage channel (側溝) is 300-600 mm of
+ * water in a 450-900 mm concrete U, and 1.1 m is the outside of that U. Wide
+ * enough to read as a channel at 11 m (1.1 m is 48 px there) and narrow enough
+ * that a player walks across it rather than around it, which matters because it
+ * is in the carriageway.
+ */
+const CANAL_NODE = Object.freeze({ ax: 1, az: 1 })
+const CANAL_LEN = 26
+const CANAL_W = 1.1
+const CANAL_LIP_H = 0.1
+const CANAL_DEPTH = 0.09
+
+/**
+ * The shimmer: how fast the canal's surface texture scrolls, along its axis.
+ *
+ * BEFORE: n/a. AFTER 0.06 m/s.
+ *
+ * "Slow" is the load-bearing word and the number is derived from it rather than
+ * picked: 26 m of channel at 0.06 m/s takes 433 s to move its own length, so
+ * the water never visibly loops and no player can catch it starting over. A fast
+ * shimmer is a swimming pool; a still canal is a drain with a texture on it. The
+ * reference's own water barely moves — it is a town canal, not a fountain — and
+ * the brief says "slow moving water shimmer" for the same reason: the motion has
+ * to sit below the threshold at which a viewer starts looking FOR it, because a
+ * first-person horror frame with a moving highlight in the middle of the road is
+ * a frame the eye goes to instead of down.
+ *
+ * The scroll is a TEXTURE OFFSET on the canal's own map, not a geometry
+ * animation, so it costs nothing per frame and needs no second material. It is
+ * driven from `this._time` in `update()`, the same clock as the sodium, so a
+ * capture that steps to a given time gets a given shimmer and
+ * `verify-world.mjs` can drive the world to the same time twice and require the
+ * offset back bit-identical.
+ */
+const CANAL_SHIMMER_MPS = 0.06
+
+/**
+ * `WATER_SALT` — this pass's own region of the mix.
+ *
+ * BEFORE: n/a. AFTER 0x57415445, `WATR`. Same argument as `DRESSING_SALT` and
+ * `VENDING_SALT`: water placement reads a stream, and a stream an earlier pass
+ * already spends would move every puddle the moment this pass added a draw to
+ * it. It is read as `streamAt(hash32(this.seed, ax, az + WATER_SALT), 0, 0)` —
+ * the shape `_addCornerDressing` uses, and for the same reason: one PRNG, one
+ * contract, and a shuffled `buildChunks` still produces the same puddles.
+ */
+const WATER_SALT = 0x57415445
+
+
+// ---------------------------------------------------------------------------
 // procedural textures — canvas, no downloads, and no path drawing
 // ---------------------------------------------------------------------------
 
@@ -1910,6 +2361,85 @@ function makePoolTexture({ size = 128, peak = 1, rim = 0 } = {}) {
   }
   ctx.putImageData(image, 0, 0)
   const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
+
+/**
+ * `makeShimmerTexture` — the canal's moving surface (iteration 2, pass 8).
+ *
+ * BEFORE: n/a. AFTER a tileable banded caustic, written per-pixel through
+ * `createImageData` for the reason every other texture in this file is: the
+ * `verify-world.mjs` 2D stub implements exactly the data members and nothing
+ * else, so a texture written with a gradient primitive is a texture the gate
+ * cannot construct.
+ *
+ * WHY BANDS AND NOT NOISE. `noiseField` is the right primitive for a surface
+ * (asphalt, siding, hedge) because those surfaces are *isotropic* — the grain of
+ * tarmac has no direction. Water in a channel is emphatically not: it is
+ * stretched along the flow, so a noise field on it reads as a dirty concrete
+ * trough and not as water at all. Three sine bands at 1, 2.3 and 4.1 cycles
+ * across the channel's width, multiplied and lifted, give the interference
+ * pattern that moving water actually has — a few bright crests, wide dark
+ * troughs — and the three are INCOMMENSURATE, so the pattern does not visibly
+ * repeat over the 26 m of channel.
+ *
+ * The value is written to RGB and 255 to alpha, and this is the opposite
+ * convention to `makePoolTexture` on purpose: this is a MAP on a lit surface,
+ * not an alpha mask on an additive quad, so it has to be a multiplier in the
+ * colour channels. `verify-world.mjs` asserts the two conventions stay
+ * different, because a texture whose channels are swapped between the two uses
+ * is a texture that is invisible in one of them.
+ *
+ * `wrapS/T` are RepeatWrapping and `repeat` is set here, because `update()`
+ * scrolls `offset` along the channel and a clamped edge would show as a hard
+ * seam travelling down the canal.
+ *
+ * @param {object} [options]
+ * @param {number} [options.size] texture edge in pixels
+ * @param {number} [options.seed] the documented seed for this fitting
+ * @param {number} [options.base] the mid value, 0-1
+ * @param {number} [options.contrast] the crest-to-trough spread
+ * @param {number} [options.repeat] tiles across the channel's width
+ * @returns {THREE.CanvasTexture}
+ */
+function makeShimmerTexture({ size = 64, seed = 1, base = 0.5, contrast = 0.42, repeat = 3 } = {}) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const image = ctx.createImageData(size, size)
+  const data = image.data
+  // `phase` shifts all three bands together, so the pattern is a function of
+  // the seed and not of the band numbers — two fittings differing only in
+  // `phase` are two different pieces of water, not the same water twice.
+  const phase = ((seed % 97) / 97) * Math.PI * 2
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const u = x / size
+      const v = y / size
+      // v ACROSS the channel, u ALONG it. The bands vary across and are
+      // near-constant along, which is what "stretched along the flow" means.
+      const bands =
+        Math.sin(v * Math.PI * 2 * 1.0 + phase) * 0.5 +
+        Math.sin(v * Math.PI * 2 * 2.3 + phase * 1.7) * 0.32 +
+        Math.sin(v * Math.PI * 2 * 4.1 + phase * 0.6) * 0.18
+      // A slow swell along the length, so a scrolled frame is not a rigid
+      // translation of a static stripe pattern.
+      const swell = Math.sin(u * Math.PI * 2 * 1.7 + phase * 2.3) * 0.16
+      const value = Math.max(0, Math.min(255, Math.round((base + bands * contrast + swell) * 255)))
+      const i = (y * size + x) * 4
+      data[i] = value
+      data[i + 1] = value
+      data[i + 2] = value
+      data[i + 3] = 255
+    }
+  }
+  ctx.putImageData(image, 0, 0)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.repeat.set(repeat, 1)
   texture.colorSpace = THREE.SRGBColorSpace
   return texture
 }
@@ -2094,6 +2624,12 @@ export const SURFACE_SEEDS = Object.freeze({
   // is a texture a player learns. `0x50f1` and `0x5047` are `P1` and `PG`.
   poster: 0x50f1,
   posterTorn: 0x5047,
+  // ITERATION 2, PASS 8 — one more, and it is the only texture in the file whose
+  // OFFSET is animated rather than whose pattern is rotated. `makeShimmerTexture`
+  // is a tileable banded caustic written per-pixel; `update()` scrolls it along
+  // the canal at `CANAL_SHIMMER_MPS`, which is the whole of the "slow moving
+  // water shimmer" and costs one texture-offset write a frame. `0x5741` is `WA`.
+  water: 0x5741,
 })
 
 
@@ -3360,7 +3896,96 @@ export class StreetView {
       // chunks are included by hand — which is the second half of the pass and
       // the half that is easy to leave out.
       wire: makeWireMaterial(this.resolution.x, this.resolution.y),
+
+      // -----------------------------------------------------------------------
+      // ITERATION 2, PASS 8 — WATER & REFLECTIONS
+      //
+      // Four materials, and the load-bearing property is that THREE of them are
+      // `transparent` over the SAME ground plane and the fourth is not. That is a
+      // sorting problem, and it is the whole reason the pass has this shape rather
+      // than one clever shader.
+      //
+      // The order on the road, from the asphalt up:
+      //
+      //   1. `wetSheen`   blended DARK, no depth write, renderOrder 1. The damp.
+      //   2. `puddle`     the water surface, opaque-ish, renderOrder 2. The hole.
+      //   3. `canalWater` the channel, lit and mapped, renderOrder 3.
+      //   4. `streak`     ADDITIVE, no depth write, renderOrder 4. The reflection.
+      //
+      // `renderOrder` is set explicitly on every one of them because three.js
+      // sorts transparent objects back-to-front by distance from the camera, and
+      // at 11 m all four of these are within 2 m of each other in depth. Left to
+      // the automatic sort, the additive streak lands UNDER the dark halo on
+      // roughly half the frames — which is a reflection that disappears when the
+      // camera moves, and a bug nobody finds by looking at one screenshot.
+      // `verify-world.mjs` reads all four back off the built scene and requires
+      // the order above, so the fix cannot be undone by a re-sort.
+      //
+      // WHY FOUR AND NOT ONE. A single blended material cannot be both the dark
+      // halo and the additive reflection: one has to multiply the road down and
+      // the other has to add light to it, and they are opposite operations. It
+      // also cannot be both the still puddle and the moving canal, because one
+      // scrolls its map and the other must not. Four materials, four draw calls,
+      // and every one of them a distinct physical effect.
+      // -----------------------------------------------------------------------
+
+      // 1. The wet halo. `depthWrite: false` so it never occludes the puddle
+      //    above it, and `polygonOffset` is NOT used because this is a plane at a
+      //    fixed lift and a z-fight would need them to be coplanar — the whole
+      //    point of `PUDDLE_HALO_LIFT` is that they are not.
+      wetSheen: this._material({
+        color: PALETTE.wetSheen,
+        transparent: true,
+        opacity: PUDDLE_HALO_OPACITY,
+        depthWrite: false,
+      }),
+      // 2. The puddle. Low roughness and a real `metalness` so the four point
+      //    lights put a specular highlight on it — this is the ONE thing in the
+      //    pass that is genuinely lit rather than drawn, and it is what separates
+      //    a puddle from a dark disc when the camera is low. `depthWrite: true`
+      //    (the default, stated) because the water is opaque enough to occlude
+      //    the road and a puddle that does not occlude is a sticker.
+      puddle: this._material({ color: PALETTE.puddle, roughness: 0.08, metalness: 0.62 }),
+      // 3. The canal. A `_material` and not a `_glow`, for the same reason
+      //    `vendingFaceLit` is: it is a SURFACE, it is in the road where the fog
+      //    is, and an unfogged water surface would be visible from the far end of
+      //    the avenue. The map is the shimmer, and `roughness` is low enough that
+      //    the crests catch the sodium and the troughs do not — which is the
+      //    whole of what "shimmer" means without moving a vertex.
+      canalWater: this._material({
+        color: PALETTE.canalBed,
+        map: this._shimmerTexture(),
+        roughness: 0.14,
+        metalness: 0.55,
+      }),
+      // 4. The reflection streak. Additive, unlit, and `fog: true` — the same
+      //    combination as `sodiumPool`, and for the same reason: it is ON the
+      //    ground, so it is a depth cue and it has to recede. It is drawn at
+      //    `STREAK_PEAK` of `waterStreak` so its peak contribution sits under the
+      //    eye finder's `EYE_MIN`; see the constant for that arithmetic.
+      streak: this._glow(PALETTE.waterStreak, {
+        map: makePoolTexture({ rim: STREAK_RIM, peak: STREAK_PEAK }),
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: true,
+      }),
     }
+  }
+
+  /**
+   * `_shimmerTexture` — the canal's map, registered for teardown.
+   *
+   * `makeShimmerTexture` is not `makeSurfaceTexture` and so does not go through
+   * `_texture`, which means it needs registering by hand or §15's teardown check
+   * counts a texture the world still holds — a 16 kB leak per mount, which never
+   * shows up as a bug and is exactly the debt pass 19 exists to sweep. The swirl
+   * above sets the same precedent for the same reason.
+   */
+  _shimmerTexture() {
+    const texture = makeShimmerTexture({ seed: SURFACE_SEEDS.water, repeat: CANAL_SHIMMER_TILES })
+    this.textures.push(texture)
+    return texture
   }
 
   // -------------------------------------------------------------------------
@@ -3735,6 +4360,62 @@ export class StreetView {
       names, 'postersTorn', new THREE.PlaneGeometry(POSTER_U, 1), this._materials.posterTorn, lot + 8,
     )
 
+    // -----------------------------------------------------------------------
+    // ITERATION 2, PASS 8 — FIVE POOLS, and the geometry is the argument
+    //
+    // Four of the five are a 10x10-segment DISC lying flat, and the fifth is a
+    // 1x1 plane. That is the whole budget: 20 triangles for a puddle, 20 for its
+    // halo, 2 for a reflection streak, 12 for the canal's box walls. A pass that
+    // wanted 40 puddles at 200 triangles each would cost 8000 triangles for
+    // something the eye reads as a dark ellipse, and `verify-world.mjs` measures
+    // the count and the segment number so the trade cannot be re-made silently.
+    //
+    // WHY A DISC AND NOT A PLANE. A square puddle with a soft alpha edge is the
+    // obvious cheaper choice and it is wrong: the corner of a square never fades
+    // (the falloff is radial from the centre, so the corners stay at full
+    // strength) and a square of standing water is instantly a decal. A 10-segment
+    // disc at 1.75x is an ellipse, and an ellipse is what a puddle is.
+    //
+    // The halo and the water SHARE one geometry instance — `disc()` is called
+    // once and handed to both pools — because they are the same shape at two
+    // scales, and two 10x10 discs cost 40 triangles instead of 20. Three.js
+    // uploads geometry per `BufferGeometry`, and two pools holding the SAME
+    // object is one upload and one VRAM copy.
+    // -----------------------------------------------------------------------
+    const disc = () => new THREE.CircleGeometry(0.5, PUDDLE_SEGMENTS).rotateX(-Math.PI / 2)
+    const wetDisc = disc()
+    // The MAXIMUM, per T5's rule, not this seed's draw: 49 nodes x 3 copies x
+    // `PUDDLE_CANDIDATES_PER_NODE` candidates, and every candidate is eligible on
+    // a seed where `PUDDLE_ONE_IN` lands on 0 every time. The one-in-three rate is
+    // a roll, not a cap, so a capacity sized for the observed count drops the
+    // extras silently — which is the pass-5 window-frame bug, and the overflow
+    // counter is the only symptom.
+    const water = nodes * PUDDLE_CANDIDATES_PER_NODE * WRAP_COPIES.length
+    this.pools.wetSheen = this._streetPool(names, 'wetSheen', wetDisc, this._materials.wetSheen, water + 8)
+    this.pools.puddles = this._streetPool(names, 'puddles', wetDisc, this._materials.puddle, water + 8)
+    // The streak is ONE per lamp, not one per puddle: the reflection belongs to
+    // the light, and a street with three puddles under one lamp has one streak in
+    // it, not three. 49 lamps x 3 copies, plus the canal's own.
+    this.pools.streaks = this._streetPool(
+      names, 'streaks', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this._materials.streak,
+      nodes * WRAP_COPIES.length + 8,
+    )
+    // The canal: a box for the two lips (they are 100 mm tall, so a plane is
+    // not enough — a lip with no height has no top face and catches no light) and
+    // a plane for the water. Three instances, one per copy.
+    this.pools.canalLips = this._streetPool(names, 'canalLips', box(), this._materials.kerb, 6)
+    this.pools.canalWater = this._streetPool(
+      names, 'canalWater', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this._materials.canalWater, 6,
+    )
+    // ...and the four water render orders, read back by `verify-world.mjs`.
+    // Set HERE rather than in `_buildWater` because a pool that is not created
+    // cannot be ordered, and this is the one place in the file where every pool
+    // exists.
+    this.pools.wetSheen.mesh.renderOrder = 1
+    this.pools.puddles.mesh.renderOrder = 2
+    this.pools.canalWater.mesh.renderOrder = 3
+    this.pools.streaks.mesh.renderOrder = 4
+
     // The world's ONE flickering machine, chosen BEFORE any lot is built.
     //
     // It could have been a 1-in-20 roll on each machine's own stream, and that
@@ -3779,6 +4460,12 @@ export class StreetView {
     // claim, and the reason it is a claim about POOLS rather than about objects.
     this._buildStreetFurniture()
     this._buildLamps()
+    // ITERATION 2, PASS 8 — the water, and it is here for the same reason the
+    // lamps are: `InstancePool.commit()` is the only thing that publishes
+    // instances, and this pass added five pools. A puddle written after this
+    // loop is a puddle in a buffer that is never uploaded, and the symptom is a
+    // road that is merely dark rather than a visible error.
+    this._buildWater()
     for (const name of names) this.pools[name].commit()
     this.streetPools = names
   }
@@ -4565,6 +5252,440 @@ export class StreetView {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // ITERATION 2, PASS 8 — WATER & REFLECTIONS
+  //
+  // Four methods: the driver, the puddles, the streaks and the canal. The order
+  // they run in is the order the world reads in — wet road, then water, then
+  // the light coming off it — and it is also the order of the render orders set
+  // in `_buildChunkGeometry`.
+  // -------------------------------------------------------------------------
+
+  /**
+   * `_buildWater` — every puddle, every halo, every streak and the canal.
+   *
+   * The driver, and it is deliberately the smallest method in the pass: it owns
+   * the two counters (`waterLog`, `waterRejected`) that the gate reads and
+   * nothing else, so that "what the pass claims" and "what the pass does" are
+   * two different places in the file and a check cannot confuse them.
+   *
+   * `waterLog` is published for the reason `dressingLog` and `wireSpans` are:
+   * the claim "every puddle is in a gutter, a crossing or the canal" is a claim
+   * about ADDRESSING — which of the three bands a puddle was placed into is not
+   * recoverable from its coordinates, because all three are legal positions and
+   * the only difference between them is which rule ran. A check that measured
+   * the geometry alone would be asking "is this puddle near a kerb", which is
+   * true of all three bands and therefore says nothing.
+   *
+   * The streaks are placed here rather than in `_buildLamps` because a streak
+   * needs the lamp's own ground point, and reading it back out of
+   * `lampPositions` would be re-deriving a number the caller already has.
+   */
+  _buildWater() {
+    this.waterLog = []
+    this.waterRejected = 0
+    for (let ax = 0; ax < GRID; ax += 1) {
+      for (let az = 0; az < GRID; az += 1) {
+        this._addPuddles(ax, az)
+        this._addStreak(ax, az)
+      }
+    }
+    this._addCanal()
+  }
+
+  /**
+   * `_addPuddles` — the gutter, the crossing and the canal-band candidates at
+   * one intersection, for all three wrapped copies.
+   *
+   * EIGHT candidates, drawn in a FIXED order, and the order is load-bearing for
+   * the same reason pass 7's corner order is: the stream is consumed in a fixed
+   * sequence, so adding a candidate at the end cannot silently move the roll
+   * that decides whether an existing one gets water.
+   *
+   *   0-3  the four GUTTER candidates — one per (road, side) pair, each
+   *         `STREET_HALF_WIDTH - PUDDLE_GUTTER_INSET` from its own centreline,
+   *         i.e. in the channel between the kerb face and the tarmac, and
+   *         `PUDDLE_GUTTER_ALONG` out from the corner so it is in the middle of
+   *         the block rather than on the junction box.
+   *   4-5  the two CROSSING candidates — in the carriageway of the avenue, at
+   *         `PUDDLE_CROSSING_OFFSET` either side of the centreline, which is
+   *         where a cambered road's two wheel ruts are.
+   *   6-7  the two CANAL-BAND candidates — but only at `CANAL_NODE`, where the
+   *         channel actually is. Everywhere else the roll is consumed and
+   *         discarded, so the stream stays in step across every node.
+   *
+   * The GUTTER long axis is ALONG the road and the CROSSING long axis is ACROSS
+   * it, and that is not a stylistic choice: the gutter puddle is a stripe
+   * because the gutter is a line, and the crossing one a long oval because the
+   * rut is. A puddle whose elongation does not match the feature that made it
+   * reads as a drop of paint.
+   *
+   * EACH BAND'S RADIUS IS BOUNDED BY THE ROOM THAT BAND HAS, and this is the
+   * second bug the first version of this pass had, found by measuring rather
+   * than by looking. A gutter candidate sits `STREET_HALF_WIDTH -
+   * PUDDLE_GUTTER_INSET` = 5.3 m from the centreline, so a 2.4 m radius reaches
+   * 7.7 m — and the kerb face is at 6.4. A third of the world's puddles were
+   * lying on the pavement, in the gutter band's own name. The fix is not a
+   * smaller global radius, which would shrink the crossing band where there IS
+   * room; it is to give each band the room it was given, and the room is the
+   * SAME constant that positioned it, so the two cannot drift apart:
+   *
+   *     gutter   PUDDLE_GUTTER_INSET      0.70 m  to the tarmac edge
+   *     crossing PUDDLE_CROSSING_OFFSET  2.10 m  to the centreline
+   *     canal    PUDDLE_CANAL_SETBACK    0.85 m  to the channel's outer lip
+   *
+   * The draw is scaled into `[PUDDLE_R_MIN, room]` rather than clamped to it, so
+   * the distribution stays uniform inside the band instead of piling up against
+   * the ceiling — a clamp would make every large crossing puddle exactly 2.1 m
+   * and a street of identical puddles. `verify-world.mjs` measures every
+   * instance's outer edge against the kerb face, which is the claim neither the
+   * clamp nor the scale can hide.
+   *
+   * @param {number} ax avenue axis
+   * @param {number} az street axis
+   * @returns {void}
+   */
+  _addPuddles(ax, az) {
+    const node = streetNodeToWorld(streetNodeId(ax, az))
+    const rng = streamAt(hash32(this.seed, ax, az + WATER_SALT), 0, 0)
+    const gutter = STREET_HALF_WIDTH - PUDDLE_GUTTER_INSET
+    // Each candidate is `[x, z, yaw, band, room]`, and `room` is the distance
+    // from the candidate's own centre to the edge it must not cross.
+    const candidates = []
+    // 0-3: one per (road, side). `alongX` says which road the gutter belongs
+    // to, and the yaw follows it: a gutter on the east-west street runs in x,
+    // so its puddle is stretched in x, and the pair are one decision.
+    for (const alongX of [true, false]) {
+      for (const side of [-1, 1]) {
+        const along = PUDDLE_GUTTER_ALONG_MIN + rng() * (PUDDLE_GUTTER_ALONG_MAX - PUDDLE_GUTTER_ALONG_MIN)
+        candidates.push([
+          node.x + (alongX ? along : side * gutter),
+          node.z + (alongX ? side * gutter : along),
+          alongX ? 0 : Math.PI / 2,
+          'gutter',
+          PUDDLE_GUTTER_INSET,
+        ])
+      }
+    }
+    // 4-5: the crossing, in the two ruts either side of the avenue's centreline
+    // and pushed along the street so it is not on the junction box itself.
+    for (const side of [-1, 1]) {
+      candidates.push([
+        node.x + side * PUDDLE_CROSSING_OFFSET,
+        node.z + PUDDLE_CROSSING_ALONG,
+        Math.PI / 2,
+        'crossing',
+        PUDDLE_CROSSING_OFFSET,
+      ])
+    }
+    // 6-7: the canal band, at the one node that has a canal. The room is the
+    // setback measured from the channel's OUTER lip, so the puddle's near edge
+    // just brushes the concrete — which is what water sitting against a channel
+    // looks like, and a puddle overlapping a 100 mm lip is a puddle through a
+    // wall. The X offset is the channel's own (`CANAL_CANAL_OFFSET` from the
+    // node) and the Z is pushed along the channel so the pair sits on the road
+    // it crosses rather than on the junction box.
+    const isCanalNode = ax === CANAL_NODE.ax && az === CANAL_NODE.az
+    for (const side of [-1, 1]) {
+      candidates.push([
+        node.x + CANAL_CANAL_OFFSET + side * (CANAL_W / 2 + CANAL_LIP_T + PUDDLE_CANAL_SETBACK),
+        node.z + CANAL_CANAL_PUDDLE_ALONG,
+        Math.PI / 2,
+        'canal',
+        PUDDLE_CANAL_SETBACK,
+      ])
+    }
+    for (const [cx, cz, yaw, band, room] of candidates) {
+      // One roll per candidate, consumed even where the candidate cannot be
+      // placed, so the stream is a function of the NODE and not of which
+      // candidates survived the filter.
+      const accept = Math.floor(rng() * PUDDLE_ONE_IN) === 0
+      // The canal band only exists at `CANAL_NODE`; everywhere else it would
+      // be water in the middle of a road with no channel to justify it, and the
+      // gate requires every puddle to be in a band that is really there.
+      if (band === 'canal' && !isCanalNode) continue
+      // ...and at the canal node it is NOT optional. The brief asks for puddles
+      // in the drainage channel, and a 1-in-3 roll on two candidates has a 4 in
+      // 9 chance of placing neither — which is exactly what happened on the
+      // first run of this pass, and it left the canal band with no water in it
+      // at all while every other check stayed green. Water standing against a
+      // channel is not decoration to be sprinkled: it is the one place on the
+      // street where the low point is BELOW the surrounding road by
+      // construction, so if the channel holds no water the whole feature reads
+      // as a painted line. The roll is still consumed, so the stream stays in
+      // step with every other node.
+      if (!accept && band !== 'canal') continue
+      // The radius is drawn AFTER the accept roll, so a second roll here could
+      // never move the accept decisions of the candidates around it, and it is
+      // SCALED into the band's room rather than clamped to it.
+      const span = Math.max(0, room - PUDDLE_R_MIN)
+      const radius = PUDDLE_R_MIN + rng() * span
+      for (const copy of WRAP_COPIES) {
+        const x = cx + copy * WORLD_EXTENT
+        const z = cz + copy * WORLD_EXTENT
+        // THE FILTER, and not as a nicety. Pass 3's gate measures the luma of
+        // the hole in the middle of a portal from 4.5 m away and requires it at
+        // or under 20, and a bright additive streak on the road between that
+        // camera and the gate does not merely look wrong — it invalidates the
+        // gate the whole iteration is measured against. This is the structural
+        // form of `PORTAL_FURNITURE_CLEAR`.
+        if (!this._waterClear(x, z, copy)) continue
+        this._addPuddle(x, z, yaw, radius, band, ax, az, copy)
+      }
+    }
+  }
+
+  /**
+   * `_addPuddle` — one puddle and its halo: two instances across two pools.
+   *
+   * The halo is placed FIRST and the water SECOND, and both are written in the
+   * same call, so the two cannot get out of step: a puddle whose halo was lost
+   * to an over-capacity pool would be a bright disc on dry road, which is the
+   * exact failure the halo exists to prevent. `verify-world.mjs` asserts
+   * `puddles.used === wetSheen.used` on the built world, which is the only way
+   * to catch a version where the two are placed in separate loops.
+   *
+   * @param {number} x world x, in the drawn copy
+   * @param {number} z world z, in the drawn copy
+   * @param {number} yaw the long axis, 0 for along x
+   * @param {number} radius the SHORT axis, metres
+   * @param {string} band `gutter`, `crossing` or `canal`
+   * @param {number} ax avenue axis, for the log
+   * @param {number} az street axis, for the log
+   * @param {number} copy the wrapped copy, for the log
+   * @returns {void}
+   */
+  _addPuddle(x, z, yaw, radius, band, ax, az, copy) {
+    const long = radius * PUDDLE_ELONGATION
+    // `place` takes (w, h, d) and yaws about Y, so on a yaw of 0 the long axis
+    // is `w` and on a quarter turn it is `d` — the same convention the lamp
+    // pool uses for its two diameters.
+    const across = yaw === 0
+    this.pools.wetSheen.place(
+      x, PUDDLE_HALO_LIFT, z,
+      (across ? long : radius) * PUDDLE_HALO_SPREAD, 1, (across ? radius : long) * PUDDLE_HALO_SPREAD, yaw,
+    )
+    this.pools.puddles.place(
+      x, PUDDLE_HALO_LIFT + PUDDLE_LIFT_GAP, z,
+      across ? long : radius, 1, across ? radius : long, yaw,
+    )
+    this.waterLog.push({ kind: 'puddle', band, ax, az, copy, x, z, yaw, radius })
+  }
+
+  /**
+   * `_addStreak` — one reflection streak per lamp, for all three wrapped copies.
+   *
+   * This is the "elongated vertical streak" the brief asks for, and it is ONE
+   * QUAD PER LAMP: 147 instances of a 1x1 plane, two triangles each, 294
+   * triangles for every reflection in the world.
+   *
+   * WHY A QUAD AND NOT A RENDER TARGET. A real reflection needs a second camera,
+   * a second pass and a texture to sample. The world has ONE camera, one render
+   * pass and no `WebGLRenderTarget` anywhere, and `verify-world.mjs` asserts
+   * that. What makes the cheat work is that a reflection of a LIGHT in a
+   * horizontal surface is not a picture of the world — it is a single elongated
+   * smear along the line from the light to the eye. That shape is a quad, and
+   * the quad's orientation is the only thing that has to be right.
+   *
+   * WHICH WAY IT POINTS, and this is the one decision in the pass:
+   *
+   * The streak lies in the CARRIAGEWAY, `STREAK_ROAD_INSET` in from the kerb on
+   * the lamp's own side of the road, with its bright head at the kerb face and
+   * its tail running `STREAK_LEN` further along the road. It does NOT point at
+   * the camera, and it cannot: the pools are built once and the player walks a
+   * 448 m world, so a streak that tracked the eye would be a per-frame rewrite
+   * of 147 instance matrices. Instead it points DOWN THE ROAD, which is the
+   * direction the player is looking in 13 of the 14 §16.5 views (they all stand
+   * at a lamp and look along the avenue), and a smear that runs away from the
+   * viewer along the road is what a wet road actually looks like from a
+   * first-person camera. Seen side-on, across the road, it reads as a bright
+   * bar on the tarmac — which is also correct.
+   *
+   * WHY IT IS INSIDE THE KERB AND NOT UNDER THE LAMP. The first version put the
+   * head at the lamp's own ground point, which is `STREET_HALF_WIDTH + 1.6 -
+   * 0.9` = 6.7 m from the centreline — and `STREET_HALF_WIDTH + KERB_WIDTH` is
+   * 6.4, so the entire streak was lying on the PAVEMENT, 1.4 m outside the
+   * carriageway it is supposed to be a reflection in. Nothing failed: the
+   * geometry was well formed, the count was right, and the screenshot would have
+   * shown a bright smear on the concrete beside the road, which a reader would
+   * have called a bug in a way no number in the report would have located. The
+   * fix is the inset below, and `verify-world.mjs` now measures every streak's
+   * distance to the nearest road centreline and requires it to be INSIDE
+   * `STREET_HALF_WIDTH` — the same test pass 6 applies to furniture from the
+   * other side, and the reason it is worth having in both directions is that
+   * "not in the middle of the road" and "not on the pavement" are different
+   * claims and a puddle needs the second one.
+   *
+   * WHICH AXIS, and the two are not the same claim. A lamp stands on a corner
+   * and lights two roads, so a streak may run along either. The axis is a
+   * per-node hash rather than a constant, because a world where every lamp
+   * streaks the same way down the same axis is a pattern, and AESTHETIC-NOTES
+   * §5's whole argument is that uniformity is what makes a generated street
+   * read as generated. The hash is `hash32` on the node's own coordinates, so it
+   * is the same on every build and in every wrapped copy.
+   *
+   * WHY ONE PER LAMP AND NOT ONE PER PUDDLE. The reflection belongs to the
+   * LIGHT, not to the water: a street with three puddles under one lamp has one
+   * lamp's reflection in it, drawn three times over, and a per-puddle scheme
+   * would triple the count to sell the same picture. It also makes the count a
+   * function of the lamp grid — 49 x 3, exactly — and `verify-world.mjs`
+   * asserts `streaks.used === 49 * 3`, which no puddle-driven scheme could
+   * satisfy.
+   *
+   * The filter is `_waterClear`, and it is on the streak and not only on the
+   * puddle that matters: the streak is the ADDITIVE element, so it is the one
+   * that can raise the luma of a portal's pupil past 20.
+   *
+   * @param {number} ax avenue axis
+   * @param {number} az street axis
+   * @returns {void}
+   */
+  _addStreak(ax, az) {
+    const node = streetNodeToWorld(streetNodeId(ax, az))
+    // Which of the node's two roads this lamp streaks along. `hash32` on the
+    // node's own coordinates, and NOT on the seed: the lamps are on a fixed grid
+    // whatever the seed, and a streetlight's reflection should not permute when
+    // the fixture seed does.
+    const alongX = hash32(0x5354524b, ax, az) % 2 === 0
+    // The head at the kerb face and the tail running away from the junction, so
+    // the streak lies in the block the player is looking down rather than across
+    // the junction box.
+    const head = STREET_HALF_WIDTH
+    const cross = STREET_HALF_WIDTH - STREAK_ROAD_INSET
+    for (const copy of WRAP_COPIES) {
+      const x = node.x + (alongX ? head + STREAK_LEN / 2 : cross) + copy * WORLD_EXTENT
+      const z = node.z + (alongX ? cross : head + STREAK_LEN / 2) + copy * WORLD_EXTENT
+      if (!this._waterClear(x, z, copy)) continue
+      // The long axis is the one the streak RUNS along, so the scale is
+      // `(STREAK_LEN, 1, STREAK_W)` on a yaw of 0 and `(STREAK_W, 1, STREAK_LEN)`
+      // on a quarter turn — the same convention the lamp pool uses for its two
+      // diameters and the puddle uses for its elongation.
+      const across = !alongX
+      this.pools.streaks.place(
+        x, STREAK_LIFT, z,
+        across ? STREAK_W : STREAK_LEN, 1, across ? STREAK_LEN : STREAK_W,
+      )
+      this.waterLog.push({ kind: 'streak', ax, az, copy, x, z, yaw: across ? Math.PI / 2 : 0 })
+    }
+  }
+
+  /**
+   * `_addCanal` — the world's one drainage channel, in all three wrapped copies.
+   *
+   * SIX instances: two lips, one water surface, per copy. It runs
+   * `CANAL_LEN` along the east-west street at `CANAL_NODE`, and it CROSSES the
+   * carriageway of the avenue that street meets — which is the brief's "one long
+   * drainage canal or flooded gutter crossing a street segment", and the
+   * crossing is the point: a channel that stops at the kerb is a gully, and
+   * pass 6 already has gullies.
+   *
+   * WHY IT IS BUILT AS A BOX AND NOT A RECESS IN THE ROAD. The carriageway is a
+   * single `PlaneGeometry` 1,344 m across, so there is no hole to cut and no
+   * CSG in this file. A channel therefore has to be ASSEMBLED from things that
+   * stand on the road, and the assembly is the two lips: two 120 x 100 mm
+   * kerb-section bars with the water plane between them, 90 mm down. The lips
+   * are `PALETTE.kerb` rather than a new colour because a drainage channel's
+   * walls ARE kerb — it is the same precast concrete, and a separate value would
+   * be inventing a material the reference does not have.
+   *
+   * The water surface sits `CANAL_LIP_H - CANAL_DEPTH` up inside the lips —
+   * 10 mm below their top on the numbers above — and NOT at the bottom of the
+   * channel, because the bottom is not visible: at 11 m and a 1.75 m eye height a
+   * 90 mm slot is seen at a 3 degree grazing angle, and at that angle the water
+   * and the floor of the channel project to the same few pixels. Writing the
+   * lift as the lip height MINUS the channel depth rather than as a third
+   * independent number is what makes the two agree: the first version wrote
+   * `0.01` literally, `CANAL_DEPTH` went unused, and a later edit to either the
+   * lip or the depth would have left the water floating in or sunk through the
+   * channel with nothing failing. `verify-world.mjs` reads the built lifts back
+   * and requires the water to be BELOW both lips and ABOVE the road.
+   *
+   * The lips get their own pool rather than joining `kerbs`, because `kerbs` is
+   * sized at `4 * GRID + 8` and is committed by `_buildRoad` before the water
+   * exists; a canal added to it would have to be placed from here into a pool
+   * that is already full, and the overflow would be silent.
+   *
+   * @returns {void}
+   */
+  _addCanal() {
+    const node = streetNodeToWorld(streetNodeId(CANAL_NODE.ax, CANAL_NODE.az))
+    // THE CHANNEL RUNS ALONG Z AND CROSSES THE EAST-WEST STREET. This is the
+    // whole of "crossing a street segment" and the first version of this pass got
+    // it wrong in a way no structural check could see: it ran the channel along
+    // X at `CANAL_CANAL_OFFSET` north of the node, which put a 26 m strip of
+    // standing water in the middle of a BLOCK — 21 m from the nearest road
+    // centreline, between two houses, where it is not a drainage channel at all
+    // but a decorative pond in someone's back yard. The counts were right, the
+    // geometry was well formed, and the water was in the scene.
+    //
+    // A channel that crosses a road runs PERPENDICULAR to it, so this one runs in
+    // z and crosses the east-west street at the node. `CANAL_CANAL_OFFSET` is
+    // therefore an X offset, not a Z one: 9 m along the street from the junction
+    // — clear of the 6 m carriageway box, so the channel is not lying across the
+    // middle of the intersection, and 26 m long, so it spans the 12 m of road
+    // plus 7 m of block on either side.
+    const cx = node.x + CANAL_CANAL_OFFSET
+    // The derived lift, named once so the placement below and the gate's
+    // arithmetic read the same expression.
+    const waterY = CANAL_LIP_H - CANAL_DEPTH
+    for (const copy of WRAP_COPIES) {
+      const x = cx + copy * WORLD_EXTENT
+      for (const side of [-1, 1]) {
+        // The lip: a `CANAL_LIP_T`-thick bar of `CANAL_LIP_H` height standing
+        // `CANAL_W / 2 + CANAL_LIP_T / 2` off the centre line, so its INNER
+        // face is exactly `CANAL_W / 2` out. The arithmetic is written as a
+        // face-offset rather than a centre offset so the two lips cannot end up
+        // a `CANAL_LIP_T` apart from each other, which is the off-by-one that
+        // makes a channel narrower than its own water.
+        this.pools.canalLips.place(
+          x + side * (CANAL_W / 2 + CANAL_LIP_T / 2), CANAL_LIP_H / 2, node.z,
+          CANAL_LIP_T, CANAL_LIP_H, CANAL_LEN,
+        )
+      }
+      this.pools.canalWater.place(
+        x, waterY, node.z, CANAL_W, 1, CANAL_LEN,
+      )
+      this.waterLog.push({ kind: 'canal', copy, x, z: node.z, yaw: Math.PI / 2, y: waterY })
+    }
+  }
+
+  /**
+   * `_waterClear` — is this spot far enough from every portal to put water on it?
+   *
+   * The same predicate `_portalClear` applies to furniture, with its own
+   * counter, and the reason it is a SEPARATE method rather than a call to
+   * `_portalClear` is bookkeeping: `dressingRejected` counts rejected *objects*
+   * and `verify-world.mjs` asserts on that number, and letting ~200 rejected
+   * puddles inflate it would make a pass-7 assertion about pass 6's filter a
+   * pass-8 assertion too.
+   *
+   * The distance is `PORTAL_FURNITURE_CLEAR` (12 m) and not a tighter water
+   * radius, for the same reason that constant is 12 and not 2.7: the §16.5.5
+   * stand-off is 4.5 m and the gate measures the pupil in that frame, so the
+   * exclusion has to clear the whole frontage run of a portal's own lot, not
+   * just the doorway. A 1.1 m channel 8 m from a gate would still put a
+   * 26 m-long additive smear across the bottom of the frame the gate is read
+   * from, and 12 m is the distance at which it does not.
+   *
+   * FOLDED TO CANONICAL, exactly as `_portalClear` folds: the caller has added
+   * `copy * WORLD_EXTENT` and this subtracts it again, or the exclusion would
+   * silently exist in one ninth of the world.
+   *
+   * @param {number} x world x, in the drawn copy
+   * @param {number} z world z, in the drawn copy
+   * @param {number} copy the wrapped copy the caller is placing into
+   * @returns {boolean} true if the spot may carry water
+   */
+  _waterClear(x, z, copy) {
+    const shift = copy * WORLD_EXTENT
+    for (const anchor of this.objectives.portals) {
+      if (Math.hypot(x - shift - anchor.position.x, z - shift - anchor.position.z) < PORTAL_FURNITURE_CLEAR) {
+        this.waterRejected += 1
+        return false
+      }
+    }
+    return true
+  }
   // -------------------------------------------------------------------------
   // ITERATION 2, PASS 6 — street furniture I
   //
@@ -5769,6 +6890,28 @@ export class StreetView {
       this.hammer.light.intensity = 3.2 * pulse
       this.hammer.root.rotation.y = t * 0.35
     }
+    // ITERATION 2, PASS 8 — the canal's shimmer, and it is the only thing in this
+    // method that is a function of the wall clock rather than of the two light
+    // families.
+    //
+    // The scroll is in METRES per second on the GROUND, divided by the length of
+    // one tile, which is the step that is easy to get wrong: writing
+    // `offset.x += CANAL_SHIMMER_MPS * dt` scrolls the texture 0.06 *units* a
+    // second, and a unit here is `CANAL_LEN / CANAL_SHIMMER_TILES` = 3.71 m, so
+    // that version moves the water at 0.22 m/s — 3.7x too fast, and fast enough
+    // that a player watching the canal for four seconds sees it move a tile and
+    // knows the loop. Dividing by the tile length is what makes the constant on
+    // the constant block mean what it says.
+    //
+    // It is driven off `this._time` and not off an accumulated `dt`, for the same
+    // reason the vending flicker is: the value has to be a pure function of the
+    // clock, so a capture that steps to a given time gets a given shimmer and
+    // `verify-world.mjs` can drive the world to the same time twice and require
+    // the offset back bit-identical. An accumulator that summed `dt` would drift
+    // against `this._time` by a different amount every run and that check could
+    // not exist.
+    const shimmer = (t * CANAL_SHIMMER_MPS) / (CANAL_LEN / CANAL_SHIMMER_TILES)
+    this._materials.canalWater.map.offset.x = shimmer % 1
   }
 
   dispose() {
