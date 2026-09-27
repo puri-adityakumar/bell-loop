@@ -732,6 +732,8 @@ bell is the only sound that crosses from v1 into v2, and it crosses as the
 | Haze wind *(pass 13)* | a noise band whose level and centre frequency both follow `skyView`'s `hazeIntensityAt` | coupling to the sky's own drifting bands; a wind layer with a clock of its own would drift against them inside a minute |
 | Distant facility *(pass 13)* | a seeded rumble, clank or thump every 20–60 s, placed in the world by seed | the city having a life of its own — placed, panned and damped through `soundStrength` and `wrapDelta` |
 | Water drip *(pass 13)* | a seeded one-shot every 2.5–8 s | pass 8's water, heard |
+| Ambient music *(pass 14)* | three detuned oscillators through a lowpass with a 0.011 Hz LFO on the cutoff, a double-rate tape wobble, a hiss, and a natural-minor progression of four whole-note chords at 54 BPM — the progression is a pure function of the world's own clock, so §14.3's pause freezes the music with the simulation | the score, on its **own bus**, on the world's ladder |
+| Distant piano *(pass 14)* | a seeded note every 8–20 s, pitched from the same minor scale an octave above the pad, through a 1500 Hz lowpass and a stereo pan | "something is playing piano over there" — a struck string, never a bell (§9) |
 
 Four of these are the **world bed**, and they are not in the player's channel:
 each is priced at `kind: null`, so §6.2's sound radius for it is 0 and the
@@ -742,6 +744,47 @@ functions of `(seed, index)` — which is what makes two runs of the same seed t
 same run, sound included. Its ceiling is a constraint rather than a taste: the
 three layers together stay under one ordinary footstep's level, because the
 footstep is the one sound the creature navigates by.
+
+### 13.1 The music's bus, its ladder, and its silence
+
+The two music rows are also `kind: null`, and for a louder reason: the music is
+the loudest thing in the game and the creature cannot hear a note of it. A layer
+in the player's channel and not the creature's would break §6.2's one contract.
+
+Three things about them are design decisions rather than implementation:
+
+- **THE BUS IS SEPARATE.** The bed is inside `ambient.bus`, which is what makes
+  one number (`applyDrone`) and one teardown (`stopAmbient`) enough for all of
+  it. The music is its own `GainNode` reaching the master, because a music bed and
+  a world bed want opposite things from the same point in the graph: the bed wants
+  to be flat and unfelt, and the music wants to be a thing that can be ducked to a
+  third, killed to nothing, and cut to a single tone. The **lifetime** is shared —
+  `stopAmbient` tears the music down too — so a BEGIN AGAIN cannot leave a pad
+  running under the next run.
+- **THE DUCK LADDER** is one function of one number: `max(proximity, awareness)`,
+  the two readouts §6.4 already has, over the same 30 m the player's breath
+  tightens on. It is **1.18 at zero threat and 0.30 at maximum**, which is the same
+  axis read in two directions — the far end IS the safe zone, so "ducks when it is
+  close" and "swells where it is safe" are one rule and cannot contradict each
+  other. There are no safe *rooms* in a city that wraps on both axes, so a safe
+  zone is a state: nothing is near and nothing has noticed you. The capture's
+  black and the win card pull the music back by the drone's own
+  `DRONE_LEVEL_BLACK` and `DRONE_LEVEL_WON`, because there is no second version of
+  "quiet" in the file.
+- **THE FINALE CUTS IT.** When `state.finale` latches (§10.1), the music goes to
+  nothing in 0.12 s and one 41.2 Hz tone rises under the chase over 1.6 s. The
+  tone is connected *below* the ladder's gain node, because a pad that took its own
+  tone with it would be a cut and not a cut. The world bed is **not** silenced with
+  it: the bed is the city, and a city that went quiet with its music would not be
+  frightening.
+
+`MUSIC_CEILING` is `CREATURE_BREATH_LEVEL` and deliberately not
+`WORLD_BED_CEILING`: the bed's ceiling exists to keep the footstep audible to the
+creature, and the music is not in that sum. What the music has to stay under is
+§6.4's creature breath — the sound a player uses to decide whether to run — so
+that at any moment of the game the music is quieter than the thing hunting the
+player. The ladder is what makes that affordable rather than merely true on paper:
+at maximum threat the music is at its near rung, so the two never peak together.
 
 Two of these are load-bearing rather than decorative:
 

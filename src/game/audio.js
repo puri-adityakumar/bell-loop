@@ -66,6 +66,33 @@
  * audio pass rather than being smuggled in here: a music bed and a world bed
  * want opposite things from the same bus, and putting both in one pass would
  * have made both of them worse.
+ *
+ * PASS 14 — THE MUSIC, AND THE BUS IT OWNS
+ * ---------------------------------------
+ * The paragraph above is the reason the two audio passes are two passes, so the
+ * first thing this pass has to earn is that the split was worth it. It was, and
+ * the split is now three separate things rather than two:
+ *
+ *   - **THE BUS IS SEPARATE.** The world bed lives inside `ambient.bus`, so
+ *     `applyDrone`'s single number and `stopAmbient`'s single teardown reach all
+ *     of it. The music is its own `GainNode` reaching the master, with its own
+ *     ladder gain, its own teardown, and its own gain for the finale's low tone.
+ *     The two want opposite things from the same point in the graph: the bed
+ *     wants to be flat and cheap under everything and never be noticed, and the
+ *     music wants to be a THING in its own right — ducked to nothing when the
+ *     creature is close, and killed to a single tone when the third portal shuts.
+ *     A bus that both of them shared would have forced one compromise on both.
+ *   - **THE LIFETIME IS SHARED.** `stopAmbient` tears the music down as well, and
+ *     the music's cursor is reset by the same `stopAmbience` the bed's three are.
+ *     The discipline is the bed's: a BEGIN AGAIN must not leave a pad running
+ *     under the next run, and a second lifetime would be a leak wearing a
+ *     silence. Sharing the discipline is not the same as sharing the bus, which
+ *     is the distinction the whole of pass 13's header rests on.
+ *   - **THE CLAIMS ARE THE SAME.** Both new rows are `kind: null` like every
+ *     other row the player did not make, so §6.2 prices the loudest thing in the
+ *     game at a radius of 0. The music is the one layer a player would be
+ *     tempted to hide in, and hiding in it would hand the creature the player's
+ *     position for free — which is §6.2's one inviolable rule.
  */
 
 import { hash32, mulberry32, streamAt, DEFAULT_SEED } from './hash.js'
@@ -288,6 +315,31 @@ export const AUDIO_ROUTES = Object.freeze([
     id: 'drip', sound: 'water drip', voice: 'updateDrips', mode: 'sustained',
     tuning: null, kind: null, exhausted: false,
     gate: 'a drip off a drain every few seconds while playing (pass 13)',
+  }),
+  // --- ITERATION 2, PASS 14: the music, as two more rows --------------------
+  // TWO rows rather than one because they are two different jobs on the same
+  // clock: the pad is a layer that never stops, and the motif is an event that
+  // decides for itself when to speak. §13's table already models exactly that
+  // split with `roomTone` and `facility`, and it is the reason a review can ask
+  // "is the music on every frame?" and "does the motif fire only while playing?"
+  // as two questions instead of one.
+  //
+  // Both are `sustained` and both are `kind: null`. The second is the load-bearing
+  // half and it is worth being blunt about: this is the loudest pair in the game
+  // and the creature cannot hear either of them. A music bed a creature could
+  // hear would be the single worst thing this repository could ship — §6.2 exists
+  // so that what the player can hear and what the creature can hear are the same
+  // list, and a layer that is in the first and not the second breaks the loop's
+  // one contract. `cueRadius` holds the price at 0 for both.
+  Object.freeze({
+    id: 'music', sound: 'ambient music', voice: 'applyMusic', mode: 'sustained',
+    tuning: null, kind: null, exhausted: false,
+    gate: 'every begun frame — the pad, its hiss, and the finale\'s low tone (pass 14)',
+  }),
+  Object.freeze({
+    id: 'musicMotif', sound: 'distant piano', voice: 'updateMusicMotif', mode: 'sustained',
+    tuning: null, kind: null, exhausted: false,
+    gate: 'a seeded note every 8-20 s, while playing and before the finale (pass 14)',
   }),
 ])
 
@@ -812,33 +864,63 @@ export const FACILITY_KINDS = Object.freeze({
 export const FACILITY_KIND_IDS = Object.freeze(Object.keys(FACILITY_KINDS))
 
 /**
- * AMBIENCE_SPECS — the three scheduled streams, as one table.
+ * AMBIENCE_SPECS — the four scheduled streams, as one table.
  *
  * BEFORE: two hand-written calls to `_scheduleAmbient(fn, min, max)` with the
  * numbers written into the call (`4, 12` and `2.5, 8`), and a third sound that
- * did not exist. AFTER: three rows, one mechanism, and the facility row's window
- * is a row rather than an argument.
+ * did not exist. AFTER: four rows, one mechanism, and every window is a row
+ * rather than an argument.
  *
  * | id | gap | placed | what fires |
  * | --- | --- | --- | --- |
  * | `facility` | 20-60 s | yes, in the world | one of `FACILITY_KINDS`, at a seeded point in the city, heard through the listener's distance and bearing |
  * | `gust` | 4-12 s | no | a draft through the corridors, scaled by the current haze |
  * | `drip` | 2.5-8 s | no | a drip off a drain — pass 8 put the water in the street, and this is the sound of it |
+ * | `motif` | 8-20 s | no | pass 14's distant piano note — the music's only event |
  *
  * `code` is the stream's lane in the mix. The gaps are the numbers the old
  * `setTimeout` calls used, unchanged, and the only reason the facility row is
  * slower is the brief's: a noise every 4 s is a rhythm, and a rhythm is
  * something a player learns, at which point it stops being a place and starts
  * being a metronome.
+ *
+ * PASS 14 ADDED THE FOURTH ROW, and putting the MUSIC's schedule in the WORLD
+ * BED's table is a decision with a reason behind it rather than an overflow.
+ * The table is the game's list of "sounds that decide for themselves when to
+ * happen", and the mechanism behind it — one cursor per stream, advanced by the
+ * frame's own `dt`, every event a pure function of `(seed, index)` — is exactly
+ * what the motif needs and exactly what a second table would have had to
+ * reimplement. A second cursor machine would be a second place for the pause bug
+ * and the hidden-tab bug to live in, and pass 13 deleted one of those bugs
+ * precisely by making the machine single. What is NOT shared is the bus: the
+ * motif's one-shots land on `music.bus`, not on `ambient.bus`, which is the
+ * entire argument of this pass and is asserted separately.
+ *
+ * The 8-20 s window is the brief's and it is doing the same job the facility
+ * window does for the same reason. A note every four seconds is a melody; a note
+ * every eight to twenty is an event a player notices they cannot predict, and
+ * that is the difference between music and a soundtrack.
  */
 export const AMBIENCE_SPECS = Object.freeze({
   facility: Object.freeze({ id: 'facility', code: 0x0f1a2b3c, gap: Object.freeze({ min: 20, max: 60 }), placed: true, kinds: FACILITY_KIND_IDS }),
   gust: Object.freeze({ id: 'gust', code: 0x51a2b34c, gap: Object.freeze({ min: 4, max: 12 }), placed: false, kinds: Object.freeze(['gust']) }),
   drip: Object.freeze({ id: 'drip', code: 0x7c3d9e11, gap: Object.freeze({ min: 2.5, max: 8 }), placed: false, kinds: Object.freeze(['drip']) }),
+  motif: Object.freeze({ id: 'motif', code: 0x1d7e3b95, gap: Object.freeze({ min: 8, max: 20 }), placed: false, kinds: Object.freeze(['piano']) }),
 })
 
-/** The three stream ids, so a check can talk about the table without parsing it. */
+/** The four stream ids, so a check can talk about the table without parsing it. */
 export const AMBIENCE_IDS = Object.freeze(Object.keys(AMBIENCE_SPECS))
+
+/**
+ * The streams the WORLD BED owns, i.e. every one of them except the music's.
+ *
+ * It exists because `AMBIENCE_IDS` grew a fourth entry in pass 14 and three
+ * checks in `verify.mjs` are about the bed specifically — its ceiling, its
+ * absence of `Math.random`, its three cursors. Left reading `AMBIENCE_IDS` they
+ * would have silently started asserting things about the music, which is how a
+ * check stops meaning what its name says.
+ */
+export const WORLD_BED_STREAM_IDS = Object.freeze(AMBIENCE_IDS.filter((id) => id !== 'motif'))
 
 /**
  * AMBIENCE_MAX_PER_FRAME — how many events one stream may fire on one frame.
@@ -1116,6 +1198,595 @@ export function fillNoise(target, seed, salt = NOISE_SALT) {
 }
 
 // ---------------------------------------------------------------------------
+// ITERATION 2, PASS 14 — THE MUSIC
+// ---------------------------------------------------------------------------
+//
+// WHAT IT IS
+// ----------
+// A slow minor pad that moves to a new chord every 4.4 s under a hiss, a
+// distant piano note every 8-20 s, and — when the third portal shuts and the
+// creature goes ENRAGED — nothing at all except one low tone. All of it
+// synthesized in this file, all of it a function of the run's seed and of the
+// world's own clock, none of it an asset.
+//
+// WHY THE PROGRESSION RUNS ON THE WORLD'S CLOCK AND NOT ON A CURSOR
+// -----------------------------------------------------------------
+// The world bed runs on `AMBIENCE_SPECS`' cursors, advanced by the frame's `dt`.
+// The chord does not, and the reason is the one above about pauses: a chord that
+// advanced on a private clock would keep changing under a pause card, and a
+// chord that moved under a pause card is a pad a player can hear while the game
+// insists it is stopped. So the progression is a PURE FUNCTION of the clock the
+// world already hands over (`frame.time`, which is `world.animTime`, which §14.3's
+// pause freezes), sampled at an index, with the seed choosing where in the
+// progression the run begins. There is no cursor to get wrong: a gate can ask
+// for the chord at 3 600 s without walking to it, and the pause needs no handling
+// at all because the pause is already inside the number.
+//
+// FOUR PARTS, AND WHY EACH IS WHERE IT IS
+// --------------------------------------
+//   1. `MUSIC_SCALE` + `musicChordAt` — the pitches. A fixed natural minor and
+//      a four-chord loop, both data.
+//   2. `MUSIC_PAD` / `MUSIC_WOBBLE` / `MUSIC_HISS` — what a chord sounds like.
+//   3. `MUSIC_LADDER` + `musicVoice` — how much of it there is. This is the pass's
+//      real content, and it is a table rather than a curve somebody drew.
+//   4. `MUSIC_MOTIF` + `musicMotifVoice` + `MUSIC_FINALE` — the note, and the
+//      moment the music stops.
+//
+// ONE HONEST NOTE ABOUT "AN OCCASIONAL DISTANT BELL MOTIF"
+// -------------------------------------------------------
+// The checklist's music row asks for "an occasional distant bell motif echoing the
+// toll", and §9 says close to the opposite in one specific and load-bearing way:
+// "the only bell in the game is the hammer, and it tolls for the player rather
+// than against them". Pass 13 took that seriously enough to delete v1's "distant
+// clang and second bell somewhere else in the dark" outright, and that deletion is
+// not something this pass undoes by re-adding the sound under another name.
+//
+// So the motif echoes the toll's ENVELOPE and nothing else. It is a sine with a
+// long exponential decay, a whole-number octave partial under it and a noise
+// transient at the front — a struck string, not a struck bell. No inharmonic
+// partials, no strike tuned to a bell's prime, nothing a player could mistake for
+// the hammer from another street. What it borrows is the SHAPE: one note that
+// takes seconds to leave, arriving out of a silence, which is what makes it read
+// as "something is playing piano over there" rather than as "there is a
+// soundtrack here". That is as close to the checklist's sentence as §9 permits,
+// and the gate holds the boundary by holding the motif's spectrum: two sine
+// partials in a whole-number ratio, never a bell's five in an inharmonic one.
+
+/** The lane the music's own draws are mixed from. */
+const MUSIC_SALT = 0x2a7c19d3
+/** The lane the progression's starting rotation is drawn from. */
+const MUSIC_ROTATION_CODE = 0x5be14a02
+
+/**
+ * MUSIC_SCALE — the pitches, as a fixed minor scale and a four-chord loop.
+ *
+ * BEFORE: n/a — there was no music, so there was no question of which key it was
+ * in. AFTER: one natural minor, seven degrees, and a progression of four chords
+ * that walks it.
+ *
+ * | field | value | why it is that one |
+ * | --- | --- | --- |
+ * | `root` 110 Hz | A2 | the pad's lowest voice. The drone is already at 44 Hz with a 27.5 Hz rumble under it, so a pad rooted lower would be a fourth voice fighting the sub-bass and the compressor for the same headroom |
+ * | `semitones` 0 2 3 5 7 8 10 | natural minor | seven degrees, and the only minor scale with no note a listener would call a mistake. The harmonic minor's raised 7th is a *tuning* decision that needs a reason; the melodic minor's descent is a lilt |
+ * | `degrees` 0 5 2 6 | i – VI – III – VII | four chords, every one of them a minor-key chord, none of them the tonic twice running. In A minor: Am – F – C – G. It is the oldest loop in the western repertoire and it is here for the reason it was invented — three of the four chords share two notes with a neighbour, so a change is felt as a movement rather than heard as a jump |
+ * | `tempo` 54 BPM | — | the brief's "50-60 BPM feel", at the slow end. 54 is a bar every 4.4 s: slow enough to read as a chord, fast enough that a player notices the progression is going somewhere |
+ * | `beats` 4 | one bar per chord | the brief's "whole-note chords" — a whole note per chord, four to a bar, so the progression is quantized to a tempo the music can be counted in even though nothing in the game ever taps |
+ *
+ * The scale is exported because "pitch set from a fixed minor scale" is a claim
+ * about a LIST, and a list inside a function could be edited without anything
+ * noticing. `verify.mjs` reads the list, not the function, and so can a future
+ * pass that wants the motif somewhere else in the key.
+ */
+export const MUSIC_SCALE = Object.freeze({
+  root: 110,
+  semitones: Object.freeze([0, 2, 3, 5, 7, 8, 10]),
+  degrees: Object.freeze([0, 5, 2, 6]),
+  tempo: 54,
+  beats: 4,
+})
+
+/**
+ * MUSIC_CHORD_SECONDS — how long one chord lasts, in seconds.
+ *
+ * `beats · 60 / tempo` = 4 · 60 / 54 = 4.444 s. DERIVED rather than typed, because
+ * the two numbers that would otherwise have to agree — a chord length in seconds
+ * and a tempo in BPM — are exactly the pair that stops agreeing the first time
+ * somebody retunes the tempo, and a pad that changes chord at 4.4 s under a table
+ * that says 54 BPM is a bug that sounds like nothing at all.
+ */
+export const MUSIC_CHORD_SECONDS = (MUSIC_SCALE.beats * 60) / MUSIC_SCALE.tempo
+
+/**
+ * musicFrequencyAt — one scale degree, in Hz.
+ *
+ * The only pitch function in the file, and it is a function of `(degree)` and of
+ * the scale rather than a table of frequencies, so the two cannot disagree: a
+ * chord cannot be spelled with a note from another key, because there is no
+ * spelling — there are degrees.
+ *
+ * Octave wrapping is explicit (`floor(d / 7)` after the modulo) because the
+ * progression's chords routinely cross the top of the scale: VI in A minor is
+ * F3–A3–C4, and that C4 is degree 9, not degree 2 played in the wrong octave. A
+ * modulo without the octave term silently demotes a chord by an octave, which is
+ * the kind of bug that sounds like a mistake in the music rather than a mistake in
+ * the code.
+ *
+ * @param {number} degree any integer; negatives and multiples of 7 wrap
+ * @returns {number} Hz
+ */
+export function musicFrequencyAt(degree) {
+  const d = Number.isFinite(degree) ? Math.floor(degree) : 0
+  const wrapped = ((d % 7) + 7) % 7
+  const octaves = Math.floor(d / 7)
+  return MUSIC_SCALE.root * 2 ** ((MUSIC_SCALE.semitones[wrapped] + 12 * octaves) / 12)
+}
+
+/**
+ * musicRotation — where in the progression this run starts, as an index.
+ *
+ * BEFORE: n/a. AFTER: one seeded draw, so two runs of the same seed hear the same
+ * progression in the same order (the benchmark's claim) and two runs of different
+ * seeds do not (a game that sounds identical under every seed is not a
+ * reproducible game, it is a jingle).
+ *
+ * It is a ROTATION and not a transposition, and that is deliberate. Transposing by
+ * the seed would put one run's music in a different key from another's, which is a
+ * much bigger claim to make about a game's identity than this pass wants to: the
+ * reference's palette is one mood, and a rotation of one progression is still one
+ * progression. A rotation is also free — the same four chords, heard in a different
+ * order, which is what a listener reads as "this run" rather than as "this key".
+ *
+ * @param {number} [seed] the run's seed
+ * @returns {number} an index into `MUSIC_SCALE.degrees`
+ */
+export function musicRotation(seed = DEFAULT_SEED) {
+  const s = Number.isFinite(seed) ? seed >>> 0 : DEFAULT_SEED
+  const draw = streamAt((s ^ MUSIC_SALT) >>> 0, 0, MUSIC_ROTATION_CODE)()
+  return Math.min(MUSIC_SCALE.degrees.length - 1, Math.floor(draw * MUSIC_SCALE.degrees.length))
+}
+
+/**
+ * musicChordAt — the chord sounding at a moment of the world's clock.
+ *
+ * Pure in `(time, seed)`, which is the whole point: a gate can ask for the chord
+ * at 3 600 s, and a pause needs no branch anywhere, because §14.3's pause is
+ * already baked into the number the world hands over.
+ *
+ * | field | what it is | why it is there |
+ * | --- | --- | --- |
+ * | `index` | the chord in the progression | what a caller compares against to know whether the pad has to be re-tuned |
+ * | `step` | how many chords have elapsed | `index` alone would make the music look identical every `MUSIC_CHORD_SECONDS` to a reader comparing two frames; the step is what says how long the run has been going |
+ * | `at` | the clock time the chord began | the same fact in seconds rather than in chords |
+ * | `root` | the chord's root in Hz | so a caller can see the pad GLIDE to a new root rather than jump |
+ * | `degrees` / `tones` | the three chord tones, low to high | the three detuned oscillators, in the order they are built |
+ *
+ * The three tones are a triad in scale STEPS (root, third, fifth) rather than a
+ * list of three semitone offsets, so `MUSIC_SCALE.degrees` is the only place that
+ * decides what a chord IS. That is what makes the progression a table of four
+ * numbers instead of four hand-spelled triads, and it is why a chord cannot come
+ * out with a note outside `MUSIC_SCALE.semitones`.
+ *
+ * @param {number} [time] seconds of the world's own clock (`frame.time`)
+ * @param {number} [seed] the run's seed
+ * @returns {{ index: number, step: number, at: number, root: number, degrees: number[], tones: number[] }}
+ */
+export function musicChordAt(time = 0, seed = DEFAULT_SEED) {
+  const t = Number.isFinite(time) && time > 0 ? time : 0
+  const step = Math.floor(t / MUSIC_CHORD_SECONDS)
+  const degrees = MUSIC_SCALE.degrees
+  const index = (musicRotation(seed) + step) % degrees.length
+  const base = degrees[index]
+  const chordDegrees = [base, base + 2, base + 4]
+  const tones = chordDegrees.map((degree) => musicFrequencyAt(degree))
+  return { index, step, at: step * MUSIC_CHORD_SECONDS, root: tones[0], degrees: chordDegrees, tones }
+}
+
+// --- 1. the pad -------------------------------------------------------------
+
+/**
+ * MUSIC_PAD — three detuned oscillators and the filter they share, as data.
+ *
+ * BEFORE: n/a — the file had no pad, and the drone's two oscillators (44 Hz, 3
+ * cents apart, through a 140 Hz lowpass) are NOT this and were not retuned into
+ * being it. A 44 Hz drone is a SUB; a pad is a chord; one pair of numbers cannot be
+ * both, and the only way to find out is to have tried.
+ *
+ * | number | what it is | why it is that |
+ * | --- | --- | --- |
+ * | `voices` 3 | the brief's "2-3 detuned oscillators", at three | two beating oscillators sound like one pitch wobbling; three sound like a chord. A pad is the first sound in this game that has to be recognisably more than one note |
+ * | `types` sine, triangle, sine | the waveform of each | the triangle in the middle, at the lowest mix, is what gives a pad its air. Two sines beating against each other is a sine with a tremolo on it, and the world's sub-bass is already doing that job an octave lower |
+ * | `mix` 0.42 / 0.18 / 0.40 | each voice's share of the pad | the triangle is a harmonic-rich wave and is also the loudest-sounding at a given amplitude, so it is the quietest of the three. Not a level per voice for its own sake: three voices at a third each sum to a peak the compressor notices |
+ * | `detune` −7 / 0 / +5.5 cents | the static spread | the drone uses 3 cents because a sub beating is a thump you feel; a pad needs a wider spread to shimmer without throbbing. 5.5 on the top voice is the difference between "slightly out of tune" and "several notes at once", which is the point |
+ * | `cutoff` 480 Hz | the lowpass centre | BELOW the room tone's 520. The pad is darker than the air it is playing in, deliberately: the reference's sound is a hum under a hiss, and a pad brighter than its own room tone is a pad playing the room tone's part |
+ * | `resonance` 0.7 | the filter's Q | a lowpass with a high Q whistles at its cutoff, and this cutoff is being swept by an LFO. 0.7 is the largest value here that does not make the sweep audible as a pitch |
+ * | `lfoRate` 0.011 Hz | 91 s per sweep | the brief's "very slow LFO on the cutoff", and slower than the room tone's 0.017 for the reason the cutoff is lower: a filter whose sweep period is short enough to predict stops being a filter and becomes a rhythm |
+ * | `lfoDepth` 190 Hz | the travel | about 40% of the cutoff, so the top of the pad opens and closes without ever being taken away. `ROOM_TONE.lfoDepth` is a quarter of ITS cutoff for the same reason and the same amount |
+ * | `glide` 1.2 s | the portamento between chords | a chord change written with `setTargetAtTime` on frequency is a slide; written with `setValueAtTime` it is a click. 1.2 s is a shade over a quarter of a chord, so the pad ARRIVES at the new chord rather than jumping to it |
+ * | `levelTau` 0.6 s | the duck's time constant | the SAME argument and the SAME number as the room tone's: a level that moves in a quarter of a second is a mix, and this layer's claim is that it is music |
+ * | `level` 0.038 | the pad at the bus, at ladder 1 | quiet for something this present, and bounded by `MUSIC_CEILING` below rather than by taste |
+ */
+export const MUSIC_PAD = Object.freeze({
+  voices: 3,
+  types: Object.freeze(['sine', 'triangle', 'sine']),
+  mix: Object.freeze([0.42, 0.18, 0.4]),
+  detune: Object.freeze([-7, 0, 5.5]),
+  cutoff: 480,
+  resonance: 0.7,
+  lfoRate: 0.011,
+  lfoDepth: 190,
+  glide: 1.2,
+  levelTau: 0.6,
+  level: 0.038,
+})
+
+/**
+ * MUSIC_WOBBLE — the tape wobble, as two rates and one depth.
+ *
+ * BEFORE: n/a. AFTER: the checklist's "tape wobble", which is a pitch drift rather
+ * than a volume one — a sine oscillator into each pad voice's `detune` AudioParam,
+ * which is the WebAudio idiom for a pitch LFO and costs nothing per frame.
+ *
+ * TWO rates, and the second one is the whole trick. A single LFO is periodic, so a
+ * player who listens for ninety seconds has heard every pitch the wobble will ever
+ * produce; two incommensurate rates do not. The pair below is 0.043 and 0.071 Hz
+ * (23 s and 14 s), and the first moment after 20 s at which BOTH cycles are within
+ * 2% of a whole number of turns is 535 s — nearly nine minutes, and past any run
+ * this game can reach: §3.1 is a 448 m city, and a player who has not shut the
+ * third portal in nine minutes is not playing. It is the argument pass 9's lamp
+ * flicker makes against being a sum of sines, for the same reason: a sum of sines
+ * is predictable, and predictable ambience stops being ambience and becomes a
+ * machine the player listens to instead of the game. `verify.mjs` measures that
+ * 535 s rather than believing this paragraph.
+ *
+ * `depth` 4.5 cents is a third of the pad's own static detune spread, so the
+ * wobble is a shimmer INSIDE the tuning rather than the tuning itself — audible as
+ * "an old recording", inaudible as "the oscillators are drifting apart".
+ */
+export const MUSIC_WOBBLE = Object.freeze({
+  rates: Object.freeze([0.043, 0.071]),
+  depth: 4.5,
+})
+
+/**
+ * MUSIC_HISS — the tape hiss under the pad, as data.
+ *
+ * BEFORE: n/a. AFTER: the checklist's other half of "tape wobble + hiss", and it
+ * is the same 2 s seeded noise buffer the room tone and the wind already use —
+ * `fillNoise` is a function of the seed, so two runs of the same seed hiss the
+ * same floor, and the whole pass cost one filter instead of a second buffer.
+ *
+ * | number | value | why |
+ * | --- | --- | --- |
+ * | `highpass` 2400 Hz | the bottom of the hiss | a hiss is top-octave noise. Left broadband it would be a second room tone a third of an octave up, fighting `ROOM_TONE.cutoff` for the same band |
+ * | `level` 0.0032 | at the bus | an eighth of the pad. It has to be felt rather than heard: a listener who can consciously hear the hiss hears the pad as a synth pad, and the whole conceit is a recording of something that is not there |
+ * | `lfoRate` 0.037 Hz | 27 s | the slow breathing of the floor, so the hiss is a texture and not a constant. 27 s rather than 14 s so it shares no period with either wobble LFO |
+ * | `lfoDepth` 0.0011 | the travel | a third of the level: enough to be alive, not enough to be a swell the player can anticipate |
+ */
+export const MUSIC_HISS = Object.freeze({
+  highpass: 2400,
+  level: 0.0032,
+  lfoRate: 0.037,
+  lfoDepth: 0.0011,
+})
+
+// --- 2. the duck ladder -----------------------------------------------------
+
+/**
+ * MUSIC_LADDER — how much music there is, as two rungs and one threshold.
+ *
+ * BEFORE: n/a. AFTER: the pass's real table, and it is the answer to a question
+ * two requirements ask at once: the music ducks when the creature is near, and it
+ * swells where it is safe. Those are the same axis read in two directions, so they
+ * are ONE function of ONE number and cannot disagree — a separate "safe" rule and
+ * a separate "duck" rule would have been two chances to contradict each other on a
+ * frame where the creature is both close and unnoticed.
+ *
+ * | rung | value | what it is |
+ * | --- | --- | --- |
+ * | `swell` 1.18 | the far end, and the SAFE ZONE | the only time the music is louder than its own nominal level |
+ * | `near` 0.30 | the near end | not silence, and not close. A pad that stopped when the creature got close would be a cue the player learns to distrust, and the brief's word is "drops", not "stops" |
+ * | `safeThreat` 0.06 | the band inside which a place counts as safe | see below |
+ *
+ * WHY THERE ARE NO SAFE ROOMS
+ * --------------------------
+ * The brief asks the music to swell "in safe zones", and this game has none: §3.1
+ * is a 448 m city that wraps on both axes, every district holds an objective, and
+ * §7.4's banish removes the creature rather than opening a room to stand in. So a
+ * safe zone here is a STATE and not a place, and the state is "nothing is near and
+ * nothing has noticed you" — which is exactly what `musicThreat` measures, and
+ * which a player can verify with their own eyes and ears. Inventing a lit doorway
+ * to mark safe would have been a new mechanic wearing a sound's clothes.
+ *
+ * 0.06 is 1.8 m of proximity on a 30 m range, or an awareness of 6%. Deliberately
+ * tight: a "safe zone" a player is inside for a second and a half on the way past
+ * a corner is not a zone, and the swell only has to be audible as a *change* to be
+ * worth having.
+ */
+export const MUSIC_LADDER = Object.freeze({
+  swell: 1.18,
+  near: 0.3,
+  safeThreat: 0.06,
+})
+
+/**
+ * MUSIC_PROXIMITY_RANGE — the distance over which the music ducks, metres.
+ *
+ * BEFORE: n/a. AFTER: `BREATH_PROXIMITY_RANGE` — the SAME 30 m the player's own
+ * breath readout tightens over, reused rather than retyped, and the reuse is the
+ * point rather than a shortcut.
+ *
+ * The two layers are saying one thing ("it is close"), and a player has to be able
+ * to hear them agree. A music bed that started ducking at 45 m while the breath
+ * started panicking at 30 m would not be wrong, exactly; it would be a second,
+ * quieter statement of a fact the louder one already makes, and the player's ear
+ * would have to learn two scales for one fact. §13 makes breathing "simultaneously
+ * the stamina meter and the creature-proximity meter"; the music is a THIRD
+ * reading of that same meter and it is calibrated to the same range.
+ */
+export const MUSIC_PROXIMITY_RANGE = BREATH_PROXIMITY_RANGE
+
+/**
+ * musicThreat — how much the creature is a threat to this frame, as `[0, 1]`.
+ *
+ * The MAXIMUM of the two existing models, not a new one. Proximity is
+ * `proximityAt(distance, range)` — the same function the player's breath uses, the
+ * one whose first version ran backwards and is documented as such — and awareness
+ * is §6.4's meter, the same one the creature's own breath sharpens with. Taking
+ * the max rather than a weighted sum is the part worth arguing for: a creature 30 m
+ * away that has not noticed you is not a threat, and a creature that has seen you
+ * from 60 m is, and a sum would bury the second case in the first.
+ *
+ * A creature that is NOT on the field is zero threat, and this is
+ * `creatureBreathVoice`'s rule rather than `proximityAt`'s. The two differ on
+ * purpose: a readout that fires wrongly teaches a player to distrust it, so a
+ * banish has to be heard as relief in the music as well as in the breath. §7.4
+ * removes the creature, and the room relaxing is part of removing it.
+ *
+ * @param {object} [frame]
+ * @returns {number} `[0, 1]`
+ */
+export function musicThreat(frame = {}) {
+  if (frame.creaturePresent === false) return 0
+  const proximity = proximityAt(frame.creatureDistance, MUSIC_PROXIMITY_RANGE)
+  return Math.max(proximity, clamp01(frame.creatureAwareness))
+}
+
+/**
+ * musicLadderAt — the ladder's multiplier for a threat, in `[near, swell]`.
+ *
+ * Linear, monotone decreasing, and bounded at both ends BY ARITHMETIC rather than
+ * by a clamp: `swell + (near − swell) · threat` over `threat ∈ [0, 1]` is in
+ * `[near, swell]` whatever arrives. `clamp01` is still applied to the threat
+ * itself, because the creature's awareness is another module's promise and this
+ * one should not inherit it — the same two-step `hazeWindVoice` takes, and for the
+ * same stated reason.
+ *
+ * @param {number} threat `[0, 1]`
+ * @returns {number}
+ */
+export function musicLadderAt(threat) {
+  const t = clamp01(threat)
+  return MUSIC_LADDER.swell + (MUSIC_LADDER.near - MUSIC_LADDER.swell) * t
+}
+
+// --- 3. the finale ----------------------------------------------------------
+
+/**
+ * MUSIC_FINALE — the cut, and the one tone that is left.
+ *
+ * BEFORE: n/a. AFTER: the brief's "music-stops moment", and it is the oldest beat
+ * in the genre: the score leaves, and what remains is a single low note under the
+ * chase, so the silence is an EVENT rather than an absence.
+ *
+ * | number | value | why it is that one |
+ * | --- | --- | --- |
+ * | `cut` 0.12 s | the time constant of the kill | a CUT, not a fade. `setTargetAtTime` with a small constant is a fast exponential fall that is 30 dB down in about a third of a second, which is how long a player needs to notice that something has been taken away. The music's own `levelTau` is 0.6 s, so this is five times faster than a normal duck: the difference between "it got quieter" and "it stopped" is a number, and it is this one |
+ * | `tone.f` 41.2 Hz | E1 | below the drone's 44 Hz fundamental, so the tone is felt as the floor of the mix rather than heard as a note in it. A tone at, say, 110 Hz would be a NOTE, and a note would be music, and the whole claim of this moment is that the music is over |
+ * | `tone.level` 0.026 | at the bus | 68% of the pad, so the silence is not total: the point is that SOMETHING is still there. It is also 31% of `CREATURE_BREATH_LEVEL`, the number that has to keep the player able to hear the thing walking at them — see `MUSIC_CEILING` |
+ * | `tone.rise` 1.6 s | how long it takes to arrive | the cut is instant and the tone is slow, and the ORDER is the whole beat. A tone that arrived with the cut would read as a switch rather than as something left behind, and a player who has just had the music taken away needs a moment in which to notice it |
+ *
+ * §14.3's "no reliance on audio alone for critical state" is not strained by any of
+ * this: the finale is already the headlights, the dusk ramp, the fog and the
+ * creature's own reddened silhouette. The music's silence is a fourth confirmation
+ * of a state the player can already see, which is the only kind of silence this
+ * game is allowed.
+ */
+export const MUSIC_FINALE = Object.freeze({
+  cut: 0.12,
+  tone: Object.freeze({ f: 41.2, level: 0.026, rise: 1.6 }),
+})
+
+// --- 4. the distant note ----------------------------------------------------
+
+/**
+ * MUSIC_MOTIF — the sparse note, as data.
+ *
+ * BEFORE: n/a. AFTER: the brief's "occasional distant piano-like tones (sine with
+ * a long decay envelope) on a seeded sparse schedule", and every number in it is
+ * argued for below, because a "distant piano" is four decisions wearing one noun.
+ *
+ * | number | value | why it is that one |
+ * | --- | --- | --- |
+ * | `degrees` 0 2 3 4 5 6 | the scale minus its second | the flat second of a minor key is the most tense interval in the western repertoire, and a note landing on it reads as a WRONG note rather than as dread. Every other degree is kept, including the minor sixth, which is the interval the mode is named for |
+ * | `octave` 1 | an octave above the pad's root | the pad's voices span A2–E3, so a note inside that range would be the pad being briefly louder. An octave up puts it in the register a piano's middle sits in and clears the pad's top by a factor of two |
+ * | `tau` 2.6 s | the decay constant | the "long" in "long decay". At 2.6 s the note is 5% of peak after 9.4 s, so a note is gone long before the next one arrives at the fast end of the window — the two can never overlap into a phrase |
+ * | `damp` 1500 Hz | the lowpass in front of it | "distant" IS a filter. The room tone's ceiling is 520 and the pad's cutoff is 480, so a note heard through all of that has no top left, and 1500 is what "three streets away" costs |
+ * | `resonance` 0.7 | the filter's Q | the same value as the pad's, and for the same reason: a decaying lowpass with a high Q whistles |
+ * | `level` 0.022 | at the bus | half the pad, from a source that is not 3 m away but somewhere in the city |
+ * | `octaveLevel` 0.2 | the partial above it | a piano string is not one sine. A whole-number ratio and a shorter decay than the body is what makes it read as a struck string — and it is deliberately NOT the bell's inharmonic stack (0.5 / 1 / 1.19 / 1.5 / 2), because §9 gives the bell to the player alone. This is the number the checklist's "distant bell motif" would have wanted, and the one §9 will not allow |
+ * | `hammer` 0.1 | the noise transient | the felt leaving the string. 0.1 rather than the bell's 0.35, and 20 ms rather than 30 ms, because a piano note heard at distance has already lost its attack: what survives the air is the sustain |
+ * | `pan` 0.55 | how far off centre a note can land | ±55% rather than hard left or right. A note panned to the edge of the stereo field is a note the player looks for; a note a little off centre is a note in another room. The bearing is the event's own seeded draw rather than a clock, so a run's notes are PLACED rather than swept |
+ */
+export const MUSIC_MOTIF = Object.freeze({
+  degrees: Object.freeze([0, 2, 3, 4, 5, 6]),
+  octave: 1,
+  tau: 2.6,
+  damp: 1500,
+  resonance: 0.7,
+  level: 0.022,
+  octaveLevel: 0.2,
+  hammer: 0.1,
+  pan: 0.55,
+})
+
+/**
+ * musicMotifVoice — one note, as numbers.
+ *
+ * Pure in `(event, voice)`, where the event is a `motif` event from
+ * `nextAmbienceEvent` and the voice is `musicVoice`'s answer for the frame the note
+ * lands on. Both are needed and neither is enough: the event carries the seeded
+ * pitch and bearing, and the voice carries the level — which is how the one-shot
+ * gets ducked by the ladder without the schedule knowing anything about proximity.
+ *
+ * The three draws are spent on three different things, which is the same allocation
+ * discipline the facility stream documents and for the same reason: a draw that
+ * chose both the pitch and the decay would make every note at degree 3 also be the
+ * bright one, and a pattern nobody can hear is a pattern that gets noticed in
+ * twenty minutes. So `a` is the hammer's brightness, `b` is the scale degree, and
+ * `c` is the bearing.
+ *
+ * The degree is fetched by CLAMPING the index rather than by a modulo, so a draw of
+ * exactly 1.0 — which `mulberry32` cannot produce but a hand-written event could —
+ * lands on the top degree instead of wrapping to the root and making the bass note
+ * arrive twice as often as it should.
+ *
+ * @param {object} event a `motif` event from `nextAmbienceEvent`
+ * @param {object} [voice] `musicVoice`'s answer for this frame
+ * @returns {{ freq: number, level: number, tau: number, damp: number, resonance: number, pan: number, hammer: number, octave: number, degree: number }}
+ */
+export function musicMotifVoice(event, voice = {}) {
+  const degrees = MUSIC_MOTIF.degrees
+  const degree = degrees[Math.min(degrees.length - 1, Math.floor(clamp01(event?.b ?? 0.5) * degrees.length))]
+  const bearing = clamp01(event?.c ?? 0.5)
+  const hammer = clamp01(event?.a ?? 0.5)
+  return {
+    freq: musicFrequencyAt(degree + 7 * MUSIC_MOTIF.octave),
+    level: MUSIC_MOTIF.level * clamp01(voice?.motif),
+    tau: MUSIC_MOTIF.tau,
+    damp: MUSIC_MOTIF.damp,
+    resonance: MUSIC_MOTIF.resonance,
+    // centred at 0.5, so a seeded draw of exactly 0.5 is a note dead ahead
+    pan: (bearing * 2 - 1) * MUSIC_MOTIF.pan,
+    hammer: MUSIC_MOTIF.hammer * (0.6 + hammer * 0.8),
+    octave: MUSIC_MOTIF.octaveLevel,
+    degree,
+  }
+}
+
+// --- 5. the voice, and what it is allowed to cost ---------------------------
+
+/**
+ * MUSIC_CEILING — what the music is allowed to cost at the bus.
+ *
+ * BEFORE: n/a. AFTER: a bound — and it is deliberately NOT `WORLD_BED_CEILING`.
+ *
+ * That is the one place this pass spends more than the bed's budget, and the
+ * reasoning is worth writing down because it is the one number here a reviewer
+ * should push back on. `WORLD_BED_CEILING` exists so the world's own layers never
+ * bury the footstep, which is the creature's only channel to the player. The music
+ * is not in that sum and pass 13's bed check is untouched by this pass; but the
+ * music is loud and continuous, so it needs a bound of its own against a
+ * DIFFERENT thing — §6.4's creature breath, the awareness readout, which is the
+ * sound a player uses to decide whether to run. So the music's ceiling IS the
+ * creature's breath level: at any moment of the game, the music is quieter than
+ * the sound of the thing hunting the player.
+ *
+ * The ladder is what makes that affordable in practice rather than on paper. At
+ * maximum threat — the only time the creature's breath is loud — the music is at
+ * `MUSIC_LADDER.near`, so the two never peak together. The ceiling is the worst
+ * case that ignores the ladder, and the gate asserts BOTH halves: the sum under the
+ * ceiling, and the ducked level under a third of the readout.
+ */
+export const MUSIC_CEILING = CREATURE_BREATH_LEVEL
+
+/**
+ * MUSIC_PAD_PEAK — the pad, the hiss and a note, at their loudest together.
+ *
+ * The worst case is the safe-zone swell with a note landing on top of it, which is
+ * why the note is in the sum even though it is rare: a ceiling that only holds on
+ * the frames nothing happens is not a ceiling.
+ */
+export const MUSIC_PAD_PEAK = MUSIC_PAD.level * MUSIC_LADDER.swell + MUSIC_HISS.level + MUSIC_MOTIF.level
+
+/**
+ * MUSIC_PEAK — the worst instantaneous sum the music can present.
+ *
+ * The pad stack and the finale tone are MUTUALLY EXCLUSIVE by construction — the
+ * finale zeroes the ladder and raises only the tone — so the ceiling is the larger
+ * of the two rather than their sum. A pad and a low E1 sounding together would be
+ * a chord, and the moment this table exists to make is the absence of one.
+ */
+export const MUSIC_PEAK = Math.max(MUSIC_PAD_PEAK, MUSIC_FINALE.tone.level)
+
+/**
+ * musicVoice — the whole music, for one frame, as numbers.
+ *
+ * The counterpart to `roomToneVoice` and `droneLevelFor`, and the only place this
+ * pass's decisions live. Six facts in, eight numbers out:
+ *
+ * | field | what it is |
+ * | --- | --- |
+ * | `time` | the world's clock, defaulted to 0 so a frame that forgot it plays the FIRST chord rather than the last |
+ * | `threat` | `musicThreat` — kept in the answer so a caller can read WHY a level is what it is |
+ * | `safe` | the safe-zone swell is engaged, for the same reason |
+ * | `silent` | the finale cut the music |
+ * | `ladder` | the multiplier, before the pad and the hiss are made from it |
+ * | `level` / `hiss` | the pad's and the hiss's absolute gains at the bus |
+ * | `tone` | the finale's low tone, and 0 everywhere else |
+ * | `motif` | the scale for a one-shot: 0 means "do not fire", and it is 0 whenever a note is not allowed to play at all |
+ *
+ * Four rules, each a requirement rather than a taste:
+ *
+ *  - **SILENT BEFORE THE RUN.** `started !== true` is 0 for everything, stated
+ *    here rather than left to the router, because "the title screen is silent" is
+ *    §13's claim in both directions and a caller that reaches past `routeAudio`
+ *    still has to get it.
+ *  - **THE PHASE LADDER IS THE DRONE'S.** `droneLevelFor(frame)` is not retyped
+ *    as three numbers: the capture's black and the win card pull the music back by
+ *    exactly the factors they pull the drone back by, and there is no second
+ *    version of "quiet" in this file. `DRONE_LEVEL_WON` is 0.077, so the win card
+ *    leaves the pad at 0.0035 — audible as "there is still a pad somewhere", which
+ *    is what a win should feel like and not what a black should.
+ *  - **THE FINALE WINS OVER EVERYTHING.** `finaleEnraged` zeroes the ladder, the
+ *    hiss and the motif, and raises only the tone. It is evaluated first so that a
+ *    frame which is somehow both the finale and a won run is still silent, and so
+ *    that the cut is a cut rather than a multiply.
+ *  - **THE MOTIF STOPS BEFORE THE MUSIC DOES.** The one-shot scale is zero when
+ *    the run is not being played, even though the pad is still humming at the
+ *    black's rung. Nothing NEW starts during a capture; what is already running is
+ *    pulled back. That is `updateDrips`' and `updateFacility`'s gate, and the reason
+ *    it matters is §9.3: a capture is one toll, and a piano note landing 400 ms into
+ *    the black is a second sound in the one beat that gets one.
+ *
+ * @param {object} [frame]
+ * @returns {object}
+ */
+export function musicVoice(frame = {}) {
+  const started = frame.started === true
+  const finale = started && frame.finaleEnraged === true
+  const won = frame.won === true
+  const threat = musicThreat(frame)
+  // `droneLevelFor` answers for a frame that has not started with its black level,
+  // so it is multiplied by zero rather than being asked to know about `started`.
+  const phase = droneLevelFor(frame)
+  const ladder = finale ? 0 : musicLadderAt(threat)
+  return {
+    time: Number.isFinite(frame.time) && frame.time > 0 ? frame.time : 0,
+    threat,
+    safe: !finale && threat <= MUSIC_LADDER.safeThreat,
+    silent: finale,
+    ladder,
+    level: started && !finale ? MUSIC_PAD.level * ladder * phase : 0,
+    hiss: started && !finale ? MUSIC_HISS.level * ladder * phase : 0,
+    // §10.4: the win is the chord and the card, nothing else. A low E1 under a C
+    // major win chord is a minor third below the root of a major triad, which is
+    // the one interval in this game's audio that would sound like a mistake.
+    tone: finale && !won ? MUSIC_FINALE.tone.level * phase : 0,
+    motif: started && !finale && frame.playing === true ? ladder * phase : 0,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the frame contract, and the router
 // ---------------------------------------------------------------------------
 
@@ -1158,6 +1829,28 @@ export function fillNoise(target, seed, salt = NOISE_SALT) {
  * - `haze` — the sky's own `hazeIntensityAt` reading, handed over rather than
  *   recomputed. The world does not own the haze bands and must not carry a
  *   second copy of pass 9's drift table; it asks the sky and passes the number.
+ *
+ * PASS 14 ADDED TWO, AND NEITHER IS ABOUT THE PLAYER
+ * --------------------------------------------------
+ * - `time` — the world's own clock, `world.animTime`, handed over for the same
+ *   reason `haze` is. The music's chord progression is a pure function of it, and
+ *   the reason the world asks rather than the audio keeping its own is §14.3: the
+ *   pause freezes `animTime` BEFORE the audio is updated, so a pad that moved
+ *   under a pause card would be a sound the game insists it has stopped. A
+ *   private clock in the audio would have had to be frozen by hand, and a hand
+ *   freeze is a bug waiting for the second caller. It is also the clock the
+ *   `verify.mjs` world block compares against, which is how "the progression is the
+ *   world's clock" stopped being a claim about a comment.
+ * - `finaleEnraged` — §10.2's condition, as a fact. BEFORE: nothing in the audio
+ *   could tell a finale from a stalk, and the music needs the difference more than
+ *   any other layer does. It is the LATCHED `state.finale` rather than the
+ *   creature's current state string, and §9.1 is why: the flag survives a capture,
+ *   so the music stays cut across a black in the finale instead of coming back for
+ *   1.1 seconds of a run the player is not in. §10.2 gives ENRAGED no phase-out, so
+ *   "the finale" and "ENRAGED" are the same stretch of a run, and the one exception
+ *   — the 1.5 s stagger after a connected swing — is a re-emergence delay, not a
+ *   phase, and a pad that returned for it would be a pulse the player cannot
+ *   predict.
  */
 export const AUDIO_FRAME_FIELDS = Object.freeze([
   'started',
@@ -1178,6 +1871,8 @@ export const AUDIO_FRAME_FIELDS = Object.freeze([
   'position',
   'yaw',
   'haze',
+  'time',
+  'finaleEnraged',
 ])
 
 /** A cue: one row of the table, plus whatever parameters its voice needs. */
@@ -1256,6 +1951,19 @@ export function routeAudio(frame = {}) {
   pushCue(cues, cue('hazeWind', hazeWindVoice(frame)))
   pushCue(cues, cue('facility', { position: frame.position ?? null, yaw: frame.yaw, playing }))
   pushCue(cues, cue('drip', { playing }))
+  // PASS 14: the music. `musicVoice` is called ONCE and its answer is shared by both
+  // rows, which is the only way the pad and the note can be guaranteed to be
+  // ducked by the SAME ladder on the same frame — two calls would be two answers,
+  // and two answers to one question is how a pad and its melody drift apart.
+  //
+  // The motif gets three of its eight fields rather than the whole object, and
+  // which three is the decision: `motif` is the scale (0 = do not fire), `silent`
+  // is the finale cut, and `playing` is the gate. A one-shot that read `threat` or
+  // `time` would be a note that could disagree with the pad about which chord is
+  // sounding; this one cannot, because it is told nothing it could disagree with.
+  const music = musicVoice(frame)
+  pushCue(cues, cue('music', music))
+  pushCue(cues, cue('musicMotif', { playing, motif: music.motif, silent: music.silent }))
   pushCue(cues, cue('drone', { level: droneLevelFor(frame) }))
   return cues
 }
@@ -1297,13 +2005,18 @@ export class AudioManager {
     /** One seeded draw stream per voice, so voices cannot retune each other. */
     this.draws = new Map()
     /**
-     * The three ambience cursors, `{ [id]: { index, at, clock } }`.
+     * The ambience cursors, `{ [id]: { index, at, clock } }`.
      *
      * BEFORE: an array of `setTimeout` handles that nothing in the repository
      * could inspect. AFTER: a number per stream, advanced by the frame's `dt`,
      * which is what makes the bed freezable (a paused frame routes no row, so no
      * cursor moves) and reproducible (the schedule is a pure function of the
      * seed, so a gate can walk an hour of it in a millisecond).
+     *
+     * PASS 14: a fourth entry, `motif`, the music's own stream. It is in this map
+     * rather than in a map of its own because the machine that advances it is the
+     * one pass 13 wrote, and a second machine would be a second place for the
+     * pause bug to live.
      */
     this.ambience = new Map()
     /** The room tone and wind layers, torn down with the drone they ride. */
@@ -1311,6 +2024,42 @@ export class AudioManager {
     /** The last routed room-tone / wind level, so 60 identical writes are 1. */
     this.roomLevel = 0
     this.windLevel = 0
+    // --- pass 14: the music, and the bus it does not share -----------------
+    /**
+     * The music's graph, or `null` before it is built.
+     *
+     * A SEPARATE object from `this.bed` and from `this.ambient`, and that is the
+     * pass's whole architectural claim: `bus → master`, never `bus → ambient.bus`.
+     * The world bed wants to be flat and unfelt; the music wants to be a thing that
+     * can be ducked, killed and cut, and one node cannot be both.
+     */
+    this.music = null
+    /**
+     * The last pad, hiss and finale-tone levels written — as SENTINELS, not zeros.
+     *
+     * The other voices in this class start their caches at 0 and give their graphs a
+     * matching constructed gain, which works because a level of 0 and a gain of 0 are
+     * the same silence. The music cannot use that trick: the finale's routed level is
+     * 0 for the pad AND the pad's constructed gain would be its own nominal level, so
+     * a graph built on the frame the finale triggers would sit at full pad forever —
+     * the "constructed value is not the routed value" bug the pass-13 review found
+     * one layer down, in the same shape. −1 is not a level any voice can produce, so
+     * the first frame after a build always writes, whatever it routed.
+     */
+    this.musicLevel = -1
+    this.musicHiss = -1
+    this.musicTone = -1
+    /**
+     * The chord the pad was last tuned to, or -1.
+     *
+     * The chord is re-applied only when the INDEX changes, because it is the only
+     * per-frame write in this voice that is not a level: three `setTargetAtTime`
+     * calls on frequency every frame would restart the portamento sixty times a
+     * second and the pad would never arrive anywhere. The seed is not in the index
+     * on purpose — `setSeed` clears this to -1, so a new seed re-applies its own
+     * rotation on the next frame rather than inheriting the old one's chord.
+     */
+    this.musicChord = -1
   }
 
   get ready() {
@@ -1339,6 +2088,12 @@ export class AudioManager {
     this.draws.clear()
     this.ambience.clear()
     this.noiseBuffer = null
+    // PASS 14: the pad is tuned to a chord of a PROGRESSION whose starting rotation
+    // is a function of the seed, so a pad left on the old seed's chord would be
+    // playing a note the new run's scale does not visit for another three bars. The
+    // graphs survive — a new seed is a new run, not a new context — but the next
+    // frame re-tunes them, which is why this is -1 and not a chord index.
+    this.musicChord = -1
     return this.seed
   }
 
@@ -1611,6 +2366,148 @@ export class AudioManager {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // pass 14 — THE MUSIC, on a bus the world bed does not touch
+  // -------------------------------------------------------------------------
+
+  /**
+   * `_buildMusic()` — the pad, the hiss, the wobble and the finale's low tone.
+   *
+   * The whole graph, in the order a signal travels through it:
+   *
+   *   bus (music's own GainNode) ──────────────────────────────→ master
+   *     ├── level  (the ladder's absolute gain) ─→ bus
+   *     │     ├── pad mix → pad lowpass ← LFO(0.011 Hz) → bus
+   *     │     │     └── three voices, each detuned by WOBBLE(0.043, 0.071 Hz)
+   *     │     └── hiss: seeded noise → highpass(2400) → gain ← LFO(0.037 Hz)
+   *     └── tone (the finale's low tone, 41.2 Hz) ────────────→ bus
+   *
+   * Two lines of that diagram are the pass's whole argument.
+   *
+   * **The bus reaches the master and NOT `ambient.bus`.** Everything the world
+   * does is inside the drone's bus, which is what makes one number (`applyDrone`)
+   * and one teardown (`stopAmbient`) enough for the bed. The music is outside it,
+   * because the bed wants to be flat and unfelt and the music wants to be a thing
+   * that can be ducked to a third, killed to nothing, and cut to a single tone; a
+   * shared bus would have forced one compromise on both, and the compromise would
+   * have been the bed's (flat), because the bed was already there.
+   *
+   * **The finale's tone is connected BELOW the ladder's `level` node.** If it rode
+   * the ladder it would be silenced by the very event it exists to survive: the
+   * ladder goes to 0 on the frame the finale triggers. This is the one place in
+   * the file where the connection graph is the argument rather than the numbers,
+   * which is why `verify.mjs` reads this method's source rather than a table.
+   *
+   * Every oscillator that should run forever is started here and stopped in
+   * `stopMusic`, including the three wobble LFOs and the cutoff LFO: an oscillator
+   * left running after its gain has been ramped to nothing is pass 13's leak
+   * wearing a longer silence.
+   *
+   * @returns {object|null} the music's graph, or null with no context
+   */
+  _buildMusic() {
+    if (!this.ctx || !this.master) return null
+    if (this.music) return this.music
+    const ctx = this.ctx
+    const bus = ctx.createGain()
+    bus.gain.value = 1
+    // THE LINE. Not `this.ambient.bus`, and the gate says so.
+    bus.connect(this.master)
+    // the ladder's absolute gain. The pad and the hiss both land on it, so one
+    // write ducks both and they cannot fall out of step with each other. It is
+    // constructed SILENT rather than at `MUSIC_PAD.level`, for the reason the
+    // manager's own sentinels give: a graph that is built and then told nothing must
+    // not be heard, and the first frame that does route a level overwrites this.
+    const level = ctx.createGain()
+    level.gain.value = 0.0001
+    level.connect(bus)
+    const mix = ctx.createGain()
+    mix.gain.value = 1
+    const low = ctx.createBiquadFilter()
+    low.type = 'lowpass'
+    low.frequency.value = MUSIC_PAD.cutoff
+    low.Q.value = MUSIC_PAD.resonance
+    mix.connect(low)
+    low.connect(level)
+    // the very slow LFO on the cutoff — an oscillator into an AudioParam, so it
+    // costs nothing per frame and cannot be left half-applied by a teardown
+    const lfo = ctx.createOscillator()
+    lfo.type = 'sine'
+    lfo.frequency.value = MUSIC_PAD.lfoRate
+    const depth = ctx.createGain()
+    depth.gain.value = MUSIC_PAD.lfoDepth
+    lfo.connect(depth)
+    depth.connect(low.frequency)
+    lfo.start()
+    // the tape wobble: two incommensurate LFOs summed by one shared depth gain and
+    // written into every voice's `detune`. ONE depth node for all three voices is
+    // the point — a wobble tuned separately per voice would be three wobbles, and a
+    // listener's ear compares them.
+    const wobbleDepth = ctx.createGain()
+    wobbleDepth.gain.value = MUSIC_WOBBLE.depth
+    const wobbles = []
+    for (const rate of MUSIC_WOBBLE.rates) {
+      const wobble = ctx.createOscillator()
+      wobble.type = 'sine'
+      wobble.frequency.value = rate
+      wobble.connect(wobbleDepth)
+      wobble.start()
+      wobbles.push(wobble)
+    }
+    const voices = []
+    for (let i = 0; i < MUSIC_PAD.voices; i += 1) {
+      const osc = ctx.createOscillator()
+      osc.type = MUSIC_PAD.types[i] ?? 'sine'
+      // the root until the first frame routes a real chord, so a pad is never
+      // caught sitting on 440 Hz because nothing had told it anything yet
+      osc.frequency.value = MUSIC_SCALE.root
+      osc.detune.value = MUSIC_PAD.detune[i] ?? 0
+      const voiceGain = ctx.createGain()
+      voiceGain.gain.value = MUSIC_PAD.mix[i] ?? 0
+      wobbleDepth.connect(osc.detune)
+      osc.connect(voiceGain)
+      voiceGain.connect(mix)
+      osc.start()
+      voices.push({ osc, gain: voiceGain })
+    }
+    // the hiss: the shared seeded 2 s noise buffer, top-octave only
+    const hissSource = this._noiseSource()
+    const hissHigh = ctx.createBiquadFilter()
+    hissHigh.type = 'highpass'
+    hissHigh.frequency.value = MUSIC_HISS.highpass
+    const hissLevel = ctx.createGain()
+    hissLevel.gain.value = 0.0001
+    const hissLfo = ctx.createOscillator()
+    hissLfo.type = 'sine'
+    hissLfo.frequency.value = MUSIC_HISS.lfoRate
+    const hissDepth = ctx.createGain()
+    hissDepth.gain.value = MUSIC_HISS.lfoDepth
+    hissLfo.connect(hissDepth)
+    hissDepth.connect(hissLevel.gain)
+    hissSource.connect(hissHigh)
+    hissHigh.connect(hissLevel)
+    hissLevel.connect(level)
+    hissSource.start()
+    hissLfo.start()
+    // the finale's low tone — on the bus, BELOW the ladder, for the reason above
+    const tone = ctx.createOscillator()
+    tone.type = 'sine'
+    tone.frequency.value = MUSIC_FINALE.tone.f
+    const toneLevel = ctx.createGain()
+    toneLevel.gain.value = 0.0001
+    tone.connect(toneLevel)
+    toneLevel.connect(bus)
+    tone.start()
+    this.music = {
+      bus,
+      level,
+      pad: { mix, low, lfo, depth, wobbleDepth, wobbles, voices },
+      hiss: { source: hissSource, high: hissHigh, level: hissLevel, lfo: hissLfo, depth: hissDepth },
+      tone: { osc: tone, level: toneLevel },
+    }
+    return this.music
+  }
+
   /**
    * loop 12: whispered ambience — bandpassed noise shaped like slow breathing:
    * two bandpass filters (sibilance + chest), amplitude riding a slow
@@ -1754,7 +2651,70 @@ export class AudioManager {
     this.windLevel = 0
   }
 
+  /**
+   * `stopMusic()` — tear the music down, on its own clock and its own nodes.
+   *
+   * A SEPARATE method, for the same reason `stopAmbience` is separate from
+   * `stopAmbient`: the music's bus is not the drone's bus, so the drone's
+   * destructured node list cannot name its nodes, and a teardown that has to be
+   * re-pointed at a second graph is a teardown that will be half-updated one day.
+   * It is called from `stopAmbient` — BEFORE that method's own early return, which
+   * is the only ordering in this class that is load-bearing rather than tidy: the
+   * music's graph can only exist if `applyMusic` built it, and `applyMusic` builds
+   * the drone first, so a guard above the call would be a leak waiting for the one
+   * caller that builds them in the other order.
+   *
+   * The nodes are walked rather than named, for the reason `stopAmbient` walks the
+   * bed's: the music builds nine stoppable sources (three pad voices, two wobble
+   * LFOs, the cutoff LFO, the hiss buffer source, the hiss LFO and the finale's tone)
+   * out of a graph of twenty-odd nodes, and a hand-written list of nine is a list
+   * that falls out of date silently. The walk has to know about the one list of
+   * PAIRS, because `voices` holds `{ osc, gain }` objects and a naive
+   * `Object.values` sweep finds no `.stop` on either half of one — which is exactly
+   * how three oscillators end up running forever behind a gain at 0.0001.
+   *
+   * @returns {void}
+   */
+  stopMusic() {
+    if (!this.music || !this.ctx) return
+    const now = this.ctx.currentTime
+    const stop = (node) => {
+      if (!node || typeof node.stop !== 'function') return
+      try {
+        node.stop(now + 3)
+      } catch {
+        /* already stopped */
+      }
+    }
+    for (const group of [this.music.pad, this.music.hiss, this.music.tone]) {
+      for (const node of Object.values(group)) {
+        if (Array.isArray(node)) {
+          // a list of nodes (the wobble LFOs) or of pairs (the pad's voices)
+          for (const entry of node) stop(entry && entry.osc ? entry.osc : entry)
+          continue
+        }
+        stop(node)
+      }
+    }
+    this.music.level.gain.setTargetAtTime(0.0001, now, MUSIC_FINALE.cut)
+    this.music.bus.gain.setTargetAtTime(0.0001, now, MUSIC_FINALE.cut)
+    this.music = null
+    // the sentinels again rather than zeros: the next graph is built silent and its
+    // first frame writes whatever it routed, and a 0 here would make a rebuilt
+    // silent graph look already-correct
+    this.musicLevel = -1
+    this.musicHiss = -1
+    this.musicTone = -1
+    this.musicChord = -1
+  }
+
   stopAmbient() {
+    // PASS 14: the music is torn down here, on the bed's LIFETIME, before anything
+    // else and before the guard below. Sharing the lifetime is deliberate — a
+    // BEGIN AGAIN must not leave a pad running under the next run — while sharing
+    // the bus was refused for the reason `stopMusic` documents. The cursor goes
+    // with it in `stopAmbience`, three lines further down.
+    this.stopMusic()
     if (!this.ambient) return
     const { a, b, lfo, r1, r2, rumbleLfo, rumbleNoise, bus } = this.ambient
     const now = this.ctx.currentTime
@@ -2627,6 +3587,205 @@ export class AudioManager {
       ring.start(t0)
       ring.stop(t0 + kind.length)
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // pass 14 — the music's two voices
+  // -------------------------------------------------------------------------
+
+  /**
+   * `applyMusic(cue)` — the pad's level, the hiss's level, the chord, and the tone.
+   *
+   * Four writes and a gate, and the shape is `applyDrone`'s and `applyRoomTone`'s
+   * for the same reason they are shaped that way: build the graph if it is missing
+   * (so a caller that unlocked and started a run without calling `startAmbient`
+   * still gets music), and only write a parameter when the value has actually
+   * moved. Sixty identical `setTargetAtTime` calls a second would pile automation
+   * events onto the bus for no reason, and on the pad's three frequency params it
+   * would also restart the portamento sixty times a second, so the pad would never
+   * arrive anywhere.
+   *
+   * THE FOUR WRITES, and why each has the constant it has:
+   *
+   *  - `level` gets `MUSIC_PAD.levelTau` (0.6 s) normally and `MUSIC_FINALE.cut`
+   *    (0.12 s) on the frame the finale silences it. That is the whole difference
+   *    between a duck and a cut, and it is a number rather than a branch somebody
+   *    has to remember: a music that faded out over a second in the game's
+   *    loudest moment would read as a mixer, and the moment is selling "that was
+   *    taken away".
+   *  - `hiss` is written on the same frame as `level` and for the same reason: the
+   *    hiss ducks WITH the pad, or it is the only part of the music still moving,
+   *    and a hiss that survived the cut would be the sound of the music still
+   *    being there.
+   *  - `tone` gets `MUSIC_FINALE.tone.rise` (1.6 s) on the way up and the cut on
+   *    the way down, for the ORDER the finale's docblock argues: instant removal,
+   *    slow arrival.
+   *  - the chord is written when its INDEX changes and not otherwise.
+   *
+   * The seed comes from `this.seed` rather than from the frame: `setSeed` is the
+   * world's one hand-over of the run's identity, and putting a second copy of it on
+   * sixty frames a second would be a fact with two owners.
+   *
+   * @param {object} cue the `music` cue
+   * @returns {void}
+   */
+  applyMusic(cue) {
+    if (!this.ctx) return
+    const params = cue?.params
+    if (!params) return
+    if (!this.ambient) this.startAmbient()
+    if (!this.music) this._buildMusic()
+    if (!this.music) return
+    const now = this.ctx.currentTime
+    if (Math.abs(this.musicLevel - params.level) > 1e-9) {
+      this.musicLevel = params.level
+      this.music.level.gain.setTargetAtTime(
+        params.level,
+        now,
+        params.silent === true ? MUSIC_FINALE.cut : MUSIC_PAD.levelTau,
+      )
+    }
+    if (Math.abs(this.musicHiss - params.hiss) > 1e-9) {
+      this.musicHiss = params.hiss
+      this.music.hiss.level.gain.setTargetAtTime(
+        params.hiss,
+        now,
+        params.silent === true ? MUSIC_FINALE.cut : MUSIC_PAD.levelTau,
+      )
+    }
+    if (Math.abs(this.musicTone - params.tone) > 1e-9) {
+      this.musicTone = params.tone
+      this.music.tone.level.gain.setTargetAtTime(
+        params.tone,
+        now,
+        params.tone > 0 ? MUSIC_FINALE.tone.rise : MUSIC_FINALE.cut,
+      )
+    }
+    const chord = musicChordAt(params.time, this.seed)
+    if (chord.index !== this.musicChord) {
+      this.musicChord = chord.index
+      for (let i = 0; i < this.music.pad.voices.length; i += 1) {
+        this.music.pad.voices[i].osc.frequency.setTargetAtTime(chord.tones[i], now, MUSIC_PAD.glide)
+      }
+    }
+  }
+
+  /**
+   * `updateMusicMotif(cue, dt)` — the sparse note, and the clock it fires on.
+   *
+   * The music's only event, and the only scheduled stream in the file that is
+   * GATED rather than merely scaled, so the gate is worth spelling out. Three
+   * reasons, in the order they are checked:
+   *
+   *  1. **not playing** — §9.3: a capture is one toll. The pad is pulled back to
+   *     the black's rung and keeps humming, because that is the bed's discipline
+   *     and the black is only 1.1 s; a NOTE is an event, and an event that starts
+   *     during the black is a second sound in the one beat that gets one.
+   *  2. **silent** — the finale. The cursor is not merely skipped, it is NOT
+   *     ADVANCED, so the music's schedule resumes where it stopped rather than
+   *     firing a backlog of notes the moment the run ends. That is
+   *     `updateFacility`'s and `updateDrips`' rule, and it is the difference
+   *     between "there was a silence" and "there is no music any more".
+   *  3. **no motif scale** — the ladder's number, which is 0 whenever the level is.
+   *     Belt and braces rather than a second decision: the scale is a level, and a
+   *     level of zero must not be played at any volume.
+   *
+   * @param {object} cue the `musicMotif` cue
+   * @param {number} [dt] seconds since the last frame
+   * @returns {void}
+   */
+  updateMusicMotif(cue, dt = 0) {
+    if (!this.ctx) return
+    const params = cue?.params
+    if (!params) return
+    if (params.playing !== true) return
+    if (params.silent === true) return
+    if (!(params.motif > 0)) return
+    if (!this.ambient) this.startAmbient()
+    if (!this.music) this._buildMusic()
+    if (!this.music) return
+    this._advanceAmbience('motif', dt, (event) => {
+      this._musicMotif(event, params)
+    })
+  }
+
+  /**
+   * `_musicMotif(event, voice)` — one distant note, synthesised and placed.
+   *
+   * The same shape as `_facilityHit` and for the same two reasons: the chain is
+   * identical for every note and only the numbers in `MUSIC_MOTIF` differ, so a
+   * second instrument would be a second copy of this method; and the note has to
+   * be PLACED, not merely played, because "distant" is a claim about where.
+   *
+   * The chain is `osc → decay → lowpass(damp) → panner → music.bus`, and every one
+   * of those is load-bearing:
+   *
+   *  - **the lowpass IS the distance.** A note heard through 1500 Hz is a note
+   *    three streets away; the same note through the pad's own 480 Hz cutoff would
+   *    be a note in the next room, and one at full bandwidth would be a note on the
+   *    player's own desk. `MUSIC_MOTIF.damp` is the distance model, and it is a
+   *    filter rather than a level because a level would be quieter AND brighter.
+   *  - **the panner is the placement.** The same argument as the facility noise's
+   *    and the same conclusion: a pan that is not a pan is a volume difference, and
+   *    this is a `StereoPanner` rather than two gains.
+   *  - **it lands on `music.bus` and NOT on `ambient.bus`.** The one line in this
+   *    method the whole pass turns on: a note on the world's bus would be ducked by
+   *    the drone's own ladder, stopped by `stopAmbient` with the bed, and — worst
+   *    of all — would put the game's one new MUSICAL voice inside the layer §13
+   *    defines as "the world talking to itself".
+   *
+   * The octave partial is a whole-number ratio on purpose, and it is the reason
+   * this note is a piano and not the checklist's "bell motif": a bell is
+   * identified by its inharmonicity, §9 gives the bell to the player, and the gate
+   * holds the ratio rather than trusting a comment about it.
+   *
+   * @param {object} event a `motif` event from `nextAmbienceEvent`
+   * @param {object} [voice] the `musicMotif` cue's params, for the level
+   * @returns {void}
+   */
+  _musicMotif(event, voice = {}) {
+    if (!this.ctx || !this.music) return
+    const note = musicMotifVoice(event, voice)
+    if (!(note.level > 0)) return
+    const ctx = this.ctx
+    const t0 = ctx.currentTime
+    const out = ctx.createStereoPanner()
+    out.pan.value = note.pan
+    out.connect(this.music.bus)
+    const damp = ctx.createBiquadFilter()
+    damp.type = 'lowpass'
+    damp.frequency.value = note.damp
+    damp.Q.value = note.resonance
+    damp.connect(out)
+    const body = ctx.createOscillator()
+    body.type = 'sine'
+    body.frequency.value = note.freq
+    const bodyGain = this._decayGain(note.level, note.tau, t0, 0.008)
+    body.connect(bodyGain)
+    bodyGain.connect(damp)
+    body.start(t0)
+    body.stop(t0 + note.tau * 6)
+    // the octave: a struck string has more than one, in a whole-number ratio
+    const partial = ctx.createOscillator()
+    partial.type = 'sine'
+    partial.frequency.value = note.freq * 2
+    const partialGain = this._decayGain(note.level * note.octave, note.tau * 0.6, t0, 0.006)
+    partial.connect(partialGain)
+    partialGain.connect(damp)
+    partial.start(t0)
+    partial.stop(t0 + note.tau * 4)
+    // the hammer: the felt leaving the string, band-limited around the fourth
+    const hammer = this._noiseSource()
+    const band = ctx.createBiquadFilter()
+    band.type = 'bandpass'
+    band.frequency.value = note.freq * 4
+    band.Q.value = 1
+    const hammerGain = this._decayGain(note.level * note.hammer, 0.02, t0, 0.001)
+    hammer.connect(band)
+    band.connect(hammerGain)
+    hammerGain.connect(damp)
+    hammer.start(t0)
+    hammer.stop(t0 + 0.4)
   }
 
   /**

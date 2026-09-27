@@ -75,13 +75,36 @@ Hard rules for every pass:
   creature cannot hear them. The `setTimeout` ambience scheduler is gone: three
   cursor streams on the world's own `dt` replaced it, which fixes a bed that kept
   breathing through a pause and could not be asserted. No music in this pass.
-- [ ] `PASS 14: Sound II - the ambient music.` (was P4's two rows: the music
+- [x] `PASS 14: Sound II - the ambient music.` (was P4's two rows: the music
   route and its ducking table.) Slow pad progression over the bed, minor,
   whole-note chords at a 50-60 BPM feel, tape wobble + hiss, an occasional
   distant bell motif echoing the toll. Original synthesis evoking the reference
   video's mood — NOT the copyrighted track. Route-table rows + checks (audible
   while playing, ducked in chase, near-silent on win), and the routing must
-  share the bed's bus discipline rather than sit beside it.
+  share the bed's bus discipline rather than sit beside it. Two rows
+  (`music`, `musicMotif`) on a SEPARATE `GainNode` reaching the master, with a
+  shared LIFETIME: `stopAmbient` tears the pad down as well. The pad is three
+  detuned oscillators (sine/triangle/sine) through a 480 Hz lowpass with a
+  0.011 Hz LFO and a two-rate (0.043/0.071 Hz) tape wobble, under a 2400 Hz
+  hiss, moving through A natural minor's i-VI-III-VII at 54 BPM — one whole-note
+  chord per 4.44 s, a pure function of `world.animTime` so the pause freezes the
+  music with the simulation, and a seeded rotation so two seeds start on
+  different chords. Ladder: `max(proximity, awareness)` over the breath's own
+  30 m, 1.18 in the safe band and 0.30 at maximum threat, on the drone's own
+  black/win rungs. Finale: `state.finale` latches, the music cuts in 0.12 s and
+  one 41.2 Hz tone rises over 1.6 s from BELOW the ladder's gain, so the cut
+  cannot take it; the world bed keeps breathing through it. Ceiling:
+  `CREATURE_BREATH_LEVEL`, not the bed's — the music must stay under the
+  awareness readout. Two deviations from the row, both documented in
+  `AESTHETIC-NOTES.md` §8: the motif is a struck STRING and not a bell (§9 gives
+  the bell to the player alone — it echoes the toll's envelope, never its
+  inharmonic partials), and a "safe zone" is a STATE (nothing near, nothing
+  aware) because a city that wraps on both axes has no safe rooms. The motif is
+  a fourth row in `AMBIENCE_SPECS` (8-20 s) on pass 13's cursor machine rather
+  than a second scheduler. No external audio, no CDN: `createOscillator`,
+  `createBiquadFilter`, `createStereoPanner` and the shared seeded noise buffer.
+  Captures are unchanged by design — the pass adds no pixels, so §16.5's luma
+  gate has nothing new to re-justify; the evidence is a listener, not a PNG.
 
 ## P5 — POLISH + VERIFY
 - [x] `PASS 15: Creature in the new light.` Silhouette/eyes read against amber

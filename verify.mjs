@@ -79,7 +79,15 @@ import { createStartStore, createStore, PHASE } from './src/game/store.js'
 // one piece of it that is pure — which is what lets the gate assert that the
 // gallery is the gallery the design asked for, before anything is rendered.
 import * as capture from './src/game/capture.js'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+// The mutation harness at the end of the music section writes a mutated copy of
+// `audio.js` to a temp directory and imports it by absolute URL, which is how a
+// value claim ("the ladder is monotone") can be measured against a retuned table
+// rather than against a string. These three are the only filesystem and URL helpers
+// that needs beyond what the file already imported.
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 // `tools/png-luma.mjs` for the same reason `tools/capture.mjs` uses it: the
 // creature-separation gate in "Sodium light (iteration 2, pass 2)" has to
 // measure a *rendered* frame, and this is the module that already owns PNG
@@ -4416,6 +4424,104 @@ function stripProse(source) {
     .replace(/(['"`])(?:\\.|(?!\1)[^\\])*\1/g, '""')
 }
 
+/**
+ * fakeAudioContext — a RECORDING stand-in for `AudioContext`, for the checks that
+ * have to make the file's WebAudio half actually run.
+ *
+ * Added by the pass-13 review, and extracted here in pass 14 rather than left as
+ * the body of one test, because two passes now need it and a copy per pass is how
+ * a stub quietly stops modelling the rule it was written for. It models exactly one
+ * structural rule — **a `GainNode` has a `.gain` AudioParam, and an `AudioParam`
+ * has no `.gain` of its own** — so a double-wrap is a `TypeError` here exactly as it
+ * was in Chrome. That is the rule the pass-13 crash broke, and it is the reason this
+ * is a stub and not a set of pure arithmetic checks.
+ *
+ * It is honest about its own limits, which the two callers both state: it does not
+ * sound, it does not model `StereoPanner`'s law, and it cannot tell a graph that is
+ * wired wrongly from one that is wired rightly, only a graph that is wired to a
+ * parameter of the wrong SHAPE. Every node keeps its written value on the param
+ * itself, so a caller can read `manager.music.level.gain.value` after a frame and
+ * ask what the bus was actually told — which is the only question these checks can
+ * ask, and the only one that has ever caught anything.
+ *
+ * @returns {{ FakeAudioContext: Function, written: number[] }} the class and the
+ *   list of every value written through `setTargetAtTime`, in order
+ */
+function fakeAudioContext() {
+  const written = []
+  const param = () => ({
+    value: 0,
+    setValueAtTime() {},
+    linearRampToValueAtTime() {},
+    setTargetAtTime(value) {
+      this.value = value
+      written.push(value)
+    },
+    exponentialRampToValueAtTime(value) {
+      this.value = value
+    },
+  })
+  const node = (kind) => ({
+    kind,
+    // `sinks` records what this node was connected TO, and `stopped` records that
+    // it was stopped. Both are here because pass 14 needed to ask two questions a
+    // graph cannot otherwise answer in node: "does the one-shot land on the music
+    // bus?" and "does the teardown reach the three pad oscillators?". They cost two
+    // fields and they turn two claims from comments into assertions.
+    sinks: [],
+    stopped: false,
+    connect(target) {
+      this.sinks.push(target)
+      return target
+    },
+    start() {},
+    stop() {
+      this.stopped = true
+    },
+    disconnect() {},
+  })
+  class FakeAudioContext {
+    constructor() {
+      this.sampleRate = 48000
+      this.currentTime = 0
+      this.state = 'running'
+      this.destination = node('destination')
+    }
+    _make(kind) {
+      const made = node(kind)
+      if (kind === 'gain') made.gain = param()
+      if (kind === 'oscillator') {
+        made.frequency = param()
+        made.detune = param()
+      }
+      if (kind === 'biquad') {
+        made.frequency = param()
+        made.Q = param()
+      }
+      if (kind === 'panner') made.pan = param()
+      return made
+    }
+    createGain() { return this._make('gain') }
+    createOscillator() { return this._make('oscillator') }
+    createBiquadFilter() { return this._make('biquad') }
+    createStereoPanner() { return this._make('panner') }
+    createDynamicsCompressor() {
+      const made = node('compressor')
+      for (const name of ['threshold', 'knee', 'ratio', 'attack', 'release']) made[name] = param()
+      return made
+    }
+    createBufferSource() { return this._make('bufferSource') }
+    createBuffer(channels, length, rate) {
+      return { getChannelData: () => new Float32Array(length), length, sampleRate: rate }
+    }
+    resume() {
+      this.state = 'running'
+      return Promise.resolve()
+    }
+  }
+  return { FakeAudioContext, written }
+}
+
 test('the §13 sound list is here, as a table, and nothing is missing from it', () => {
   // §13's seven rows, restated rather than read back out of the table, so this
   // check is a specification and not an echo. If a sound is added to the design
@@ -4427,10 +4533,21 @@ test('the §13 sound list is here, as a table, and nothing is missing from it', 
   // §13, and the four are the world bed — what the PLACE makes, not what the player
   // and the creature make. `GAMEDESIGN.md` §13 carries the same split, and the
   // second list is as much a specification as the first.
+  //
+  // PASS 14 ADDED TWO MORE, for the same reason and with the same discipline: a
+  // third list, so the music is separable from the bed in the design AND in the
+  // gate. The two are one `deepEqual` together rather than three, because a sound
+  // that moved from one list to another without being added to the other would
+  // still be caught here — which is the failure this split is most likely to have.
   const section13 = ['bell toll', 'ambient drone', 'footstep tick', 'breathing', 'portal hum', 'creature breath', 'portal shutdown']
   const worldBed = ['room tone', 'haze wind', 'distant facility', 'water drip']
+  const music = ['ambient music', 'distant piano']
   const sounds = distinct(audio.AUDIO_ROUTES.map((row) => row.sound))
-  assert.deepEqual([...sounds].sort(), [...section13, ...worldBed].sort(), 'the sound list and the table disagree')
+  assert.deepEqual(
+    [...sounds].sort(),
+    [...section13, ...worldBed, ...music].sort(),
+    'the sound list and the table disagree',
+  )
 
   // every row is a complete row: nothing the router or the gate depends on may
   // be missing, and a row with no voice is a sound nobody can hear
@@ -5598,61 +5715,10 @@ test('a real AudioContext: every routed voice runs a frame without throwing, and
   //
   // The stub models WebAudio's one structural rule — a GainNode has a `.gain`
   // AudioParam, and an AudioParam has no `.gain` of its own — so a double-wrap is
-  // a `TypeError` here exactly as it was in Chrome.
-  const written = []
-  const param = () => ({
-    value: 0,
-    setValueAtTime() {},
-    linearRampToValueAtTime() {},
-    setTargetAtTime(value) {
-      this.value = value
-      written.push(value)
-    },
-    exponentialRampToValueAtTime(value) {
-      this.value = value
-    },
-  })
-  const node = (kind) => ({ kind, connect: (target) => target, start() {}, stop() {}, disconnect() {} })
-  class FakeAudioContext {
-    constructor() {
-      this.sampleRate = 48000
-      this.currentTime = 0
-      this.state = 'running'
-      this.destination = node('destination')
-    }
-    _make(kind) {
-      const made = node(kind)
-      if (kind === 'gain') made.gain = param()
-      if (kind === 'oscillator') {
-        made.frequency = param()
-        made.detune = param()
-      }
-      if (kind === 'biquad') {
-        made.frequency = param()
-        made.Q = param()
-      }
-      if (kind === 'panner') made.pan = param()
-      return made
-    }
-    createGain() { return this._make('gain') }
-    createOscillator() { return this._make('oscillator') }
-    createBiquadFilter() { return this._make('biquad') }
-    createStereoPanner() { return this._make('panner') }
-    createDynamicsCompressor() {
-      const made = node('compressor')
-      for (const name of ['threshold', 'knee', 'ratio', 'attack', 'release']) made[name] = param()
-      return made
-    }
-    createBufferSource() { return this._make('bufferSource') }
-    createBuffer(channels, length, rate) {
-      return { getChannelData: () => new Float32Array(length), length, sampleRate: rate }
-    }
-    resume() {
-      this.state = 'running'
-      return Promise.resolve()
-    }
-  }
-
+  // a `TypeError` here exactly as it was in Chrome. It is the shared
+  // `fakeAudioContext()` helper at the top of this section, extracted in pass 14
+  // because the music needs the same instrument.
+  const { FakeAudioContext, written } = fakeAudioContext()
   const real = globalThis.AudioContext
   globalThis.AudioContext = FakeAudioContext
   try {
@@ -5729,6 +5795,1364 @@ test('the world and the audio read one seed, not two', () => {
   assert.ok(handOver > worldConstructor.indexOf('this.seed = options.seed'), 'the audio is seeded before the world knows its seed')
   assert.ok(handOver < worldConstructor.indexOf('this._buildLights()'), 'the audio is seeded after the world is built')
   assert.match(AUDIO_SOURCE, /import \{ hash32, mulberry32, streamAt, DEFAULT_SEED \} from '\.\/hash\.js'/)
+})
+// ---------------------------------------------------------------------------
+// iteration 2, pass 14 — the ambient music
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS SECTION OWNS, AND WHY IT IS NOT A COPY OF PASS 13'S
+// -------------------------------------------------------------
+// Pass 13's section proves a BED: four layers that are all the same kind of claim
+// — a seeded number, a distance model, a cursor on the frame clock. The music is
+// four different kinds, and each of them needs a different kind of proof:
+//
+//   1. **THE ROWS AND THE BUS.** Two rows, `kind: null`, and a graph that reaches
+//      the master rather than the drone's bus. The first is arithmetic over the
+//      routing table; the second is only visible in the source, and it is the one
+//      claim in this pass that a value could not tell you about.
+//   2. **THE PITCHES.** A minor scale, a four-chord loop, a seeded rotation and a
+//      chord length derived from the tempo. Pure functions, so they are walked —
+//      an hour of the world's clock, forty chords, three seeds — rather than
+//      sampled at two points.
+//   3. **THE LADDER.** A level that falls with the creature and swells where it is
+//      safe. This is the one that has to be proved as a RANGE and not as a pair of
+//      endpoints, because a ladder that is monotone everywhere except in the
+//      middle is exactly the defect a player would hear as a stutter.
+//   4. **THE FINALE.** A cut, and one low tone. Two halves that must be read
+//      together: `silent` and `tone` are one event, and a gate that checked either
+//      half alone would pass a music that cut without a tone, or a tone without a
+//      cut.
+//
+// AND THE ONE THAT IS NOT A NUMBER AT ALL
+// ---------------------------------------
+// The music's bus is its own node, and the finale's tone is connected BELOW the
+// ladder so the cut cannot reach it. Those two facts live in the connection graph,
+// which is why the claims below read `_buildMusic`'s source rather than a table,
+// and why the mutation harness at the end of this section mutates the real file
+// and re-imports it rather than asserting against a hand-built copy of a graph.
+//
+// WHAT THIS SECTION DELIBERATELY DOES NOT CLAIM
+// ----------------------------------------------
+// That any of it sounds good. Every number here was chosen on a stated argument and
+// then checked for the property that argument implies; "which chord is prettiest"
+// and "is 41.2 Hz the right floor" are listening questions a headless gate cannot
+// answer, and this section does not pretend to have asked.
+
+section('Sound II: the ambient music (iteration 2, pass 14)')
+
+/** The two rows pass 14 added, restated so this is a specification. */
+const MUSIC_ROWS = Object.freeze(['music', 'musicMotif'])
+
+test('the music is two rows on their own bus, and neither is a stimulus', () => {
+  // The rows, first, because everything else is downstream of them being real.
+  // Both are `sustained` (the pad never stops, the motif decides for itself) and
+  // both are `kind: null`, which is the load-bearing half: this is the loudest
+  // thing in the game and §6.2 prices it at a radius of ZERO. A row the creature
+  // could hear would break the loop's one inviolable rule in an atmosphere pass,
+  // which is the one category of bug this repository has no defence against other
+  // than a gate that says so.
+  for (const id of MUSIC_ROWS) {
+    const row = audio.routeFor(id)
+    assert.ok(row, `${id} is not in the routing table`)
+    assert.equal(row.mode, 'sustained', `${id} is an event rather than a layer`)
+    assert.equal(row.tuning, null, `${id} is a bell`)
+    assert.equal(row.kind, null, `${id} carries a §6.2 kind, so the creature can hear it`)
+    assert.equal(audio.cueRadius(row), 0, `${id} is a stimulus to the creature`)
+    assert.ok(audio.SUSTAINED_ROUTE_IDS.includes(id), `${id} is not on every started frame`)
+    assert.equal(typeof audio.AudioManager.prototype[row.voice], 'function')
+  }
+  assert.deepEqual([...MUSIC_ROWS], ['music', 'musicMotif'], 'the two music rows renamed')
+  // the title screen is silent, and so is a run that has not begun — with the
+  // music's own fields present, because a caller that handed over a clock and a
+  // finale flag on an unstarted frame must still get nothing
+  assert.deepEqual(audio.routeAudio({}), [])
+  assert.deepEqual(
+    audio.routeAudio({ started: false, playing: true, time: 99, finaleEnraged: true, creatureDistance: 0 }),
+    [],
+    'the music runs on a frame that says the run has not begun',
+  )
+  // and both rows arrive on a started frame even when the music is silent, which
+  // is the level-zero-frame discipline: the finale silences them, and the frame
+  // that says so is the frame that has to arrive
+  const finale = audio.routeAudio({ ...PLAYING_FRAME, finaleEnraged: true, time: 12 })
+  const [pad, motif] = finale.filter((cue) => MUSIC_ROWS.includes(cue.id))
+  assert.ok(pad && motif, 'the finale dropped the music rows instead of silencing them')
+  assert.equal(pad.params.level, 0)
+  assert.equal(pad.params.silent, true)
+  assert.equal(motif.params.silent, true)
+  assert.equal(motif.params.motif, 0, 'a note may be scheduled into the finale')
+  // the motif cue is told three things and not the whole voice: a one-shot that
+  // could read `threat` or `time` would be able to disagree with the pad about
+  // which chord is sounding
+  assert.deepEqual(Object.keys(motif.params).sort(), ['motif', 'playing', 'silent'])
+  // ...and the pad gets the whole voice, so the gate can read WHY a level is what
+  // it is without re-deriving the ladder
+  for (const field of ['time', 'threat', 'safe', 'silent', 'ladder', 'level', 'hiss', 'tone', 'motif']) {
+    assert.ok(field in pad.params, `the music cue lost ${field}`)
+  }
+  // THE BUS. `_buildMusic` is read as a source because the claim IS the wiring:
+  // the music reaches the master, and no line of it reaches the drone's bus.
+  const build = AUDIO_SOURCE.slice(
+    AUDIO_SOURCE.indexOf('  _buildMusic() {'),
+    AUDIO_SOURCE.indexOf('\n  }', AUDIO_SOURCE.indexOf('  _buildMusic() {')),
+  )
+  // the negative claims are read with the prose stripped, because this file's
+  // comments quote the wrong answer on purpose ("NOT `this.ambient.bus`, and the
+  // gate says so") and a gate that fails on prose is a gate that gets deleted
+  const buildCode = stripProse(build)
+  assert.ok(build.length > 40, '_buildMusic is gone, so the bus claim is unfalsifiable')
+  assert.match(build, /bus\.connect\(this\.master\)/, 'the music bus does not reach the master')
+  assert.equal(/ambient/.test(buildCode), false, 'the music was wired into the world bed\'s bus')
+  // and the one-shot agrees: a note on `ambient.bus` would be inside the layer §13
+  // calls "the world talking to itself"
+  const note = AUDIO_SOURCE.slice(
+    AUDIO_SOURCE.indexOf('  _musicMotif(event, voice = {}) {'),
+    AUDIO_SOURCE.indexOf('\n  }', AUDIO_SOURCE.indexOf('  _musicMotif(event, voice = {}) {')),
+  )
+  assert.match(note, /out\.connect\(this\.music\.bus\)/, 'the note does not land on the music bus')
+  assert.equal(/ambient/.test(stripProse(note)), false, 'the note reached for the world bed')
+})
+
+test('the pad is a minor pad, and its progression is a function of the clock and the seed', () => {
+  // THE SCALE, as a list rather than as a sample of what it produces. A gate that
+  // only asked "is it minor?" at two pitches would pass a six-note scale and a
+  // scale that wandered out of key halfway up, so the LIST is the claim.
+  const { semitones, degrees, root, tempo, beats } = audio.MUSIC_SCALE
+  assert.deepEqual([...semitones], [0, 2, 3, 5, 7, 8, 10], 'the scale is not a natural minor')
+  assert.equal(semitones.length, 7, 'a scale with a missing degree cannot spell a triad')
+  assert.ok(semitones.every((n, i) => i === 0 || n > semitones[i - 1]), 'the scale is not ordered')
+  assert.ok(root > 40 && root < 220, `${root} Hz is not a pad's root`)
+  // every chord of the loop is a triad of the scale, and no chord is the tonic
+  // twice running — the one property of i-VI-III-VII worth asserting
+  assert.ok(degrees.length >= 3, 'a progression of two chords is a vamp, not a progression')
+  assert.ok(degrees.every((d) => Number.isInteger(d) && d >= 0 && d < 7), 'a chord root is not a degree')
+  assert.equal(new Set(degrees).size, degrees.length, 'the progression repeats a chord')
+  // THE PITCH FUNCTION, walked. `musicFrequencyAt` is the only way to name a note
+  // in this file, so a chord tone that is not one of its degrees would be a note
+  // from outside the key, and an octave that is wrong by a factor of two would
+  // sound like a mistake rather than like a bug.
+  for (let degree = -9; degree <= 16; degree += 1) {
+    const hz = audio.musicFrequencyAt(degree)
+    const wrapped = ((degree % 7) + 7) % 7
+    assert.ok(
+      Math.abs(hz - root * 2 ** ((semitones[wrapped] + 12 * Math.floor(degree / 7)) / 12)) < 1e-9,
+      `degree ${degree} is not its own formula`,
+    )
+  }
+  assert.equal(audio.musicFrequencyAt(7), root * 2, 'the octave is not an octave')
+  // a negative degree wraps DOWN as well as up: degree -1 is the major seventh
+  // below the root, which is a major second above the octave below it
+  assert.ok(
+    Math.abs(audio.musicFrequencyAt(-1) - root * 2 ** ((semitones[6] - 12) / 12)) < 1e-9,
+    'a negative degree did not wrap down',
+  )
+  // THE PROGRESSION, over an hour of the world's clock rather than at two points
+  for (const seed of [DEFAULT_SEED, 99, 4242]) {
+    let previous = null
+    const seen = new Set()
+    for (let t = 0; t < 3600; t += audio.MUSIC_CHORD_SECONDS / 7) {
+      const chord = audio.musicChordAt(t, seed)
+      assert.equal(chord.tones.length, audio.MUSIC_PAD.voices, 'the pad and the chord disagree on the count')
+      assert.deepEqual(
+        chord.tones,
+        chord.degrees.map((d) => audio.musicFrequencyAt(d)),
+        'a chord tone is not the frequency of its own degree',
+      )
+      for (const degree of chord.degrees) {
+        assert.ok(degree >= 0 && degree < 12, `chord degree ${degree} left the scale`)
+        assert.ok(
+          Math.abs(audio.musicFrequencyAt(degree) - chord.root) < chord.root * 2.01,
+          'a chord tone is more than an octave above its own root',
+        )
+      }
+      assert.equal(chord.step, Math.floor(t / audio.MUSIC_CHORD_SECONDS))
+      assert.equal(chord.at, chord.step * audio.MUSIC_CHORD_SECONDS)
+      // the index is the ONLY thing allowed to repeat, and it advances by one per
+      // chord with nothing in between
+      if (previous !== null) {
+        assert.ok(
+          chord.index === previous || chord.index === (previous + 1) % degrees.length,
+          `the progression skipped a chord at ${t.toFixed(1)}s`,
+        )
+      }
+      previous = chord.index
+      seen.add(chord.index)
+    }
+    assert.equal(seen.size, degrees.length, 'an hour of the clock never reached every chord')
+  }
+  // THE TEMPO, derived rather than typed: a chord length and a BPM that stop
+  // agreeing is a bug that sounds like nothing at all
+  assert.equal(audio.MUSIC_CHORD_SECONDS, (beats * 60) / tempo, 'the chord length is not the tempo')
+  assert.ok(tempo >= 50 && tempo <= 60, `${tempo} BPM is not the 50-60 the brief asked for`)
+  assert.ok(audio.MUSIC_CHORD_SECONDS > 3.5 && audio.MUSIC_CHORD_SECONDS < 6, 'a chord is not a bar')
+  // and a bad clock is the FIRST chord rather than a NaN, because a frame that
+  // forgot the world's time must not silence the pad
+  for (const time of [undefined, null, NaN, -5, 'now']) {
+    assert.deepEqual(
+      audio.musicChordAt(time, DEFAULT_SEED),
+      audio.musicChordAt(0, DEFAULT_SEED),
+      `a clock of ${time} did not give the first chord`,
+    )
+  }
+  // THE SEED, as a rotation and not a transposition: two runs of one seed hear the
+  // same four chords, and different seeds do not always start on the same one
+  assert.equal(audio.musicRotation(1337), audio.musicRotation(1337))
+  const rotations = new Set([0, 1, 2, 7, 8, 9, 99, 4242, 31337, 5].map((s) => audio.musicRotation(s)))
+  assert.ok(rotations.size > 1, 'ten seeds all start on the same chord, so the seed is not a factor')
+  for (const seed of [0, 1, 7, 99, 4242, 31337]) {
+    const rotation = audio.musicRotation(seed)
+    assert.ok(rotation >= 0 && rotation < degrees.length, `seed ${seed} rotated off the end of the loop`)
+    assert.equal(audio.musicChordAt(0, seed).index, rotation, 'the first chord is not the rotation')
+    // and every seed's progression is a ROTATION of the same four chords, never a
+    // different key: the loop's own degrees, offset, and nothing else
+    const at = [0, 1, 2, 3].map((step) => audio.musicChordAt(step * audio.MUSIC_CHORD_SECONDS, seed).index)
+    assert.deepEqual(
+      at,
+      at.map((_, i) => (rotation + i) % degrees.length),
+      'the progression is not a rotation of the loop',
+    )
+  }
+  // THE PAD: three detuned voices, a swept lowpass, darker than the room tone it
+  // plays in, and a wobble with two rates that are not each other
+  const pad = audio.MUSIC_PAD
+  assert.equal(pad.voices, 3, 'the pad is not the brief\'s three detuned oscillators')
+  assert.equal(pad.types.length, pad.voices)
+  assert.equal(pad.mix.length, pad.voices)
+  assert.equal(pad.detune.length, pad.voices)
+  assert.ok(pad.types.includes('triangle'), 'no voice has any harmonics, so the pad is a sine')
+  assert.ok(pad.detune.some((c) => c > 2), 'the voices are not detuned enough to beat')
+  assert.ok(pad.cutoff < audio.ROOM_TONE.cutoff, 'the pad is brighter than the air it is playing in')
+  assert.ok(pad.lfoRate > 0 && pad.lfoRate < 0.02, `${pad.lfoRate} Hz is not a very slow LFO`)
+  assert.ok(pad.lfoDepth > 0 && pad.lfoDepth < pad.cutoff, 'the LFO can push the cutoff to nothing')
+  assert.ok(pad.glide > audio.MUSIC_CHORD_SECONDS * 0.2, 'the portamento is too short to be one')
+  // THE WOBBLE, as two rates whose pattern does not come back inside a run — the
+  // same argument pass 9's lamp flicker makes against being a sum of sines, and
+  // MEASURED rather than believed: a single LFO is periodic, so the contrast has to
+  // be a number or it is a mood. `coincidence` is the first moment after `from` at
+  // which both cycles are within `tol` of a whole number of turns.
+  const coincidence = (rates, from = 20, tol = 0.02, limit = 1200) => {
+    const turn = (x) => x - Math.floor(x)
+    for (let t = from; t < limit; t += 0.01) {
+      if (rates.every((rate) => Math.abs(turn(rate * t)) < tol)) return t
+    }
+    return Infinity
+  }
+  const [rateA, rateB] = audio.MUSIC_WOBBLE.rates
+  assert.equal(audio.MUSIC_WOBBLE.rates.length, 2, 'one wobble rate is a periodic wobble')
+  assert.notEqual(rateA, rateB, 'the two wobble rates are the same note')
+  assert.ok(1 / rateA > 20, 'a single wobble cycle is not long enough to matter')
+  // one rate alone is periodic inside half a minute, and the pair is not periodic
+  // inside five — which is the entire claim, stated as two numbers
+  assert.ok(coincidence([rateA], 20) < 40, 'a single LFO is not periodic, so there is nothing to beat against')
+  assert.ok(coincidence([rateA, rateB]) > 300, 'the wobble comes back inside five minutes')
+  assert.ok(audio.MUSIC_WOBBLE.depth > 0 && audio.MUSIC_WOBBLE.depth < Math.max(...pad.detune), 'the wobble is not a shimmer')
+  // THE HISS, top-octave and an eighth of the pad, and it ducks with the pad
+  assert.ok(audio.MUSIC_HISS.highpass > audio.ROOM_TONE.cutoff * 2, 'the hiss is in the room tone\'s band')
+  assert.ok(audio.MUSIC_HISS.level < audio.MUSIC_PAD.level / 4, 'the hiss is louder than the pad it sits under')
+  // ...and the wiring, which is where a pad that is not swept or not wobbled would
+  // show up, since a table cannot show a filter moving
+  const build = AUDIO_SOURCE.slice(
+    AUDIO_SOURCE.indexOf('  _buildMusic() {'),
+    AUDIO_SOURCE.indexOf('\n  }', AUDIO_SOURCE.indexOf('  _buildMusic() {')),
+  )
+  assert.match(build, /low\.type = 'lowpass'/, 'the pad is not behind a lowpass at all')
+  assert.match(build, /depth\.connect\(low\.frequency\)/, 'the cutoff LFO is not wired to the cutoff')
+  assert.match(build, /wobbleDepth\.connect\(osc\.detune\)/, 'the wobble is not wired to the voices\' pitch')
+  assert.match(build, /hissHigh\.type = 'highpass'/, 'the hiss is not a highpassed noise')
+})
+
+test('the music ducks on the creature, and swells where it is safe', () => {
+  // THE LADDER, walked rather than sampled: a ladder that is monotone at 0, 0.5 and
+  // 1 and non-monotone at 0.37 is a stutter a player hears as a pumping pad, and two
+  // endpoints are exactly the sample that would miss it.
+  const { swell, near, safeThreat } = audio.MUSIC_LADDER
+  assert.ok(swell > 1, 'the safe zone does not actually swell')
+  assert.ok(near > 0 && near < 1, `the near rung is ${near}, which is silence or no duck at all`)
+  let previous = Infinity
+  for (let threat = 0; threat <= 1.0001; threat += 0.02) {
+    const ladder = audio.musicLadderAt(threat)
+    assert.ok(ladder <= previous + 1e-12, `the ladder rose at threat ${threat.toFixed(2)}`)
+    assert.ok(ladder >= near - 1e-12 && ladder <= swell + 1e-12, `threat ${threat} left the table`)
+    previous = ladder
+  }
+  // the two ends of the table, within a float's worth of the arithmetic above
+  assert.ok(Math.abs(audio.musicLadderAt(0) - swell) < 1e-12, 'the far end is not the swell')
+  assert.ok(Math.abs(audio.musicLadderAt(1) - near) < 1e-12, 'the near end is not the near rung')
+  // bounded without clamping, the same two-step `hazeWindVoice` takes
+  for (const junk of [undefined, null, NaN, -3, 7, 'near']) {
+    const ladder = audio.musicLadderAt(junk)
+    assert.ok(ladder >= near && ladder <= swell, `a threat of ${junk} gave the ladder ${ladder}`)
+  }
+  // THE THREAT, as the max of the two readouts the game already has. Proximity is
+  // the same `proximityAt` the breath uses and awareness is §6.4's own meter, so
+  // the music is a THIRD reading of a number it did not invent.
+  assert.equal(audio.MUSIC_PROXIMITY_RANGE, audio.BREATH_PROXIMITY_RANGE, 'the music ducks over a different range than the breath panics over')
+  assert.equal(audio.musicThreat({ creatureDistance: 0 }), 1, 'on top of the player is not maximum threat')
+  assert.equal(audio.musicThreat({ creatureDistance: 400 }), 0, 'a creature in another district is close')
+  assert.equal(audio.musicThreat({ creatureDistance: 400, creatureAwareness: 0.6 }), 0.6, 'awareness does not count')
+  assert.ok(
+    audio.musicThreat({ creatureDistance: audio.MUSIC_PROXIMITY_RANGE * 0.5, creatureAwareness: 0.2 }) > 0.45,
+    'the two readouts are averaged rather than maxed, so a far creature with eyes on you reads as a near one',
+  )
+  // a banished creature is not a threat — `creatureBreathVoice`'s rule, not
+  // `proximityAt`'s, and §7.4 is why: the room has to relax when it is gone
+  assert.equal(
+    audio.musicThreat({ creatureDistance: 0, creatureAwareness: 1, creaturePresent: false }),
+    0,
+    'a banished creature is still ducking the music',
+  )
+  // THE SAFE ZONE, as a state rather than a room: nothing near, nothing noticed.
+  // §3.1 is a city that wraps on both axes, so there is no room to be safe in.
+  assert.ok(safeThreat > 0 && safeThreat < 0.2, 'the safe band is half the map, or a rounding error')
+  assert.equal(audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 400 }).safe, true)
+  assert.equal(audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 400, creatureAwareness: 0.5 }).safe, false)
+  assert.equal(audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: audio.MUSIC_PROXIMITY_RANGE * 0.95 }).safe, true)
+  // ...and it is the SWELL, not a separate rule: the far end of the same ladder
+  const safe = audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 400 })
+  const wary = audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: audio.MUSIC_PROXIMITY_RANGE * 0.5 })
+  assert.equal(safe.ladder, swell)
+  assert.ok(safe.level > wary.level, 'the safe zone is not louder than the wary middle')
+  // THE LADDER REACHES THE LEVEL, and the level RISES with distance — a check that
+  // asserted the wrong direction here would pass a ladder that ducks nothing at all,
+  // so the direction is the claim, walked over 80 real distances and over the
+  // awareness meter separately.
+  let previousLevel = -Infinity
+  for (let distance = 0; distance <= 400; distance += 5) {
+    const voice = audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: distance })
+    assert.ok(voice.level >= previousLevel - 1e-12, `the music fell at ${distance} m`)
+    assert.ok(voice.level > 0, `the music is silent at ${distance} m, which is a cue, not a duck`)
+    assert.equal(voice.ladder, audio.musicLadderAt(voice.threat), 'the level and the ladder are two answers')
+    previousLevel = voice.level
+  }
+  assert.ok(
+    Math.abs(audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 0 }).ladder - near) < 1e-9,
+    'the creature on top of the player is not the near rung',
+  )
+  for (let awareness = 0; awareness <= 1.0001; awareness += 0.05) {
+    const voice = audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 400, creatureAwareness: awareness })
+    assert.ok(voice.level > 0 && voice.level <= audio.MUSIC_PAD.level * audio.MUSIC_LADDER.swell, `awareness ${awareness} broke the range`)
+    assert.equal(voice.safe, awareness <= safeThreat)
+  }
+  // THE PHASE RUNG IS THE DRONE'S, not a second version of quiet
+  const black = audio.musicVoice({ started: true, playing: false, creatureDistance: 400 })
+  const won = audio.musicVoice({ ...PLAYING_FRAME, won: true, creatureDistance: 400 })
+  assert.equal(black.level, safe.level * audio.DRONE_LEVEL_BLACK, 'the capture black has its own music level')
+  assert.equal(won.level, safe.level * audio.DRONE_LEVEL_WON, 'the win has its own music level')
+  assert.ok(won.level < black.level && black.level < safe.level, 'the quiet ladder is out of order')
+  // the hiss ducks on the same ladder as the pad, in the same proportion
+  assert.ok(Math.abs(black.hiss / black.level - audio.MUSIC_HISS.level / audio.MUSIC_PAD.level) < 1e-12, 'the hiss has a ladder of its own')
+  // ...and nothing at all before the run, whatever the frame claims
+  for (const frame of [{}, { started: false }]) {
+    const voice = audio.musicVoice(frame)
+    assert.equal(voice.level, 0, `a frame with no run played at ${voice.level}`)
+    assert.equal(voice.hiss, 0)
+    assert.equal(voice.tone, 0)
+  }
+  // a frame that does not say it is PLAYING gets the black's rung, never the
+  // playing one — the same reading `droneLevelFor` gives, which is the point of
+  // sharing its ladder
+  const notPlaying = audio.musicVoice({ started: true, playing: 'yes', creatureDistance: 400 })
+  assert.equal(notPlaying.level, safe.level * audio.DRONE_LEVEL_BLACK, 'a truthy `playing` is a playing frame')
+  assert.equal(notPlaying.motif, 0, 'a truthy `playing` scheduled a note')
+  // the clock survives a frame that forgot it, so a pad is never silenced by a
+  // missing field — it plays the first chord instead
+  assert.equal(audio.musicVoice({ ...PLAYING_FRAME, time: undefined }).time, 0)
+  assert.equal(audio.musicVoice({ ...PLAYING_FRAME, time: -12 }).time, 0)
+  assert.equal(audio.musicVoice({ ...PLAYING_FRAME, time: 12 }).time, 12)
+})
+
+test('the finale cuts the music, and what is left is one low tone', () => {
+  // THE BEAT, as two halves that have to be read together. A cut without a tone is
+  // a mixer going quiet; a tone without a cut is a low hum. The moment is the pair.
+  const finale = audio.musicVoice({ ...PLAYING_FRAME, finaleEnraged: true, time: 300, creatureDistance: 400 })
+  assert.equal(finale.silent, true, 'the finale did not silence the music')
+  assert.equal(finale.level, 0, 'the pad is still playing in the finale')
+  assert.equal(finale.hiss, 0, 'the hiss survived the cut')
+  assert.equal(finale.motif, 0, 'notes are still scheduled in the finale')
+  assert.equal(finale.ladder, 0, 'the ladder is still carrying the pad')
+  assert.equal(finale.safe, false, 'a cut music is in a safe zone')
+  assert.ok(finale.tone > 0, 'the finale removed the music and left nothing')
+  // THE TONE: one low sine, under the drone's own fundamental, at a level that is
+  // a fraction of the pad it replaced. 41.2 Hz against a 44 Hz drone is the point:
+  // a note at the pad's own pitch would be a pad, and the beat is that it is not.
+  const { f, level, rise } = audio.MUSIC_FINALE.tone
+  assert.ok(f < audio.DRONE_TUNING.fundamental, 'the remaining tone is not below the drone')
+  assert.ok(f > 30 && f < 60, `${f} Hz is not a low tone, it is a note`)
+  assert.ok(level < audio.MUSIC_PAD.level && level > audio.MUSIC_PAD.level * 0.4, 'the tone is not the remainder of a pad')
+  assert.ok(audio.MUSIC_FINALE.cut < audio.MUSIC_PAD.levelTau / 3, 'the cut is as slow as a duck')
+  // the ORDER: the cut is a fifth of the rise, so the silence arrives and the tone
+  // is still on its way in. A tone that came in as fast as the music left would
+  // read as a switch rather than as something left behind.
+  assert.ok(rise > audio.MUSIC_FINALE.cut * 5, 'the tone arrives as fast as it leaves')
+  assert.ok(rise > 1 && rise < 4, `${rise} s is not a slow arrival`)
+  // and the CUT is what the file writes on that frame, which is a number in a
+  // ternary rather than something a comment can promise
+  const apply = AUDIO_SOURCE.slice(
+    AUDIO_SOURCE.indexOf('  applyMusic(cue) {'),
+    AUDIO_SOURCE.indexOf('\n  }', AUDIO_SOURCE.indexOf('  applyMusic(cue) {')),
+  )
+  assert.match(apply, /params\.silent === true \? MUSIC_FINALE\.cut : MUSIC_PAD\.levelTau/, 'the cut does not use the cut constant')
+  // THE TONE SURVIVES THE PHASES, and stops on the win: §10.4's win is the chord and
+  // the card, and a low E1 under a C major triad is a minor third below its root.
+  assert.equal(
+    audio.musicVoice({ ...PLAYING_FRAME, finaleEnraged: true, won: true }).tone,
+    0,
+    'the low tone is ringing under the win chord',
+  )
+  assert.equal(
+    audio.musicVoice({ started: true, playing: false, finaleEnraged: true }).tone,
+    audio.MUSIC_FINALE.tone.level * audio.DRONE_LEVEL_BLACK,
+    'the capture black does not pull the low tone back with everything else',
+  )
+  // the finale is a CONDITION, and it stays cut: §9.1's latched flag means a capture
+  // inside the finale must not bring the music back for 1.1 s. Walked here as the
+  // sequence of frames a capture actually produces.
+  for (const frame of [
+    { ...PLAYING_FRAME, finaleEnraged: true },
+    { started: true, playing: false, finaleEnraged: true, loopReset: true },
+    { ...PLAYING_FRAME, finaleEnraged: true, creatureDistance: 2 },
+    { started: true, playing: false, finaleEnraged: true, won: true },
+  ]) {
+    assert.equal(audio.musicVoice(frame).level, 0, 'the music came back')
+  }
+  // THE CURSOR STOPS WITH IT, which is the difference between "there was a silence"
+  // and "there is no music any more": a skipped-but-advanced cursor fires a burst of
+  // notes on the frame the run ends. That is a source claim, because the value of a
+  // cursor is not in the frame.
+  const motif = AUDIO_SOURCE.slice(
+    AUDIO_SOURCE.indexOf('  updateMusicMotif(cue, dt = 0) {'),
+    AUDIO_SOURCE.indexOf('\n  }', AUDIO_SOURCE.indexOf('  updateMusicMotif(cue, dt = 0) {')),
+  )
+  const code = stripProse(motif)
+  const gates = ['params.playing !== true', 'params.silent === true', 'params.motif > 0']
+  for (const gate of gates) {
+    assert.ok(code.includes(gate), `the motif voice does not gate on ${gate}`)
+  }
+  // the ORDER, read from the raw source because `stripProse` blanks the stream's
+  // name as a string literal — a gate that only proves the file is tidy is a gate
+  // that proves nothing about when the note is scheduled
+  assert.ok(
+    motif.indexOf('params.silent === true') < motif.indexOf("_advanceAmbience('motif'"),
+    'the silence gate is after the clock, so a note is scheduled on the cut frame',
+  )
+  // and the voice itself: a finale frame routed through the real manager, with no
+  // context, must not touch the clock. The gate above says the check is BEFORE the
+  // cursor; this says the whole voice is inert before a gesture, which is the same
+  // property pass 13's bed has and the one the autoplay policy depends on.
+  const manager = new audio.AudioManager()
+  manager.setSeed(DEFAULT_SEED)
+  const finaleCue = audio.routeAudio({ ...PLAYING_FRAME, finaleEnraged: true }).find((cue) => cue.id === 'musicMotif')
+  for (let i = 0; i < 3600; i += 1) manager.updateMusicMotif(finaleCue, 1 / 60)
+  assert.equal(manager.ambience.size, 0, 'the finale advanced the motif cursor')
+  assert.equal(manager.ready, false, 'a headless manager built a context for the music')
+  assert.equal(manager.music, null, 'a headless manager built the music')
+  // ...and the same voice on a frame that IS allowed to play carries a scale the
+  // note can actually use, which is the other half: a voice whose gate is too tight
+  // is a music that never speaks, and nothing else in this file would notice.
+  const playingCue = audio.routeAudio(PLAYING_FRAME).find((cue) => cue.id === 'musicMotif')
+  assert.ok(playingCue.params.motif > 0, 'a playing frame cannot fire a note')
+  manager.updateMusicMotif(playingCue, 1 / 60)
+  assert.equal(manager.ambience.size, 0, 'a manager with no context advanced the motif cursor')
+  assert.equal(manager.musicChord, -1, 'a headless manager tuned a pad it does not have')
+})
+
+test('the motif is seeded, sparse, and every note is a note of the scale', () => {
+  // THE SCHEDULE, on pass 13's own machine and in its own table. A second cursor
+  // machine would have been a second place for the pause bug to live, so the
+  // motif's row is `AMBIENCE_SPECS.motif` and the gap is 8-20 s: sparse enough that
+  // a note is an event, frequent enough that a run has a handful of them.
+  const spec = audio.AMBIENCE_SPECS.motif
+  assert.ok(spec, 'the motif is not a row in the schedule table')
+  assert.equal(spec.gap.min, 8, 'the motif is more frequent than the brief asked for')
+  assert.equal(spec.gap.max, 20, 'the motif is less sparse than the brief asked for')
+  assert.equal(spec.placed, false, 'a note in the world would be placed, and this one is not')
+  assert.ok(audio.AMBIENCE_IDS.includes('motif'))
+  assert.equal(audio.WORLD_BED_STREAM_IDS.includes('motif'), false, 'the music stream is a world bed stream')
+  assert.deepEqual([...audio.WORLD_BED_STREAM_IDS].sort(), ['drip', 'facility', 'gust'])
+  // the first note is a full gap out, exactly as the bed's streams are: a run that
+  // opens with a piano note is a run that opens on its own soundtrack
+  const first = audio.ambienceStart('motif', DEFAULT_SEED)
+  assert.equal(first.index, 0)
+  assert.ok(first.at >= spec.gap.min && first.at <= spec.gap.max, 'the first note is not a gap out')
+  // the stream itself: inside the window, seeded, sparse, and the same for the same
+  // seed. `ambienceStream` walks EVENTS rather than seconds, so sparseness is a
+  // claim about how far apart forty of them are: a run that heard one every four
+  // seconds would be a melody, and forty notes inside five minutes is one.
+  const events = audio.ambienceStream('motif', DEFAULT_SEED, 40)
+  assert.equal(events.length, 40, 'the schedule stopped short')
+  assert.ok(events[events.length - 1].at > 300, `forty notes are all inside five minutes (${events[39].at.toFixed(0)}s)`)
+  const perMinute = events.filter((event) => event.at <= 60).length
+  assert.ok(perMinute <= 5, `${perMinute} notes in the first minute is a rhythm`)
+  let previousAt = 0
+  for (const event of events) {
+    const gap = event.at - previousAt
+    if (previousAt > 0) {
+      assert.ok(gap >= spec.gap.min - 1e-9 && gap <= spec.gap.max + 1e-9, `a note came ${gap.toFixed(1)}s after the last`)
+    }
+    previousAt = event.at
+  }
+  assert.deepEqual(
+    events,
+    audio.ambienceStream('motif', DEFAULT_SEED, 40),
+    'the motif schedule is not reproducible from its seed',
+  )
+  assert.notDeepEqual(
+    audio.ambienceStream('motif', 4242, 12),
+    audio.ambienceStream('motif', DEFAULT_SEED, 12),
+    'two seeds heard the same notes at the same times',
+  )
+  // THE PITCH, over the whole stream: every note is a degree of the scale, an
+  // octave above the pad's root, and none of them is the scale's flat second — a
+  // note on the b2 of a minor key reads as a wrong note rather than as dread.
+  const { degrees, octave } = audio.MUSIC_MOTIF
+  const voice = audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 400 })
+  const heard = new Set()
+  for (const event of events) {
+    const note = audio.musicMotifVoice(event, voice)
+    heard.add(note.degree)
+    assert.ok(degrees.includes(note.degree), `degree ${note.degree} is not in the motif's own table`)
+    assert.equal(degrees.includes(1), false, 'the flat second came back to the motif')
+    assert.equal(note.freq, audio.musicFrequencyAt(note.degree + 7 * octave), 'a note is not its own degree')
+    assert.ok(note.freq >= audio.MUSIC_SCALE.root * 2, 'a note is inside the pad\'s register')
+    assert.ok(note.level > 0 && note.level <= audio.MUSIC_MOTIF.level, 'a note is louder than a note')
+    // and it is PLACED, in the stereo field, never hard left or hard right
+    assert.ok(Math.abs(note.pan) <= audio.MUSIC_MOTIF.pan, `a note panned to ${note.pan.toFixed(2)}`)
+  }
+  assert.ok(heard.size >= 3, `the whole schedule used ${heard.size} degrees of the scale`)
+  // a junk event is the middle of the scale and dead ahead, never undefined
+  for (const junk of [undefined, null, {}, { a: 1, b: 1, c: 1 }, { a: -1, b: 9, c: 'x' }]) {
+    const note = audio.musicMotifVoice(junk, voice)
+    assert.ok(degrees.includes(note.degree), `a junk event gave degree ${note.degree}`)
+    assert.ok(Number.isFinite(note.freq) && Number.isFinite(note.pan), 'a junk event gave a broken note')
+  }
+  // THE INSTRUMENT: two sines in a WHOLE-NUMBER ratio, and nothing from the bell.
+  // §9 gives the bell to the player alone, and the checklist's "distant bell motif"
+  // is the one line of it this pass may not take — so the boundary is held on the
+  // ratio rather than on a promise in a comment.
+  const note = audio.musicMotifVoice(events[3], voice)
+  const noteSource = AUDIO_SOURCE.slice(
+    AUDIO_SOURCE.indexOf('  _musicMotif(event, voice = {}) {'),
+    AUDIO_SOURCE.indexOf('\n  }', AUDIO_SOURCE.indexOf('  _musicMotif(event, voice = {}) {')),
+  )
+  assert.equal(noteSource.includes('BELL_PARTIALS'), false, 'the note reached for the bell recipe')
+  assert.match(noteSource, /partial\.frequency\.value = note\.freq \* 2/, 'the octave is not a whole number of the note')
+  assert.match(noteSource, /body\.type = 'sine'/, 'the note is not a sine')
+  assert.ok(audio.MUSIC_MOTIF.tau > 2, 'the decay is not long')
+  assert.ok(audio.MUSIC_MOTIF.damp < 2000, 'the note is not distant')
+  assert.ok(audio.MUSIC_MOTIF.damp > audio.ROOM_TONE.cutoff, 'the note is brighter than the air it is heard through')
+  // §9's boundary, stated as a number: a bell's partials are inharmonic and this
+  // one's are not, so the two instruments cannot be confused
+  assert.ok(
+    audio.BELL_PARTIALS.some((partial) => !Number.isInteger(partial.ratio)),
+    'the bell is harmonic, so the whole-number test is not a boundary at all',
+  )
+  // and the note ducks WITH the pad, because a one-shot that ignored the ladder
+  // would be the one part of the music a player could not hide from
+  const ducked = audio.musicMotifVoice(events[3], audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 2 }))
+  assert.ok(ducked.level < note.level * 0.5, 'a note is as loud with the creature on top of you as it is alone')
+  assert.equal(audio.musicMotifVoice(events[3], { motif: 0 }).level, 0, 'a silent frame still played a note')
+})
+
+test('the whole music is quieter than the readout it must not mask', () => {
+  // THE CEILING, and it is not the bed's. `WORLD_BED_CEILING` exists so the world's
+  // own layers never bury the FOOTSTEP, which is the creature's only channel to the
+  // player; the music is not in that sum and pass 13's check is untouched. What the
+  // music has to stay under is a different sound: §6.4's creature breath, which is
+  // what a player listens to in order to decide whether to run. So the ceiling IS
+  // that level, and the claim is that no moment of the music is louder than the sound
+  // of the thing hunting the player.
+  assert.equal(audio.MUSIC_CEILING, audio.CREATURE_BREATH_LEVEL, 'the music has a ceiling of its own choosing')
+  assert.ok(audio.MUSIC_PEAK <= audio.MUSIC_CEILING, `the music peaks at ${audio.MUSIC_PEAK}, over the ${audio.MUSIC_CEILING} ceiling`)
+  assert.ok(audio.MUSIC_PEAK < audio.MUSIC_CEILING * 0.95, 'the music is at its ceiling')
+  // and the peak is the WORST case, not the common one: the safe-zone swell, the
+  // hiss at its own level, and a note landing on top of all of it, which is why the
+  // one-shot is in the sum even though it is rare
+  assert.equal(
+    audio.MUSIC_PAD_PEAK,
+    audio.MUSIC_PAD.level * audio.MUSIC_LADDER.swell + audio.MUSIC_HISS.level + audio.MUSIC_MOTIF.level,
+    'the peak is not the sum it claims to be',
+  )
+  // the pad stack and the finale's tone never sound together, so the peak is the
+  // larger of the two — a pad and a low E1 at once would be a chord, and the moment
+  // this table exists to make is the absence of one
+  assert.equal(audio.MUSIC_PEAK, Math.max(audio.MUSIC_PAD_PEAK, audio.MUSIC_FINALE.tone.level))
+  const finale = audio.musicVoice({ ...PLAYING_FRAME, finaleEnraged: true, creatureDistance: 400 })
+  assert.equal(finale.level + finale.tone, finale.tone, 'the pad and the low tone are sounding together')
+  // THE LADDER IS WHAT MAKES IT AFFORDABLE, and this is the half that is not on
+  // paper: at maximum threat — the only time the creature's breath is loud — the
+  // music is a third of it or less, so the two never peak together at all.
+  const hunted = audio.musicVoice({ ...PLAYING_FRAME, creatureDistance: 0, creatureAwareness: 1 })
+  assert.ok(hunted.level <= audio.CREATURE_BREATH_LEVEL * 0.3, 'the hunted music is a third of the readout away')
+  assert.ok(hunted.hiss < hunted.level, 'the hiss is louder than the pad it is under')
+  // and the finale's tone, which is the only thing the music plays when the
+  // creature is at its loudest, is well under it too
+  const huntedFinale = audio.musicVoice({ ...PLAYING_FRAME, finaleEnraged: true, creatureDistance: 0 })
+  assert.ok(huntedFinale.tone < audio.CREATURE_BREATH_LEVEL * 0.5, 'the low tone buries the creature')
+  // the bed's own ceiling is NOT widened by any of this, and the two do not sum:
+  // pass 13's number is still the bed's, and the music has a different bound against
+  // a different sound. Stating that here is how a later pass stops "helpfully"
+  // folding the pad into the bed's sum and blowing the footstep tell.
+  const bedPeak = audio.DRONE_TUNING.gain * audio.DRONE_LEVEL
+    + audio.ROOM_TONE.level
+    + audio.hazeWindVoice({ ...PLAYING_FRAME, haze: 1 }).level
+  assert.ok(bedPeak <= audio.WORLD_BED_CEILING * 0.95, 'the world bed changed while the music was added')
+  assert.notEqual(audio.MUSIC_CEILING, audio.WORLD_BED_CEILING, 'the music borrowed the bed\'s bound without saying so')
+  // the compressor still sees all of it under its own threshold, which is the last
+  // line of defence and a real one: at −20.5 dBFS the sum of bed and music is inside
+  // the −14 dB knee, so the pad is never the thing being compressed
+  const dB = (x) => 20 * Math.log10(Math.max(x, 1e-9))
+  const summed = bedPeak + audio.MUSIC_PEAK
+  assert.ok(dB(summed) < -14, `the bed and the music together are ${dB(summed).toFixed(1)} dBFS, over the compressor's threshold`)
+})
+
+test('the music is behind the same gesture as the bed, and dies with the run', () => {
+  // THE GESTURE. The autoplay policy is why `AudioContext` is created inside
+  // `unlock()` and why every voice in this file starts with `if (!this.ctx) return`.
+  // The music is a new voice in a new file section, so "new" is exactly when it would
+  // be added outside that discipline — and the failure is silent, because a browser
+  // with no context still runs the frame.
+  const manager = new audio.AudioManager()
+  assert.equal(manager.ready, false)
+  const frame = {
+    ...PLAYING_FRAME,
+    position: { x: 3, z: 4 },
+    yaw: 0.5,
+    haze: 0.7,
+    time: 42,
+    creatureDistance: 12,
+    portals: [{ id: 'A', progress: 0.2, distance: 6 }],
+  }
+  // the whole frame, through the router, into every voice the table names
+  manager.update(1 / 60, frame)
+  for (const row of audio.AUDIO_ROUTES) {
+    manager[row.voice].call(manager, audio.routeAudio(frame).find((cue) => cue.id === row.id), 1 / 60)
+  }
+  assert.equal(manager.ready, false, 'a headless manager built an AudioContext')
+  assert.equal(manager.music, null, 'a headless manager built the music')
+  assert.equal(manager.ambience.size, 0, 'a headless manager advanced a cursor')
+  // and the source agrees, so this is not a property of the test's own ordering: the
+  // two music voices and the builder all check the context first
+  for (const [name, head] of [
+    ['applyMusic', '  applyMusic(cue) {'],
+    ['updateMusicMotif', '  updateMusicMotif(cue, dt = 0) {'],
+    ['_musicMotif', '  _musicMotif(event, voice = {}) {'],
+    ['_buildMusic', '  _buildMusic() {'],
+  ]) {
+    const body = audioMethod(AUDIO_SOURCE, head)
+    assert.ok(body.startsWith(head), `${name} is gone from audio.js`)
+    const firstLines = body.split('\n').slice(0, 4).join('\n')
+    assert.match(firstLines, /if \(!this\.ctx/, `${name} does not check the context before it builds anything`)
+  }
+  // THE TEARDOWN, which is the lifetime half of "its own bus": the music's bus is not
+  // the drone's, so the drone's destructured node list cannot name its nodes, and
+  // `stopAmbient` has to reach it by a method of its own. BEFORE this pass,
+  // `stopAmbient` had nothing to say about the music at all.
+  const stop = audioMethod(AUDIO_SOURCE, '  stopAmbient() {')
+  assert.ok(stop.includes('this.stopMusic()'), 'stopAmbient does not stop the music')
+  assert.ok(
+    stop.indexOf('this.stopMusic()') < stop.indexOf('if (!this.ambient) return'),
+    'the music teardown is behind the drone guard, so a music graph without a drone leaks',
+  )
+  assert.ok(stop.includes('this.stopAmbience()'), 'the cursors are not reset with the graphs')
+  const stopMusic = audioMethod(AUDIO_SOURCE, '  stopMusic() {')
+  assert.match(stopMusic, /Object\.values\(group\)/, 'the teardown hand-lists its nodes, and will rot')
+  assert.match(stopMusic, /entry\.osc \? entry\.osc : entry/, 'the pad\'s voices are a list of PAIRS and are not stopped')
+  // and `stopMusic` is idempotent and legal before anything was built, because
+  // `stopAmbience` — the cheap one — calls into the same reset
+  manager.stopMusic()
+  manager.stopAmbience()
+  assert.equal(manager.musicChord, -1)
+  assert.equal(manager.musicLevel, -1, 'the level cache was left at a value the next graph would not overwrite')
+  // THE SEED, again: a new seed drops the music's chord so the pad is re-tuned, and
+  // drops the motif's cursor so the notes are re-drawn. The cursors are pass 13's
+  // property; the chord is this pass's, and the reason it is in `setSeed` at all is
+  // that the progression's starting rotation IS a function of the seed — a pad left
+  // on the old seed's chord would be playing a note the new run's scale does not
+  // visit for another three bars. The LEVEL is deliberately NOT reset: it is the last
+  // frame's gain, not anything derived from the seed, and the next frame overwrites
+  // it either way.
+  const seeded = new audio.AudioManager()
+  seeded.setSeed(7)
+  seeded.musicChord = 2
+  seeded.ambience.set('motif', { index: 4, at: 30, clock: 40 })
+  assert.equal(seeded.setSeed(8), 8)
+  assert.equal(seeded.musicChord, -1, 'a new seed left the pad on the old seed\'s chord')
+  assert.equal(seeded.ambience.size, 0, 'a new seed kept the motif cursor')
+  assert.match(
+    audioMethod(AUDIO_SOURCE, '  setSeed(seed) {'),
+    /this\.musicChord = -1/,
+    'setSeed does not drop the pad\'s chord',
+  )
+  // THE ROUTER COMPUTES IT ONCE, because a pad and its melody answering the ladder
+  // separately is how the two drift out of step with each other
+  const route = audioMethod(AUDIO_SOURCE, 'export function routeAudio(frame = {}) {')
+  assert.equal((route.match(/musicVoice\(frame\)/g) ?? []).length, 1, 'the router calls the music voice more than once')
+  assert.ok(route.includes("cue('music', music)"), 'the pad row is not the shared voice')
+  assert.ok(route.includes('music.motif'), 'the motif row does not read the shared voice')
+  // and no new clock, no timer and no random: pass 13's absence check covers the whole
+  // file, so a regression here is a regression there. This is here to say so.
+  const code = stripProse(AUDIO_SOURCE)
+  for (const forbidden of ['Math.random', 'setTimeout', 'setInterval']) {
+    assert.equal(code.includes(forbidden), false, `audio.js still reaches for ${forbidden}`)
+  }
+})
+
+test('the world hands the music its clock and its finale, and nothing else', () => {
+  // The two fields pass 14 added are FACTS, and the world's half of the contract is
+  // that it reports them and makes no decision about them. The method body is read
+  // rather than the file, because `time:` appears forty times in `world.js` and a
+  // file-wide grep would be satisfied by any of them.
+  const at = WORLD_SOURCE.indexOf('  _audioFrame() {')
+  const body = WORLD_SOURCE.slice(at, WORLD_SOURCE.indexOf('\n  }', at))
+  assert.ok(at >= 0, 'world.js has no _audioFrame')
+  assert.match(body, /time: this\.animTime/, 'the music is not on the world\'s own clock')
+  assert.match(body, /finaleEnraged: this\.state\.finale === true/, 'the finale is not reported as a fact')
+  // THE LATCH, and this is the one that matters. §9.1 keeps `state.finale` across a
+  // capture and §10.2 gives ENRAGED no phase-out, so the latched flag IS the phase.
+  // Reading the creature's state string instead would bring the music back for the
+  // 1.5 s of a banish's stagger — a pulse in the game's loudest silence, on a frame
+  // where nothing on screen has changed.
+  assert.equal(
+    /finaleEnraged:[^\n]*creature\.state/.test(body),
+    false,
+    'the music follows the creature\'s state string, so a stagger brings the pad back',
+  )
+  // and the world made no music decision: `_audioFrame` reports the clock and the
+  // latch and knows nothing about rungs, and the audio-side constants never appear
+  // in the world's method at all
+  assert.equal(/MUSIC_|musicVoice|musicLadder|musicThreat/.test(body), false, 'the world made a music decision')
+  assert.equal(/music/i.test(body), true, 'the world does not even mention what it handed over')
+  const calls = [...WORLD_SOURCE.matchAll(/this\.audio\?\.(\w+)/g)].map((m) => m[1])
+  assert.deepEqual(
+    [...new Set(calls)].sort(),
+    ['setSeed', 'stopPortalHums', 'update', 'winChord'],
+    'the world calls the music directly somewhere new',
+  )
+  // the two fields are the contract, in both directions: the audio lists them and the
+  // world fills them in
+  for (const field of ['time', 'finaleEnraged']) {
+    assert.ok(audio.AUDIO_FRAME_FIELDS.includes(field), `${field} is not in the frame contract`)
+    assert.ok(new RegExp(`\\b${field}:`).test(body), `the world never fills in ${field}`)
+  }
+  assert.equal(audio.AUDIO_FRAME_FIELDS.length, 20, 'the frame contract grew a field nobody fills in')
+})
+
+// ---------------------------------------------------------------------------
+// the mutation harness: the real file, mutated and re-imported
+// ---------------------------------------------------------------------------
+//
+// WHY THIS IS A SEPARATE MECHANISM FROM THE OTHER SECTIONS
+// -------------------------------------------------------
+// Passes 5, 6, 10, 11 and 12 mutate SOURCE TEXT and ask predicates about it, which
+// is right when the claim is "this line exists". Every claim in this section is
+// different in kind: they are about VALUES a module computed, and a predicate asked
+// about a string cannot see a retuned table. So this harness mutates `audio.js` for
+// real, writes the mutant to a temporary file with its four imports rewritten to
+// absolute URLs, imports it, and runs the same predicates against the fresh module.
+//
+// That is stronger than a text mutation in one specific way, and worth naming: a
+// mutant that changes `MUSIC_LADDER.near` from 0.30 to 0.03 is caught because the
+// monotonicity WALK runs the new ladder sixty times, not because a grep found a
+// different number. And it is weaker in one, which the rows below are written to
+// cover: the graph claims (the bus, the tone under the ladder, the teardown) are
+// predicates over the mutant's SOURCE as well as its exports, because a graph cannot
+// be built in node without a stub — so a mutant that only changes the wiring is still
+// caught, and a mutant that only changes a number is caught by the walk.
+//
+// THE MECHANICS, because they are load-bearing
+// ----------------------------------------------
+// The temp directory comes from `mkdtemp`, is written to, imported by absolute
+// `file://` URL, and is removed in a `finally`. Node's module cache is keyed by URL,
+// so every mutant is a genuinely separate module instance and none of them can be the
+// real one. The four relative imports (`./hash.js`, `./creature.js`,
+// `./neighborhood.js`, `./rules.js`) are rewritten to absolute file URLs, which is
+// what lets a mutant live outside the source tree at all — and the rewritten
+// specifiers still point at the REAL modules, so a mutant is a different `audio.js`
+// and nothing else. If that rewrite ever fails to match, the import throws and this
+// test fails loudly rather than quietly importing the unmutated file.
+
+/** The predicates this section's claims are made of, over a module and its source. */
+function musicClaims(api, source) {
+  const code = stripProse(source)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+  const method = (head) => audioMethod(source, head)
+  const frame = { started: true, playing: true, time: 0, creatureDistance: 400 }
+  const finale = { ...frame, finaleEnraged: true }
+  const voice = api.musicVoice(frame)
+  const end = api.musicVoice(finale)
+  const build = method('  _buildMusic() {')
+  const apply = method('  applyMusic(cue) {')
+  const note = method('  _musicMotif(event, voice = {}) {')
+  const motif = method('  updateMusicMotif(cue, dt = 0) {')
+  const teardown = method('  stopAmbient() {')
+  const rows = ['music', 'musicMotif'].map((id) => api.routeFor(id))
+
+  // 1. THE ROWS. Both exist, both layers, both free of a §6.2 kind.
+  claim(
+    'both music rows are layers the creature cannot hear',
+    rows.every((row) => row && row.mode === 'sustained' && row.kind === null && api.cueRadius(row) === 0),
+    'a music row is missing, is an event, or carries a sound radius',
+  )
+  // 2. THE BUS. Separate from the world's, reaching the master.
+  claim(
+    'the music bus reaches the master and not the world bed',
+    /bus\.connect\(this\.master\)/.test(build) && !/ambient/.test(stripProse(build)),
+    'the music is inside the drone\'s bus, or does not reach the master at all',
+  )
+  // 3. THE LOW TONE IS BELOW THE LADDER — the one claim only the graph makes.
+  claim(
+    'the finale\'s low tone hangs off the bus, below the ladder',
+    /toneLevel\.connect\(bus\)/.test(build)
+      && /hissLevel\.connect\(level\)/.test(build)
+      && !/toneLevel\.connect\(level\)/.test(build),
+    'the low tone is under the ladder, so the cut silences the thing that is left',
+  )
+  // 4. THE ONE-SHOT LANDS ON THE MUSIC BUS.
+  claim(
+    'a note lands on the music bus',
+    /out\.connect\(this\.music\.bus\)/.test(note) && !/ambient/.test(stripProse(note)),
+    'a note is played into the world bed',
+  )
+  // 5. THE PAD'S FILTER IS SWEPT, by an oscillator into an AudioParam.
+  claim(
+    'the pad\'s cutoff is swept by a very slow LFO',
+    /depth\.connect\(low\.frequency\)/.test(build)
+      && api.MUSIC_PAD.lfoRate > 0 && api.MUSIC_PAD.lfoRate < 0.02 && api.MUSIC_PAD.lfoDepth < api.MUSIC_PAD.cutoff,
+    'the pad is behind a fixed cutoff, or the LFO is fast enough to be a rhythm',
+  )
+  // 6. THE WOBBLE IS TWO RATES, INCOMMENSURATE, AND SMALL.
+  const turn = (x) => x - Math.floor(x)
+  const firstBoth = (rates, from = 20, tol = 0.02) => {
+    for (let t = from; t < 1200; t += 0.01) if (rates.every((r) => Math.abs(turn(r * t)) < tol)) return t
+    return Infinity
+  }
+  claim(
+    'the wobble is two incommensurate rates',
+    api.MUSIC_WOBBLE.rates.length === 2
+      && api.MUSIC_WOBBLE.rates[0] !== api.MUSIC_WOBBLE.rates[1]
+      && firstBoth(api.MUSIC_WOBBLE.rates) > 300,
+    'the wobble is one periodic rate, or a pair that comes back inside five minutes',
+  )
+  claim(
+    'the wobble is a shimmer and not the tuning',
+    api.MUSIC_WOBBLE.depth > 0 && api.MUSIC_WOBBLE.depth < Math.max(...api.MUSIC_PAD.detune),
+    'the wobble is deeper than the detune it lives inside',
+  )
+  // 7. THE SCALE. Seven natural-minor degrees, and the pad darker than the air.
+  claim(
+    'the scale is a seven-note natural minor',
+    api.MUSIC_SCALE.semitones.length === 7
+      && JSON.stringify([...api.MUSIC_SCALE.semitones]) === JSON.stringify([0, 2, 3, 5, 7, 8, 10]),
+    'the scale is not a natural minor, or a degree is missing',
+  )
+  claim(
+    'the pad is darker than the room tone it plays in',
+    api.MUSIC_PAD.cutoff < api.ROOM_TONE.cutoff && api.MUSIC_PAD.voices >= 2,
+    'the pad is brighter than the air around it',
+  )
+  // 8. THE PROGRESSION. Four chords, one bar each, at the brief's tempo.
+  claim(
+    'the chord is a bar at 50-60 BPM',
+    Math.abs(api.MUSIC_CHORD_SECONDS - (api.MUSIC_SCALE.beats * 60) / api.MUSIC_SCALE.tempo) < 1e-9
+      && api.MUSIC_SCALE.tempo >= 50 && api.MUSIC_SCALE.tempo <= 60,
+    'the chord length and the tempo are two numbers that disagree',
+  )
+  claim(
+    'every chord is a triad of the scale, a third apart',
+    [0, 1, 2, 3].every((step) => {
+      const chord = api.musicChordAt(step * api.MUSIC_CHORD_SECONDS, 1337)
+      const thirds = chord.degrees[1] - chord.degrees[0] === 2 && chord.degrees[2] - chord.degrees[1] === 2
+      const inScale = chord.degrees.every((degree) => degree >= 0 && degree < 14)
+      return thirds
+        && inScale
+        && chord.tones.every((hz, i) => Math.abs(hz - api.musicFrequencyAt(chord.degrees[i])) < 1e-9)
+    }),
+    'a chord is not three scale degrees a third apart, or a tone is not its own degree',
+  )
+  claim(
+    'the progression is a seeded rotation of the loop',
+    api.musicChordAt(0, 1337).index === api.musicRotation(1337)
+      && api.musicRotation(1337) === api.musicRotation(1337)
+      && new Set([0, 1, 2, 7, 99, 4242].map((s) => api.musicRotation(s))).size > 1,
+    'the starting chord is not a seeded rotation of the loop',
+  )
+  // 9. THE LADDER, as a range and not a pair of ends.
+  let monotone = true
+  let last = Infinity
+  for (let t = 0; t <= 1.0001; t += 0.02) {
+    const rung = api.musicLadderAt(t)
+    if (rung > last + 1e-12 || rung < api.MUSIC_LADDER.near - 1e-12 || rung > api.MUSIC_LADDER.swell + 1e-12) monotone = false
+    last = rung
+  }
+  claim(
+    'the ladder falls with the threat and stays in its table',
+    monotone && api.MUSIC_LADDER.swell > 1 && api.MUSIC_LADDER.near > 0,
+    'the ladder is not monotone, or a rung is silence or no duck at all',
+  )
+  claim(
+    'the safe zone is a band that swells',
+    api.MUSIC_LADDER.safeThreat > 0 && api.MUSIC_LADDER.safeThreat < 0.2
+      && voice.safe === true && api.musicVoice({ ...frame, creatureAwareness: 0.5 }).safe === false,
+    'the safe zone is half the map, or it does not read the threat at all',
+  )
+  claim(
+    'the threat is the max of the two readouts the game already has',
+    api.musicThreat({ creatureDistance: 400, creatureAwareness: 0.6 }) === 0.6
+      && api.musicThreat({ creatureDistance: 0, creatureAwareness: 0.2 }) === 1
+      && api.musicThreat({ creatureDistance: 0, creatureAwareness: 1, creaturePresent: false }) === 0,
+    'the threat averages the two readouts, or a banished creature still counts',
+  )
+  claim(
+    'the music ducks over the same range the breath panics over',
+    api.MUSIC_PROXIMITY_RANGE === api.BREATH_PROXIMITY_RANGE,
+    'the music and the breath are two scales for one fact',
+  )
+  // 10. THE PHASE LADDER IS THE DRONE'S.
+  claim(
+    'the black and the win use the drone\'s own ladder',
+    Math.abs(api.musicVoice({ started: true, playing: false, creatureDistance: 400 }).level - voice.level * api.DRONE_LEVEL_BLACK) < 1e-12
+      && Math.abs(api.musicVoice({ ...frame, won: true }).level - voice.level * api.DRONE_LEVEL_WON) < 1e-12,
+    'the music has a second version of quiet',
+  )
+  // 11. THE FINALE, as a pair.
+  claim(
+    'the finale zeroes the music',
+    end.silent === true && end.level === 0 && end.hiss === 0 && end.motif === 0 && end.ladder === 0,
+    'the finale left something playing',
+  )
+  claim(
+    'the finale leaves one low tone',
+    end.tone > 0
+      && api.musicVoice({ ...frame, finaleEnraged: true, won: true }).tone === 0
+      && api.MUSIC_FINALE.tone.f < api.DRONE_TUNING.fundamental,
+    'there is no tone left, or it rings under the win chord',
+  )
+  claim(
+    'the cut is a cut and not a duck',
+    api.MUSIC_FINALE.cut < api.MUSIC_PAD.levelTau / 3
+      && /params\.silent === true \? MUSIC_FINALE\.cut : MUSIC_PAD\.levelTau/.test(apply),
+    'the finale fades out like every other duck',
+  )
+  claim(
+    'the tone rises slowly after the cut',
+    api.MUSIC_FINALE.tone.rise > api.MUSIC_FINALE.cut * 5,
+    'the tone arrives as fast as the music left',
+  )
+  // 12. THE NOTE: on the frame clock, gated, sparse, pitched from the scale, and
+  // never the bell.
+  const events = api.ambienceStream('motif', 1337, 12)
+  const gaps = events.slice(1).map((event, i) => event.at - events[i].at)
+  claim(
+    'the motif is a seeded stream on the frame clock',
+    gaps.length === 11
+      && gaps.every((g) => g >= 8 - 1e-9 && g <= 20 + 1e-9)
+      && /_advanceAmbience\('motif', dt/.test(motif)
+      && !/setTimeout|Math\.random/.test(code),
+    'the notes are not on the world\'s clock, or they are not 8-20 s apart',
+  )
+  claim(
+    'the motif does not fire while the music is cut',
+    motif.indexOf('params.silent === true') < motif.indexOf("_advanceAmbience('motif'"),
+    'the silence gate is after the clock, so a note is scheduled on the cut frame',
+  )
+  claim(
+    'every note is a note of the scale, a whole number of octaves up',
+    events.every((event) => {
+      const pitched = api.musicMotifVoice(event, voice)
+      return api.MUSIC_MOTIF.degrees.includes(pitched.degree)
+        && Math.abs(pitched.freq - api.musicFrequencyAt(pitched.degree + 7 * api.MUSIC_MOTIF.octave)) < 1e-9
+    }),
+    'a note is outside the scale, or in the wrong octave',
+  )
+  claim(
+    'the note is a piano and not the bell',
+    !note.includes('BELL_PARTIALS')
+      && /partial\.frequency\.value = note\.freq \* 2/.test(note)
+      && api.BELL_PARTIALS.some((partial) => !Number.isInteger(partial.ratio)),
+    'the note borrowed the bell, or its octave is not a whole number',
+  )
+  claim(
+    'the note is placed and damped by distance',
+    /createStereoPanner/.test(note) && api.MUSIC_MOTIF.pan <= 0.6 && api.MUSIC_MOTIF.damp < 2000,
+    'the note is centred and bright, which is a note on the player\'s desk',
+  )
+  // 13. THE CEILING, against the readout rather than the footstep.
+  claim(
+    'the music is quieter than the creature breath',
+    api.MUSIC_CEILING === api.CREATURE_BREATH_LEVEL
+      && api.MUSIC_PEAK <= api.MUSIC_CEILING
+      && api.MUSIC_PEAK < api.MUSIC_CEILING * 0.95,
+    'the music is louder than the sound of the thing hunting the player',
+  )
+  claim(
+    'the hunted music is far under the readout',
+    api.musicVoice({ ...frame, creatureDistance: 0, creatureAwareness: 1 }).level <= api.CREATURE_BREATH_LEVEL * 0.3,
+    'the music and the creature breath peak together',
+  )
+  // 14. THE LIFETIME, which is the bed's discipline rather than a new one, and
+  // 15. THE GESTURE, which is the autoplay policy and not a style choice.
+  claim(
+    'the music is torn down with the run',
+    teardown.includes('this.stopMusic()')
+      && teardown.indexOf('this.stopMusic()') < teardown.indexOf('if (!this.ambient) return')
+      && /this\.music\.pad, this\.music\.hiss, this\.music\.tone/.test(method('  stopMusic() {'))
+      && /Object\.values\(group\)/.test(method('  stopMusic() {')),
+    'a music graph outlives the drone it was started beside, or the walk misses a sub-graph',
+  )
+  claim(
+    'the music is behind the same gesture as the bed',
+    ['  applyMusic(cue) {', '  updateMusicMotif(cue, dt = 0) {', '  _musicMotif(event, voice = {}) {', '  _buildMusic() {']
+      .every((head) => /if \(!this\.ctx/.test(method(head).split('\n').slice(0, 4).join('\n'))),
+    'a music voice can build a graph before anything unlocked the context',
+  )
+  // 16. THE ROUTER, once — a pad and its melody that asked the ladder two different
+  // questions is how a pad and its melody drift out of step with each other.
+  claim(
+    'the router computes the music once for both rows',
+    (method('export function routeAudio(frame = {}) {').match(/musicVoice\(frame\)/g) ?? []).length === 1,
+    'the pad and its melody asked the ladder two different questions',
+  )
+  return claims
+}
+
+/**
+ * The edits this section is measured against, each the smallest one that breaks ONE
+ * claim and nothing else.
+ *
+ * A mutation that breaks the WRONG claim is itself visible, which is how a gate
+ * stops being a gate and becomes a fingerprint of one file. The expected claim is
+ * named on every row for that reason, and asserted on every row below.
+ */
+const MUSIC_MUTANTS = Object.freeze([
+  ['the music row is given a sound radius', "id: 'music', sound: 'ambient music', voice: 'applyMusic', mode: 'sustained',\n    tuning: null, kind: null,", "id: 'music', sound: 'ambient music', voice: 'applyMusic', mode: 'sustained',\n    tuning: null, kind: 'toll',", 'both music rows are layers the creature cannot hear'],
+  ['the music bus is moved into the world bed', 'bus.connect(this.master)', 'bus.connect(this.ambient.bus)', 'the music bus reaches the master and not the world bed'],
+  ['the low tone is put under the ladder', 'toneLevel.connect(bus)', 'toneLevel.connect(level)', 'the finale\'s low tone hangs off the bus, below the ladder'],
+  ['the hiss is put off the ladder', 'hissLevel.connect(level)', 'hissLevel.connect(bus)', 'the finale\'s low tone hangs off the bus, below the ladder'],
+  ['a note is played into the world bed', 'out.connect(this.music.bus)', 'out.connect(this.ambient.bus)', 'a note lands on the music bus'],
+  ['the cutoff LFO is unwired', 'depth.connect(low.frequency)', 'depth.connect(low.Q)', 'the pad\'s cutoff is swept by a very slow LFO'],
+  ['the sweep is retuned to a 6 s breath', 'lfoRate: 0.011,', 'lfoRate: 0.17,', 'the pad\'s cutoff is swept by a very slow LFO'],
+  ['the sweep is deeper than the cutoff', 'lfoDepth: 190,', 'lfoDepth: 900,', 'the pad\'s cutoff is swept by a very slow LFO'],
+  ['the wobble loses its second rate', 'rates: Object.freeze([0.043, 0.071]),', 'rates: Object.freeze([0.043]),', 'the wobble is two incommensurate rates'],
+  ['the wobble rates become each other', 'Object.freeze([0.043, 0.071])', 'Object.freeze([0.043, 0.0431])', 'the wobble is two incommensurate rates'],
+  ['the wobble becomes the tuning', 'depth: 4.5,', 'depth: 40,', 'the wobble is a shimmer and not the tuning'],
+  ['the scale loses a degree', 'Object.freeze([0, 2, 3, 5, 7, 8, 10])', 'Object.freeze([0, 2, 3, 5, 8, 10])', 'the scale is a seven-note natural minor'],
+  ['the scale becomes a major one', 'semitones: Object.freeze([0, 2, 3, 5, 7, 8, 10])', 'semitones: Object.freeze([0, 2, 4, 5, 7, 9, 11])', 'the scale is a seven-note natural minor'],
+  ['the pad is retuned above the room tone', 'cutoff: 480,', 'cutoff: 1200,', 'the pad is darker than the room tone it plays in'],
+  ['the tempo leaves the brief', 'tempo: 54,', 'tempo: 96,', 'the chord is a bar at 50-60 BPM'],
+  ['the chord length stops following the tempo', 'export const MUSIC_CHORD_SECONDS = (MUSIC_SCALE.beats * 60) / MUSIC_SCALE.tempo', 'export const MUSIC_CHORD_SECONDS = 6', 'the chord is a bar at 50-60 BPM'],
+  ['the fifth of a chord leaves the scale', 'const chordDegrees = [base, base + 2, base + 4]', 'const chordDegrees = [base, base + 4, base + 6]', 'every chord is a triad of the scale, a third apart'],
+  ['the progression stops being seeded', 'const draw = streamAt((s ^ MUSIC_SALT) >>> 0, 0, MUSIC_ROTATION_CODE)()', 'const draw = 0.5', 'the progression is a seeded rotation of the loop'],
+  ['the near rung becomes silence', 'near: 0.3,', 'near: 0,', 'the ladder falls with the threat and stays in its table'],
+  ['the safe zone becomes half the map', 'safeThreat: 0.06,', 'safeThreat: 0.5,', 'the safe zone is a band that swells'],
+  ['the threat averages instead of maxing', 'return Math.max(proximity, clamp01(frame.creatureAwareness))', 'return (proximity + clamp01(frame.creatureAwareness)) / 2', 'the threat is the max of the two readouts the game already has'],
+  ['a banished creature still counts', 'if (frame.creaturePresent === false) return 0', '', 'the threat is the max of the two readouts the game already has'],
+  ['the music ducks over its own range', 'export const MUSIC_PROXIMITY_RANGE = BREATH_PROXIMITY_RANGE', 'export const MUSIC_PROXIMITY_RANGE = 45', 'the music ducks over the same range the breath panics over'],
+  ['the music gets its own version of quiet', 'const phase = droneLevelFor(frame)', 'const phase = frame.started === true ? 1 : 0.5', 'the black and the win use the drone\'s own ladder'],
+  ['the finale stops cutting', 'const ladder = finale ? 0 : musicLadderAt(threat)', 'const ladder = musicLadderAt(threat)', 'the finale zeroes the music'],
+  ['the finale leaves no tone', 'tone: finale && !won ? MUSIC_FINALE.tone.level * phase : 0,', 'tone: 0,', 'the finale leaves one low tone'],
+  ['the low tone rings under the win chord', 'tone: finale && !won ? MUSIC_FINALE.tone.level * phase : 0,', 'tone: finale ? MUSIC_FINALE.tone.level : 0,', 'the finale leaves one low tone'],
+  ['the cut is retuned to a duck', 'cut: 0.12,', 'cut: 0.9,', 'the cut is a cut and not a duck'],
+  ['the tone rises as fast as it leaves', 'rise: 1.6 }', 'rise: 0.05 }', 'the tone rises slowly after the cut'],
+  ['the notes are two seconds apart', "motif: Object.freeze({ id: 'motif', code: 0x1d7e3b95, gap: Object.freeze({ min: 8, max: 20 })", "motif: Object.freeze({ id: 'motif', code: 0x1d7e3b95, gap: Object.freeze({ min: 2, max: 4 })", 'the motif is a seeded stream on the frame clock'],
+  ['the silence gate moves inside the note callback, so the clock still advances', "    if (params.playing !== true) return\n    if (params.silent === true) return\n    if (!(params.motif > 0)) return\n    if (!this.ambient) this.startAmbient()\n    if (!this.music) this._buildMusic()\n    if (!this.music) return\n    this._advanceAmbience('motif', dt, (event) => {\n      this._musicMotif(event, params)\n    })", "    if (params.playing !== true) return\n    if (!this.ambient) this.startAmbient()\n    if (!this.music) this._buildMusic()\n    if (!this.music) return\n    this._advanceAmbience('motif', dt, (event) => {\n      if (params.silent === true || !(params.motif > 0)) return\n      this._musicMotif(event, params)\n    })", 'the motif does not fire while the music is cut'],
+  ['a note is retuned out of the scale', 'const degree = degrees[Math.min(degrees.length - 1, Math.floor(clamp01(event?.b ?? 0.5) * degrees.length))]', 'const degree = degrees[Math.min(degrees.length - 1, Math.floor(clamp01(event?.b ?? 0.5) * degrees.length))] + 1', 'every note is a note of the scale, a whole number of octaves up'],
+  ['the note borrows the bell', "const body = ctx.createOscillator()\n    body.type = 'sine'\n    body.frequency.value = note.freq", "const body = ctx.createOscillator()\n    body.type = BELL_PARTIALS[0].ratio > 1 ? 'sawtooth' : 'sine'\n    body.frequency.value = note.freq", 'the note is a piano and not the bell'],
+  ['the note is bright enough to be in the room', 'damp: 1500,', 'damp: 9000,', 'the note is placed and damped by distance'],
+  ['the music is louder than the creature', 'level: 0.038,', 'level: 0.19,', 'the music is quieter than the creature breath'],
+  ['the hunted music is not ducked', 'level: started && !finale ? MUSIC_PAD.level * ladder * phase : 0,', 'level: started && !finale ? MUSIC_PAD.level * phase : 0,', 'the hunted music is far under the readout'],
+  ['the music outlives the run', '    this.stopMusic()\n    if (!this.ambient) return', '    if (!this.ambient) return', 'the music is torn down with the run'],
+  ['the teardown walks only the pad, so the hiss and the tone are left running', 'for (const group of [this.music.pad, this.music.hiss, this.music.tone]) {', 'for (const group of [this.music.pad]) {', 'the music is torn down with the run'],
+  ['the teardown stops naming nodes and hand-lists two', 'for (const node of Object.values(group)) {', 'for (const node of [group.mix]) {', 'the music is torn down with the run'],
+  ['a music voice skips the gesture check', '  applyMusic(cue) {\n    if (!this.ctx) return', '  applyMusic(cue) {', 'the music is behind the same gesture as the bed'],
+  ['the router asks the ladder twice', "const music = musicVoice(frame)\n  pushCue(cues, cue('music', music))", "const music = musicVoice(frame)\n  const twice = musicVoice(frame)\n  pushCue(cues, cue('music', twice))", 'the router computes the music once for both rows'],
+])
+
+/**
+ * Run every mutation against a fresh copy of the module and report which claims it
+ * broke. A top-level `await` rather than a `test()` callback, because this file's
+ * `test()` is synchronous: a promise inside one of those returns whether or not the
+ * work ever finished, which is the single worst failure mode a gate can have — and it
+ * is why the sweep is a module-level `const` that a test below merely reads.
+ */
+async function runMusicMutants() {
+  const dir = mkdtempSync(join(tmpdir(), 'bell-loop-music-mutants-'))
+  const results = []
+  try {
+    for (const [index, [label, from, to, expected]] of MUSIC_MUTANTS.entries()) {
+      if (!AUDIO_SOURCE.includes(from)) {
+        results.push({ label, expected, matched: false, broke: [], note: 'the mutation no longer matches the file' })
+        continue
+      }
+      const mutated = AUDIO_SOURCE.replace(from, to)
+      const file = join(dir, `mutant-${index}.mjs`)
+      // the four relative specifiers become absolute file URLs, so the mutant can
+      // live in a temp directory and still read the REAL hash / creature /
+      // neighborhood / rules modules
+      writeFileSync(file, mutated.replace(/from '\.\/(\w+)\.js'/g, (_all, name) => (
+        `from '${pathToFileURL(join(AUDIO_DIR, `${name}.js`)).href}'`
+      )))
+      let broken = []
+      let why = ''
+      try {
+        const mutant = await import(pathToFileURL(file).href)
+        const claims = musicClaims(mutant, mutated)
+        broken = claims.filter((entry) => !entry.ok).map((entry) => entry.name)
+        why = claims.find((entry) => !entry.ok)?.why ?? ''
+      } catch (error) {
+        // a mutant that will not even import is the STRONGEST kind of kill: the
+        // claims are the only thing in the repository that could have noticed
+        broken = ['<the module no longer imports>']
+        why = String(error.message).split('\n')[0]
+      }
+      results.push({ label, expected, matched: true, broke: broken, note: why })
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  return results
+}
+
+const AUDIO_DIR = fileURLToPath(new URL('./src/game/', import.meta.url))
+const MUSIC_MUTATION_RESULTS = await runMusicMutants()
+
+test('the music claims are the source contracts, and every one holds', () => {
+  // The list every mutation below is measured against, held to the real module and
+  // the real source. It is a test in its own right so that a claim which fails on the
+  // UNMUTATED file reports as "the music is broken" rather than as thirty-six
+  // confusing mutation failures — which is the failure mode a mutation harness has
+  // when the thing under test is broken to begin with.
+  const claims = musicClaims(audio, AUDIO_SOURCE)
+  assert.ok(claims.length >= 20, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
+  }
+})
+
+test('every music claim can actually fail, and a mutation names the one it breaks', () => {
+  // The control for the test above, and the reason it is not decorative: 41 edits to
+  // the real file, each imported as its own module and asked the same questions, and
+  // every one of them has to break the claim it was written for, and break it by name.
+  assert.ok(MUSIC_MUTANTS.length >= 24, `only ${MUSIC_MUTANTS.length} mutants, which is fewer than this pass claims`)
+  for (const { label, expected, matched, broke, note } of MUSIC_MUTATION_RESULTS) {
+    assert.ok(matched, `the mutation "${label}" no longer matches the file, so it is not testing anything`)
+    assert.ok(broke.length > 0, `"${label}" changed the file and broke NO claim — ${note} — and the section is not measuring it`)
+    assert.ok(
+      broke.includes(expected),
+      `"${label}" broke [${broke.join(', ')}] but should have broken "${expected}": ${note}`,
+    )
+  }
+  // the claims are distinct, so that no one of them is doing the work of two: a
+  // duplicate name would let a mutation "break" a claim that is really a copy
+  const names = musicClaims(audio, AUDIO_SOURCE).map((entry) => entry.name)
+  assert.equal(names.length, new Set(names).size, 'two music claims share a name')
+  const expectedNames = new Set(MUSIC_MUTANTS.map((row) => row[3]))
+  for (const name of expectedNames) {
+    assert.ok(names.includes(name), `a mutation names a claim that does not exist: ${name}`)
+  }
+  // and every claim is covered by at least one mutation, which is the other half of
+  // the same discipline: a claim no mutant ever breaks is a claim nobody has tested
+  const untested = names.filter((name) => !expectedNames.has(name))
+  assert.deepEqual(untested, [], `these claims are asserted but never mutation-tested: ${untested.join(', ')}`)
+})
+
+/**
+ * One method's body out of `audio.js`, from its own `head` line to its closing brace.
+ *
+ * Two indents, because the file has both: a class method closes at two spaces and a
+ * module-level function at none. Taking the FIRST of the two after the head is
+ * correct for both, and a helper that only understood one of them would have
+ * silently returned a method truncated at its first inner block.
+ */
+function audioMethod(source, head) {
+  const at = source.indexOf(head)
+  if (at < 0) return ''
+  // a class method's own closing brace is the first at ITS indent (its inner blocks
+  // close deeper); a module-level function's is the first at none. Matching on the
+  // head's own indent is what keeps `routeAudio` from being cut off at the end of its
+  // `if (playing) { … }` block, which is at two spaces and comes first.
+  const end = source.indexOf(head.startsWith('  ') ? '\n  }' : '\n}', at)
+  return source.slice(at, end < 0 ? source.length : end)
+}
+
+test('a real AudioContext: the music builds, the ladder reaches its bus, and the cut lands', () => {
+  // The same instrument the pass-13 review added, pointed at the music. A table of
+  // numbers cannot show a graph that throws, a parameter written through a handle of
+  // the wrong shape, a note that lands on the wrong bus, or an oscillator nobody
+  // stopped — and the pass-13 review's own bug (`bus.gain.gain`, one `.gain` too many
+  // on an AudioParam) lived in this file for a whole pass precisely because nothing
+  // in the repository ever built a graph.
+  const { FakeAudioContext, written } = fakeAudioContext()
+  const real = globalThis.AudioContext
+  globalThis.AudioContext = FakeAudioContext
+  try {
+    // the whole of `App.jsx`'s BEGIN, in the order it does it
+    const manager = new audio.AudioManager()
+    manager.setSeed(DEFAULT_SEED)
+    manager.unlock()
+    manager.startAmbient()
+    assert.ok(manager.bed, 'the bed was not built behind a real context')
+    assert.equal(manager.music, null, 'the music was built by something other than a routed frame')
+
+    const frame = {
+      ...PLAYING_FRAME,
+      position: { x: 3, z: 4 },
+      yaw: 0.5,
+      haze: 0.7,
+      time: 0,
+      creatureDistance: 400,
+      portals: [{ id: 'A', progress: 0.2, distance: 6 }],
+    }
+    manager.update(1 / 60, frame)
+    // THE BUS: built, a gain node, and reaching the master and NOT the drone's bus.
+    // The stub records what it was connected to, so this is a fact and not a grep.
+    const music = manager.music
+    assert.ok(music, 'the music row did not build the music')
+    assert.equal(music.bus.kind, 'gain')
+    assert.ok(music.bus.sinks.includes(manager.master), 'the music bus does not reach the master')
+    assert.equal(
+      music.bus.sinks.includes(manager.ambient.bus),
+      false,
+      'the music bus is inside the world bed, which is the one thing this pass must not do',
+    )
+    // and the world's own bus still goes where it went: through the DRONE's filter,
+    // which is the one filter the bed has always had, and nowhere near the music. The
+    // shape is the point — `ambient.bus → filter → master` against `music.bus →
+    // master` — so the music is not a layer of the bed with a different name.
+    const droneFilter = manager.ambient.bus.sinks[0]
+    assert.equal(droneFilter.kind, 'biquad', 'the world bed no longer reaches the master through a filter')
+    assert.ok(droneFilter.sinks.includes(manager.master), 'the drone\'s filter does not reach the master')
+    assert.equal(manager.ambient.bus.sinks.includes(music.bus), false, 'the bed routes into the music')
+
+    // THE LADDER, as the parameter the bus was actually told to hold
+    const voice = audio.musicVoice(frame)
+    assert.ok(Math.abs(music.level.gain.value - voice.level) < 1e-12, 'the pad is not at the routed level')
+    assert.ok(Math.abs(music.hiss.level.gain.value - voice.hiss) < 1e-12, 'the hiss is not at the routed level')
+    assert.ok(voice.level > 0, 'the pad is silent in a safe zone')
+    assert.ok(written.length > 0, 'no voice wrote a single parameter behind a real context')
+
+    // THE CHORD, on the three oscillators, from the frame's clock
+    const chord = audio.musicChordAt(frame.time, DEFAULT_SEED)
+    assert.equal(music.pad.voices.length, audio.MUSIC_PAD.voices, 'the pad did not build its voices')
+    music.pad.voices.forEach((padVoice, i) => {
+      assert.ok(
+        Math.abs(padVoice.osc.frequency.value - chord.tones[i]) < 1e-9,
+        `voice ${i} is not playing chord tone ${i}`,
+      )
+      assert.equal(padVoice.osc.detune.value, audio.MUSIC_PAD.detune[i], `voice ${i} is not detuned`)
+      // the wobble is wired into each voice's PITCH, and the cutoff LFO into the
+      // filter's frequency — the two claims the tables cannot make
+      assert.ok(
+        music.pad.wobbleDepth.sinks.includes(padVoice.osc.detune),
+        `voice ${i} is not being wobbled`,
+      )
+    })
+    assert.equal(music.pad.wobbles.length, audio.MUSIC_WOBBLE.rates.length, 'the wobble did not build its rates')
+    assert.ok(music.pad.depth.sinks.includes(music.pad.low.frequency), 'the cutoff LFO is not on the cutoff')
+
+    // ...and it GLIDES to the next chord rather than jumping: the frequencies are
+    // re-written when the index changes and not on every frame
+    const later = { ...frame, time: audio.MUSIC_CHORD_SECONDS + 0.01 }
+    manager.update(1 / 60, later)
+    const next = audio.musicChordAt(later.time, DEFAULT_SEED)
+    assert.equal(manager.musicChord, next.index, 'the pad did not move to the next chord')
+    music.pad.voices.forEach((padVoice, i) => {
+      assert.ok(
+        Math.abs(padVoice.osc.frequency.value - next.tones[i]) < 1e-9,
+        `voice ${i} is not on the new chord`,
+      )
+    })
+
+    // THE DUCK: a creature on top of the player pulls the bus down, and it is the
+    // same number the pure voice says it is
+    const hunted = audio.musicVoice({ ...frame, creatureDistance: 0, creatureAwareness: 1 })
+    manager.update(1 / 60, { ...frame, creatureDistance: 0, creatureAwareness: 1 })
+    assert.ok(Math.abs(manager.music.level.gain.value - hunted.level) < 1e-12, 'the bus is not at the ducked level')
+    assert.ok(manager.music.level.gain.value < voice.level, 'the creature arrived and the music did not duck')
+
+    // THE CUT: the pad to nothing and the tone up on ONE frame — and the tone hangs
+    // off the bus while the ladder is what got the cut, so the two cannot be the
+    // same node. This is the claim the whole finale rests on and the one no number
+    // in the file can make.
+    const finale = audio.musicVoice({ ...frame, finaleEnraged: true, creatureDistance: 400 })
+    manager.update(1 / 60, { ...frame, finaleEnraged: true, creatureDistance: 400 })
+    assert.equal(manager.music.level.gain.value, 0, 'the finale did not reach the pad')
+    assert.equal(manager.music.hiss.level.gain.value, 0, 'the finale did not reach the hiss')
+    assert.ok(Math.abs(manager.music.tone.level.gain.value - finale.tone) < 1e-12, 'the low tone did not arrive')
+    assert.ok(finale.tone > 0, 'the finale cut the music and left nothing')
+    assert.equal(
+      manager.music.tone.level.sinks.includes(manager.music.level),
+      false,
+      'the low tone is under the ladder, so the cut takes it with everything else',
+    )
+    assert.equal(manager.music.tone.level.sinks.includes(manager.music.bus), true, 'the low tone is not on the music bus')
+
+    // THE NOTE, on its real due frame. The one-shot is the most code in the pass and
+    // the least reachable from a pure function, so it is driven here: the cursor is
+    // walked to the first event and the graph the note builds is inspected rather
+    // than assumed. The panner is caught by wrapping the context's factory, because
+    // the one-shot's own locals do not survive the call.
+    const firstNote = audio.ambienceStart('motif', DEFAULT_SEED).at
+    const spoken = new audio.AudioManager()
+    spoken.setSeed(DEFAULT_SEED)
+    spoken.unlock()
+    spoken.update(1 / 60, frame)
+    const panners = []
+    const makePanner = spoken.ctx.createStereoPanner
+    spoken.ctx.createStereoPanner = function catchPanner() {
+      const made = makePanner.call(this)
+      panners.push(made)
+      return made
+    }
+    for (let t = 0; t < firstNote + 0.1; t += 1 / 60) spoken.update(1 / 60, frame)
+    assert.equal(panners.length, 1, `the first note fired ${panners.length} times`)
+    assert.equal(
+      panners[0].sinks.includes(spoken.music.bus),
+      true,
+      'the note is not on the music bus, so it is in the wrong layer',
+    )
+    assert.equal(panners[0].sinks.includes(manager.ambient.bus), false, 'the note is inside the world bed')
+    assert.ok(Math.abs(panners[0].pan.value) <= audio.MUSIC_MOTIF.pan, 'the note is at the edge of the field')
+    assert.ok(spoken.ambience.get('motif').index >= 1, 'the note did not come off the seeded schedule')
+
+    // ...and NOT while the finale is running, which is the claim only a real frame
+    // sequence can show: the gate is in the voice, and a voice that gated the wrong
+    // thing would schedule notes into a silence
+    const cutRun = new audio.AudioManager()
+    cutRun.setSeed(DEFAULT_SEED)
+    cutRun.unlock()
+    for (let t = 0; t < firstNote + 1; t += 1 / 60) cutRun.update(1 / 60, { ...frame, finaleEnraged: true })
+    assert.equal(cutRun.music.level.gain.value, 0, 'the pad came back in the finale')
+    assert.ok(cutRun.music.tone.level.gain.value > 0, 'the low tone is not there in the finale')
+    assert.equal(cutRun.ambience.has('motif'), false, 'the finale scheduled a note')
+    // the world's own three cursors are on that same map and they DID move: the bed
+    // keeps breathing through the finale, which is §13's whole distinction between
+    // the world and the music. A gate that asserted the map was empty would have
+    // demanded the opposite of what this pass is for.
+    assert.equal(cutRun.ambience.has('gust'), true, 'the finale silenced the world bed as well')
+
+    // THE TEARDOWN, on a real graph: every oscillator the music owns is stopped —
+    // three pad voices, three wobble LFOs, the cutoff LFO, the hiss source, the hiss
+    // LFO and the tone — and the graph is dropped, so the next frame builds a new one
+    const oscillators = [
+      ...music.pad.voices.map((padVoice) => padVoice.osc),
+      ...music.pad.wobbles,
+      music.pad.lfo,
+      music.hiss.source,
+      music.hiss.lfo,
+      music.tone.osc,
+    ]
+    assert.equal(oscillators.length, 9, 'the music built a different number of oscillators than the teardown walks')
+    assert.equal(oscillators.filter((node) => node.stopped).length, 0, 'something was already stopped')
+    manager.stopAmbient()
+    assert.equal(manager.music, null, 'the music survived its own teardown')
+    assert.equal(manager.musicChord, -1, 'the chord survived the teardown')
+    for (const node of oscillators) {
+      assert.equal(node.stopped, true, `an oscillator of the music was left running behind a gain at ${node.kind}`)
+    }
+  } finally {
+    globalThis.AudioContext = real
+  }
 })
 // ---------------------------------------------------------------------------
 // the store React subscribes to — v2's `src/game/store.js`

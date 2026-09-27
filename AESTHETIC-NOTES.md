@@ -544,6 +544,106 @@ before "buildings stop being flat extrusions" can mean anything; and the ten
 differences in §3 are the reason we are not trying to reproduce the reference's
 picture, only its method.
 
+---
+
+## 8. Pass 14 addendum: the music, and what it is not allowed to be
+
+This file was written for the 3D-fidelity passes, and this section is here for
+the same reason §6 is: **so a later pass does not "discover" something and spend
+a pass on it.** The reference for the music is not the sakuragaoka repository at
+all — it is the Backrooms video (67ktSmxCniA, named in `GAMEDESIGN.md` §12.3) and
+the single most quoted fact about it: *it has that drone*. Everything below is
+either taken from that, or deliberately not.
+
+### M1 — Taken: a hum under a hiss, and nothing else
+
+The reference's sound is a low sustained drone with a tape hiss on top of it and
+nothing that plays a tune. The pad is therefore **darker than the room tone it
+plays in** (a 480 Hz lowpass under a 520 Hz ceiling), the hiss is **top-octave
+only** (highpassed at 2400 Hz) and **an eighth of the pad's level**, and the
+whole thing is a *bed*, not a soundtrack. A pad a listener can consciously
+follow is the first sign that a game has acquired a score, and a game with a
+score stops being a place.
+
+### M2 — Taken: wobble, and the reason it is two rates
+
+An old recording of a hum has a pitch that drifts. Tape wobble is that drift, and
+it is here as two incommensurate LFOs (0.043 and 0.071 Hz) summed into each
+voice's `detune`. **Two, not one:** a single LFO is periodic, so a player who
+listens for a minute and a half has heard every pitch it will ever produce. This
+is §2's D10 (no predictable, iteration-order-dependent output) applied to audio,
+and `verify.mjs` *measures* the near-repeat (535 s) rather than believing the
+paragraph.
+
+### M3 — NOT taken: the reference's actual drone
+
+The video's hum is a specific recording, and §13's own continuity rule already
+covers why we do not reproduce it: **the bell is the player's, and the drone is
+ours**. `DRONE_TUNING` is v1's, retuned a fourth down, and the music's pad is a
+different instrument on a different bus for the same reason. What is borrowed is
+the *idea* of a hum, synthesized from three oscillators in A minor.
+
+### M4 — NOT taken: any part of a reference track
+
+There is no copyrighted audio in this game, and the checklist's hard rule is that
+the music is "an original evocation of the reference vibe". A natural-minor
+progression, a tape hiss and a wobble are the three least protectable things in
+music — they are scales and noise. The thing that *is* protectable is a melody,
+and there is not one: the pad has no theme, the motif picks from the scale without
+repeating a phrase, and nothing in the file has a tune in it.
+
+### M5 — The "distant bell motif", and why it is a piano
+
+The P4 row asks for "an occasional distant bell motif echoing the toll", and §9
+says, in one specific and load-bearing way, the opposite: *the only bell in the
+game is the hammer, and it tolls for the player rather than against them.* Pass
+13 took that seriously enough to delete v1's "distant clang and second bell
+somewhere else in the dark" outright. Re-adding that sound under a different name
+would undo a decision a whole pass was built on.
+
+So the motif **echoes the toll's envelope and nothing else**: a sine with a long
+exponential decay, a whole-number octave partial under it, and a noise transient
+at the front. A struck string, not a struck bell. A bell is identified by its
+INHARMONICITY — `BELL_PARTIALS` is 0.5 / 1 / 1.19 / 1.5 / 2, and the motif's two
+partials are 1 and 2 — and the gate holds the ratio rather than trusting a
+comment. What it borrows is the SHAPE: one note that takes seconds to leave,
+arriving out of a silence, which is what makes it read as *something is playing
+piano over there* rather than *there is a soundtrack here*.
+
+### M6 — "Safe zones" are a state here, not a room
+
+The brief asks the music to swell in safe zones. §3.1 is a 448 m city that wraps
+on both axes, every district holds an objective, and §7.4's banish removes the
+creature rather than opening a room to stand in. So the safe zone is a **state**:
+nothing is near and nothing has noticed you — `max(proximity, awareness) ≤ 0.06`.
+That is one number read from the two §6.4 already has, which is why "ducks when
+it is close" and "swells where it is safe" are the same rule rather than two
+rules that can disagree. Inventing a lit doorway to mark a safe zone would have
+been a new mechanic wearing a sound's clothes.
+
+### M7 — The bus, which is the whole argument
+
+The world bed is inside `ambient.bus`. The music is its own `GainNode` reaching
+the master, and the **lifetime** is shared (`stopAmbient` tears it down). A bed
+wants to be flat and unfelt; a score wants to be a thing that can be ducked to a
+third, killed to nothing, and cut to a single tone. One bus would have forced one
+compromise on both, and the compromise would have been the bed's.
+
+The finale is the last of those: `state.finale` latches, the music cuts in
+0.12 s, and one 41.2 Hz tone rises over 1.6 s **from below the ladder's gain
+node** — a pad that took its own tone with it would be a cut and not a cut. The
+world bed is not silenced with it. A city that went quiet with its music would
+not be frightening.
+
+### M8 — What still needs a pair of ears
+
+Everything above is a *choice with an argument*, and every number was checked for
+the property its argument implies. What no headless gate can answer is which
+chord is prettiest, whether 41.2 Hz is the right floor, and whether the safe-zone
+swell is audible as a change rather than as a pump. Those are listening
+questions, and they are the reason this pass's checks claim the *properties* and
+not the *taste*.
+
    the detail worth stealing — a *warm-lit* interior appears with probability
    **0.04**. The lit windows are rare enough to be events.
 5. **Placement by reservation, not by rejection sampling.** `house.js` gives every

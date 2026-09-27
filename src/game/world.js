@@ -1228,6 +1228,21 @@ export class LongQuietGame {
       // bands are `skyView`'s table and `skyView`'s clock; a second copy of
       // pass 9's drift maths in this file would be a copy that drifts.
       haze: this.skyView.hazeIntensity(),
+      // ITERATION 2, PASS 14 — the music's two facts, and neither is about the
+      // player. `animTime` is the world's own clock, handed over for the same
+      // reason `haze` is: the music's chord progression is a pure function of it,
+      // and §14.3's pause freezes this number BEFORE the audio is updated, so a pad
+      // that kept moving under a pause card would be a sound the game insists it
+      // has stopped. A clock of the music's own would have had to be frozen by hand.
+      time: this.animTime,
+      // the finale, as §10.2's condition. The LATCHED flag and not the creature's
+      // current state, because §9.1 keeps `finale` across a capture and §10.2 gives
+      // ENRAGED no phase-out: the music's silence has to survive a black in the
+      // finale, and a staggered creature in the finale is still in the phase. The
+      // audio's only use of it is to cut the music, and the headlights, the dusk
+      // ramp and the fog all read this same field two hundred lines up — one flag,
+      // five readers, and the gate holds them together.
+      finaleEnraged: this.state.finale === true,
     }
   }
 

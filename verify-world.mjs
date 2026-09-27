@@ -8537,6 +8537,251 @@ check('a pause freezes the bed, and a hidden tab does not fire a backlog', () =>
   assert.ok(tabbed.ambience.get('drip').at >= 900, 'the cursor is still behind the clock after a hidden tab')
 })
 
+// iteration 2, pass 14 — the music, on the real world
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS BLOCK OWNS, AND WHY A PURE FUNCTION CANNOT ANSWER IT
+// -------------------------------------------------------------
+// `verify.mjs` proves the music's numbers: the scale, the ladder, the cut, the
+// schedule. Every one of those is a pure function of a frame, and every one of them
+// could be true while the world handed the audio a frame that says nothing — which is
+// exactly the shape of the bug this repository already has a scar for. What has to be
+// shown HERE is four things a pure function cannot reach:
+//
+//   1. **THE CLOCK IS THE WORLD'S.** `lastFrame.time` is `game.animTime` on a world
+//      that has been played, paused and resumed, and the pad's chord has to follow it
+//      exactly. A world that passed a literal 0 would play a perfect, silent,
+//      four-second chord for a whole run, and every pure check would still pass.
+//   2. **THE PAUSE FREEZES THE PROGRESSION.** Not the cursor — the CHORD. `animTime`
+//      is the number the pad is a function of, so a pause that failed to freeze it
+//      would be a pad changing chord under the pause card, and the only way to see
+//      that is to read the chord on the frame before and the frame after.
+//   3. **THE FINALE IS THE SAME FLAG THE HEADLIGHTS READ.** `state.finale` drives the
+//      music's silence, the car's lights, the dusk ramp and the fog. A music that
+//      watched a different flag would cut on the wrong frame, and one that cut the
+//      world bed as well would be §13's two halves confused.
+//   4. **THE LADDER ANSWERS A REAL CREATURE.** The threat is `max(proximity,
+//      awareness)`; the pure gate walks both numbers, and this puts an actual creature
+//      at an actual distance in an actual world and reads what the world would route.
+
+check('the music plays on the world\'s own clock, and a pause freezes the progression', () => {
+  game.restart()
+  game.start()
+  run(game, 1.6)
+  assert.ok(audio.lastFrame, 'the world never handed the audio a frame')
+  assert.equal(audio.lastFrame.time, game.animTime, 'the music is not on the world\'s clock')
+  // ...and the pad is a pure function of that number, so the chord follows the world
+  const read = () => audioModule.musicChordAt(audio.lastFrame.time, game.seed)
+  const before = read()
+  const playedFrom = before.at
+  assert.ok(before.step >= 0, 'the world clock is behind the first chord')
+  // a minute of play moves the progression through real chords, and the number of
+  // chord changes is the one the world's own clock says it should be
+  run(game, 60)
+  const after = read()
+  assert.ok(after.step - before.step >= 12, `a minute of play moved the pad by ${after.step - before.step} chords`)
+  assert.equal(
+    after.step - before.step,
+    Math.floor((game.animTime - playedFrom) / audioModule.MUSIC_CHORD_SECONDS),
+    'the pad and the world disagree about how many chords have passed',
+  )
+  // THE PAUSE. §14.3 freezes `animTime` before the audio is updated, and the frame a
+  // paused world builds is the SILENCE frame — `{ started: false }`, with no facts in
+  // it at all. So the claim is not "the music's time is unchanged"; it is "the world
+  // stopped advancing the number the music is a function of, and told the audio
+  // nothing". A world that kept its clock running under the pause card would change
+  // the pad's chord while insisting the game was stopped, and the only place that is
+  // visible is here.
+  const frozen = { time: game.animTime, chord: read() }
+  game.setPaused(true)
+  for (let i = 0; i < 180; i += 1) game.update(DT)
+  assert.equal(audio.lastFrame.started, false, 'a paused world still handed the audio a frame of facts')
+  assert.equal(game.animTime, frozen.time, 'the world clock moved while paused')
+  // ...so the chord the pad would be on is the chord it was on, which is the whole
+  // reason the progression is a pure function of `frame.time` and not a cursor
+  assert.deepEqual(audioModule.musicChordAt(game.animTime, game.seed), frozen.chord, 'the pad changed chord while the game was paused')
+  game.setPaused(false)
+  run(game, audioModule.MUSIC_CHORD_SECONDS * 2)
+  assert.notEqual(read().index, frozen.chord.index, 'the pad never came back')
+  assert.ok(audio.lastFrame.time > frozen.time, 'the clock did not restart after the pause')
+})
+
+check('the finale is the music\'s silence, and it is the creature\'s flag too', () => {
+  game.restart()
+  game.start()
+  run(game, 1.2)
+  // before: music on, finale off
+  assert.equal(audio.lastFrame.finaleEnraged, false, 'a fresh run is in a finale')
+  const playing = audioModule.musicVoice(audio.lastFrame)
+  assert.ok(playing.level > 0 && playing.tone === 0, 'the music is not playing before the finale')
+  // the finale is the LATCHED flag, reported as a fact, and the creature is on the
+  // field so the cut is not "the creature is asleep" wearing a finale's clothes
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0 })
+  game.state = { ...game.state, finale: true }
+  game.update(DT)
+  assert.equal(audio.lastFrame.finaleEnraged, true, 'the world did not report the finale')
+  const finale = audioModule.musicVoice(audio.lastFrame)
+  assert.equal(finale.level, 0, 'the music is still playing in the finale')
+  assert.equal(finale.hiss, 0, 'the hiss survived the cut')
+  assert.equal(finale.silent, true)
+  assert.ok(finale.tone > 0, 'the finale left nothing at all')
+  // THE OTHER READER OF THE SAME FLAG, on the same frame. §10.2's enrage hangs off
+  // `state.finale` inside `creatureStep`, and the music's silence hangs off it in
+  // `_audioFrame`; a music that watched a flag of its own, or a flag read on a
+  // different frame, would cut on a frame where nothing else in the game had changed.
+  // The headlights are the third reader and they are NOT tested here, on purpose:
+  // §10.3 lights them from `_onPortalShut`, so reaching them means shutting three
+  // portals for real, and the third-portal block above already does that.
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0 })
+  game.state = { ...game.state, finale: true }
+  game.update(DT)
+  assert.equal(audio.lastFrame.finaleEnraged, true, 'the world did not report the finale')
+  assert.equal(game.creature.state, 'enraged', 'the creature did not take the same flag the music did')
+  // THE WORLD BED IS NOT SILENCED WITH IT. That is §13's split, measured: the bed
+  // rides the drone's ladder and the music has its own, so a cut music is the one
+  // moment the world is louder than the score.
+  const routed = audioModule.routeAudio(audio.lastFrame)
+  const room = routed.find((cue) => cue.id === 'roomTone')
+  assert.ok(room.params.level > 0, 'the finale silenced the room tone as well')
+  const drone = routed.find((cue) => cue.id === 'drone')
+  assert.equal(drone.params.level, audioModule.DRONE_LEVEL, 'the finale ducked the drone as well')
+  // ...and the note stream stops too, which is a different claim from the pad's and is
+  // the difference between a silence and a soundtrack with a gap in it
+  const motif = routed.find((cue) => cue.id === 'musicMotif')
+  assert.equal(motif.params.motif, 0, 'a note is still scheduled in the finale')
+  assert.equal(audioModule.musicMotifVoice({ a: 0.5, b: 0.5, c: 0.5 }, motif.params).level, 0)
+  // The world's own cursors keep running through the finale, and the music's does
+  // not, in the same loop and on the same frames — which is what makes the cut
+  // legible: a city that went quiet with its music would not be frightening. The
+  // motif is advanced exactly as `updateMusicMotif` does it, from the frame the world
+  // actually handed over, rather than by hand, so this is the voice's gate measured
+  // on real frames.
+  const manager = new audioModule.AudioManager()
+  manager.setSeed(game.seed)
+  const heard = []
+  const breathed = []
+  for (let i = 0; i < 60 * 20; i += 1) {
+    const cue = audioModule.routeAudio(audio.lastFrame).find((entry) => entry.id === 'musicMotif')
+    if (cue.params.playing === true && cue.params.silent !== true && cue.params.motif > 0) {
+      manager._advanceAmbience('motif', DT, (event) => heard.push(event))
+    }
+    manager._advanceAmbience('gust', DT, (event) => breathed.push(event))
+    game.update(DT)
+  }
+  assert.ok(breathed.length > 0, 'the world stopped breathing in the finale')
+  assert.equal(heard.length, 0, 'a note was played in the finale')
+})
+
+check('the ladder answers a real creature, at a real distance', () => {
+  game.restart()
+  game.start()
+  run(game, 1.2)
+  // The creature is AWAKE for this one, and that is load-bearing rather than tidiness:
+  // `creaturePresent` is false for a dormant or staggered creature, and §7.4's
+  // banish is a removal, so a ladder measured against a sleeping creature is a
+  // ladder that never moves. The music is only supposed to duck for something that
+  // is actually out there.
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0 })
+  // The PLAYER is moved rather than the creature, and the reason is the harness's
+  // own seam rather than a preference: `update()` runs the creature's AI before it
+  // builds the audio frame, so anything written into `creaturePosition` is overwritten
+  // a few lines before the audio reads it — the same class of mistake the harness's
+  // own notes record about the swing reach and the capture radius. Teleporting the
+  // player to a real offset from the creature's CANONICAL position is the move that
+  // survives a frame, and it is what the facility check above already does.
+  const stand = (offset) => {
+    const at = game.creaturePosition
+    game.player.teleport(at.x + offset, at.z, 0)
+    game.update(DT)
+    return audio.lastFrame
+  }
+  const far = stand(180)
+  const middle = stand(15)
+  const near = stand(3)
+  // and the distances below are the WORLD's, not numbers this check chose
+  assert.ok(far.creatureDistance > 100, `the far listener is ${far.creatureDistance.toFixed(1)} m away`)
+  assert.ok(near.creatureDistance < 8, `the near listener is ${near.creatureDistance.toFixed(1)} m away`)
+  const voiceOf = (frame) => audioModule.musicVoice(frame)
+  const levels = [voiceOf(far).level, voiceOf(middle).level, voiceOf(near).level]
+  assert.ok(levels[0] > levels[1] && levels[1] > levels[2], `the music did not duck as the creature approached: ${levels.join(' > ')}`)
+  assert.ok(levels[2] > 0, 'the music stops when the creature arrives, which is a cue and not a duck')
+  // and the frame's own two readouts are what drove it, over the same 30 m the breath
+  // panics on: three metres is inside it and 180 is well outside
+  assert.equal(voiceOf(far).safe, true, '180 m is not a safe zone')
+  assert.equal(voiceOf(near).safe, false, '3 m is a safe zone')
+  assert.ok(
+    Math.abs(audioModule.proximityAt(near.creatureDistance, 30) - voiceOf(near).threat) < 1e-9,
+    'the threat is not the proximity the frame reported',
+  )
+  // the two ends of the walk are the ladder's own two rungs rather than two extra
+  // rules: the far end is the safe rung exactly, and the near end is whatever the
+  // threat the world reported says it is — 3 m is 0.9 of a 30 m range, not 1, and a
+  // check that assumed 1 would be asserting a distance the harness chose instead
+  assert.equal(voiceOf(far).ladder, audioModule.musicLadderAt(0), 'the far end is not the safe rung')
+  assert.equal(voiceOf(near).ladder, audioModule.musicLadderAt(voiceOf(near).threat), 'the near end is not the ladder reading the frame')
+  // and the finale, reached the honest way, still wins over the creature being close
+  game.state = { ...game.state, finale: true }
+  game.update(DT)
+  assert.equal(audioModule.musicVoice(audio.lastFrame).level, 0, 'a close creature overrode the finale')
+})
+
+check('the note stream is the world\'s, and the finale takes it with it', () => {
+  game.restart()
+  game.start()
+  run(game, 1.2)
+  // the pure schedule, asked for the seed this world is actually running
+  const schedule = audioModule.ambienceStream('motif', game.seed, 8)
+  assert.ok(schedule.length >= 3, 'the schedule is empty')
+  // the world's own played frames, replayed through the real cursor machine: only
+  // frames the router sent the row on may advance it, which is the pause property
+  // pass 13 established, applied to the music's own stream
+  const manager = new audioModule.AudioManager()
+  manager.setSeed(game.seed)
+  const played = []
+  let routedFrames = 0
+  let playedSeconds = 0
+  for (let i = 0; i < 60 * 40; i += 1) {
+    const routed = audioModule.routeAudio(audio.lastFrame)
+    if (routed.length > 0) {
+      routedFrames += 1
+      playedSeconds += DT
+      const cue = routed.find((entry) => entry.id === 'musicMotif')
+      manager._advanceAmbience('motif', DT, (event) => played.push(event))
+      // the note that WOULD be played on this frame, from this frame's own cue
+      const next = audioModule.musicMotifVoice(schedule[0], cue.params)
+      assert.ok(next.level <= audioModule.MUSIC_MOTIF.level, 'a note was louder than a note')
+    }
+    game.update(DT)
+  }
+  assert.ok(routedFrames > 60 * 30, 'the world stopped routing the music, so this check proved nothing')
+  assert.ok(
+    Math.abs(manager.ambience.get('motif').clock - playedSeconds) < 1e-9,
+    'the motif clock is not the played time',
+  )
+  assert.deepEqual(
+    played,
+    schedule.filter((event) => event.at <= playedSeconds).slice(0, played.length),
+    'the music did not play the schedule the world\'s own clock produced',
+  )
+  assert.ok(played.length >= 1 && played.length <= 4, `${played.length} notes in 40 s of play is a rhythm, not an event`)
+  // the finale, the same machine and the same frames: the cursor stops where it stood
+  // rather than advancing, so a run that ends in the finale does not fire its backlog
+  game.state = { ...game.state, finale: true }
+  const held = manager.ambience.get('motif').clock
+  const before = played.length
+  for (let i = 0; i < 60 * 20; i += 1) {
+    const cue = audioModule
+      .routeAudio({ ...audio.lastFrame, finaleEnraged: true })
+      .find((entry) => entry.id === 'musicMotif')
+    if (cue.params.playing === true && cue.params.silent !== true && cue.params.motif > 0) {
+      manager._advanceAmbience('motif', DT, (event) => played.push(event))
+    }
+    game.update(DT)
+  }
+  assert.equal(manager.ambience.get('motif').clock, held, 'the finale advanced the music clock')
+  assert.equal(played.length, before, 'a note was scheduled into the silence')
+})
+
 
 
 
