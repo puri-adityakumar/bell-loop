@@ -134,6 +134,14 @@ function makeContext2d(canvas) {
     imageSmoothingQuality: 'low',
 
     // --- raster: the one part that is real -----------------------------------
+    //
+    // `putImageData` KEEPS what it is given, and that is a change from a no-op.
+    // It is what lets pass 8's tileability gate measure the shimmer's own
+    // pixels: the question "does this texture meet itself cleanly at its tile
+    // edge" is a property of the generated image and of nothing else, and a stub
+    // that throws the image away can only ever be asked it as a source regex.
+    // Storing the last image per canvas is enough — three.js keeps one texture
+    // per canvas here, and the gate reads it straight back off `map.image`.
     createImageData(width, height) {
       const w = Math.max(1, Math.ceil(Number(width) || 1))
       const h = Math.max(1, Math.ceil(Number(height) || 1))
@@ -142,7 +150,9 @@ function makeContext2d(canvas) {
     getImageData(x, y, width, height) {
       return this.createImageData(width, height)
     },
-    putImageData() {},
+    putImageData(image) {
+      if (image && image.data) canvas.pixels = image
+    },
 
     // --- path construction ---------------------------------------------------
     beginPath: noop,
@@ -5442,6 +5452,77 @@ check('the canal crosses a street, is a channel and not a stripe, and shimmers o
   // channel `CANAL_LEN` long only tile if the length axis wraps, so the wrap is
   // the claim and the scrolling offset is the consequence of it.
   assert.equal(map.wrapS, THREE.RepeatWrapping, `the canal's map wraps its length as ${map.wrapS}, so a shimmer scroll smears one tile down the whole channel`)
+  // THE U AXIS IS THE LONG ONE, and this is the gate the pass shipped without.
+  //
+  // `update()` scrolls `map.offset.x`, and a texture's U axis is its X axis, so
+  // the scroll runs along whichever LOCAL axis the water plane's U follows. The
+  // plane was laid down with `rotateX(-PI/2)` alone, which puts U on the local X
+  // — the axis `place()` scales by `CANAL_W` (1.1 m), the channel's WIDTH. The
+  // scroll was therefore running sideways across a 1.1 m trough, while the
+  // divisor in `update()` is `CANAL_LEN / CANAL_SHIMMER_TILES` = 3.71 m, a
+  // length that only exists along the channel: the ground speed was
+  // 0.06 x (1.1/26) = 0.0025 m/s, 23.6x slower than the constant says, and 90
+  // degrees away from "water moves down the channel".
+  //
+  // EVERY COUNT ABOVE PASSED with the plane flat, which is why this is measured
+  // rather than reasoned: the water was in the right place, at the right lift,
+  // the right width, the right colour and the right render order. Nothing about
+  // the SHIMMER's axis is visible to any of them, and a wrong axis reads on
+  // screen as water that is simply still — indistinguishable from "slow", which
+  // is the very property the pass was after.
+  //
+  // Read off the BUILT geometry, not the source: the claim is which local axis U
+  // follows, and the source may lay the plane down any way it likes as long as
+  // the two agree.
+  const uv = view.pools.canalWater.mesh.geometry.attributes.uv
+  const pos = view.pools.canalWater.mesh.geometry.attributes.position
+  let uOnX = 0
+  let uOnZ = 0
+  for (let i = 0; i < uv.count; i += 1) {
+    if (uv.getX(i) !== 0) continue
+    // v0 is the U=0 row; its partner is the far corner at the same V.
+    const partner = [...Array(uv.count).keys()].find(
+      (j) => j !== i && Math.abs(uv.getY(j) - uv.getY(i)) < 1e-6 && uv.getX(j) === 1,
+    )
+    if (partner === undefined) continue
+    const dx = Math.abs(pos.getX(partner) - pos.getX(i))
+    const dz = Math.abs(pos.getZ(partner) - pos.getZ(i))
+    if (dx > 1e-6 && dz <= 1e-6) uOnX += 1
+    if (dz > 1e-6 && dx <= 1e-6) uOnZ += 1
+  }
+  assert.ok(
+    uOnZ > 0 && uOnX === 0,
+    `the canal's U axis follows the local ${uOnX > 0 ? 'X' : 'neither'} axis, and local X is the ${waterNumber('CANAL_W')} m width, so the shimmer scrolls across the channel instead of down it`,
+  )
+  // ...and the consequence as a MEASUREMENT rather than as a direction, because
+  // the direction is the easy half to state and the LENGTH is what the constant
+  // `CANAL_SHIMMER_MPS` is a speed OF. `update()` divides by
+  // `CANAL_LEN / CANAL_SHIMMER_TILES`, which is only correct if one U tile
+  // really does span that many METRES of world along U. So: take the local axis
+  // U follows, scale it by that axis's instance scale, and require the world
+  // length of one U tile to be the divisor's reciprocal.
+  //
+  // This is the half that catches the SPEED. The direction assertion above would
+  // also pass on a plane whose U runs along Z but is scaled wrongly, and the
+  // ground speed is a pure function of the ratio between the two lengths.
+  const uLocalSpan = Math.max(
+    Math.abs(pos.getX(1) - pos.getX(0)),
+    Math.abs(pos.getZ(1) - pos.getZ(0)),
+  )
+  const uWorldSpan = uOnZ > 0 ? water[0].sz : water[0].sx
+  const worldPerTile = (uWorldSpan * uLocalSpan) / map.repeat.x
+  const wanted = waterNumber('CANAL_LEN') / waterNumber('CANAL_SHIMMER_TILES')
+  assert.ok(
+    Math.abs(worldPerTile - wanted) < 1e-3,
+    `one shimmer tile spans ${worldPerTile.toFixed(3)} m of world along U and update() divides by ${wanted.toFixed(3)} m, so the water moves at ${(waterNumber('CANAL_SHIMMER_MPS') * wanted / worldPerTile).toFixed(4)} m/s rather than the ${waterNumber('CANAL_SHIMMER_MPS')} the constant promises`,
+  )
+  // The repeat count is what makes the tile that long, and it is set on U — so
+  // with the axis right the repeat is 7 along the channel and 1 across it. A
+  // repeat of 1 on U is a 26 m tile that never visibly scrolls.
+  assert.ok(
+    map.repeat.x >= 3,
+    `the shimmer map repeats ${map.repeat.x} times along U, so one tile is ${(waterNumber('CANAL_LEN') / map.repeat.x).toFixed(1)} m and a scroll of ${waterNumber('CANAL_SHIMMER_MPS')} m/s takes ${(waterNumber('CANAL_LEN') / map.repeat.x / waterNumber('CANAL_SHIMMER_MPS')).toFixed(0)} s to cross it`,
+  )
   const before = map.offset.x
   run(game, 4)
   const after = map.offset.x
@@ -5491,7 +5572,81 @@ check('the canal crosses a street, is a channel and not a stripe, and shimmers o
   assert.ok(view.waterRejected > rejectedBefore, 'the exclusion refused a doorway without recording it, so nothing can tell the filter ran')
   // ...and it says yes a long way out, or it is a filter that refuses everything.
   assert.equal(view._waterClear(portal.x + 40, portal.z, 0), true, 'the water exclusion refuses a spot 40 m from a portal, so it is refusing everything')
-  console.log(`\n  pass-8 canal: ${long.toFixed(1)} m long, crossing ${roadDistance(water[1].z).toFixed(1)} m from the centreline, shimmer ${after.toFixed(4)} after 4 s`)
+  // THE TILE TILES, measured off the shimmer's OWN PIXELS rather than off the
+  // source. `RepeatWrapping` on a scrolled map is the ENABLER of a seam, not its
+  // prevention: a texture whose value at u=0 does not equal its value at u=1
+  // draws a hard line at that boundary, and `CANAL_SHIMMER_TILES` boundaries are
+  // 3.71 m apart going down a 26 m channel at 0.06 m/s. The pass shipped sine
+  // bands at 2.3 and 4.1 cycles and a swell at 1.7 — non-integers, so the sines
+  // do not close — and every other gate in the suite passed, because a wrap mode
+  // and a repeat count say nothing about whether the image between them is
+  // continuous.
+  //
+  // This is the check that could not be written before the 2D stub kept its
+  // `putImageData` payload: "does the generated texture meet itself" is a
+  // property of the image and of nothing else, and reading it off the source
+  // regexes that produced the pixels would be asking the generator whether it
+  // agrees with itself.
+  // three.js keeps the canvas on `map.image` and the canvas is the stub, so the
+  // pixels the generator handed to `putImageData` are read back off
+  // `map.image.pixels` — the image itself, not a re-derivation of it.
+  const image = map.image && map.image.pixels
+  assert.ok(image && image.data, 'the shimmer canvas kept no pixels, so its tile cannot be measured')
+  assert.ok(image.width > 1 && image.height > 1, `the shimmer is ${image.width}x${image.height}, which is not a tile`)
+  const red = (x, y) => image.data[(y * image.width + x) * 4]
+  const size = image.width
+  // A SEAM IS THE WRAP, RELATIVE TO THE TEXTURE'S OWN STEEPEST STEP — and the
+  // word "relative" is the whole of this gate.
+  //
+  // The obvious assertion is that the first and last texels of an axis are
+  // equal, and it is wrong twice over. The generated buffer samples `u = x/size`
+  // for `x` in `[0, size)`, so the last texel sits at 0.984 and wraps to 0.0
+  // across a one-texel gap: even a perfectly periodic function lands with a step
+  // there, and a bound tight enough to reject that step also rejects the correct
+  // texture. The first version of this check used `vSeam <= 3 && uSeam <= 3` and
+  // failed the FIXED shimmer at 3 and 6 — a gate that could not be satisfied by
+  // any seamless sine, which is a gate that reports the world is broken.
+  //
+  // The honest question is whether the wrap is distinguishable from the texture
+  // it is cut out of. A gradient that steps by `n` between neighbouring texels
+  // has no seam at its edge if the wrap steps by no more than `n`: the eye
+  // cannot see a discontinuity it cannot see the inside of. So the bound is the
+  // steepest ADJACENT step already inside the tile, in the same direction, and
+  // the pass as shipped — measured at `SURFACE_SEEDS.water` — wraps its U axis
+  // by 70/255 against an interior maximum of 7, and its V axis by 38 against
+  // 20: a discontinuity an order of magnitude steeper than anything the texture
+  // does on its own, which is precisely what a seam looks like.
+  let maxInnerU = 0
+  let maxInnerV = 0
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size - 1; x += 1) maxInnerU = Math.max(maxInnerU, Math.abs(red(x + 1, y) - red(x, y)))
+  }
+  for (let y = 0; y < size - 1; y += 1) {
+    for (let x = 0; x < size; x += 1) maxInnerV = Math.max(maxInnerV, Math.abs(red(x, y + 1) - red(x, y)))
+  }
+  let wrapU = 0
+  let wrapV = 0
+  for (let y = 0; y < size; y += 1) wrapU = Math.max(wrapU, Math.abs(red(0, y) - red(size - 1, y)))
+  for (let x = 0; x < size; x += 1) wrapV = Math.max(wrapV, Math.abs(red(x, 0) - red(x, size - 1)))
+  assert.ok(
+    wrapU <= maxInnerU && wrapV <= maxInnerV,
+    `the shimmer does not tile: wrapping its U axis steps ${wrapU}/255 where the texture's own steepest step is ${maxInnerU}/255, and its V axis steps ${wrapV}/255 against ${maxInnerV}/255, so a scrolled RepeatWrapping map draws a hard seam once per tile`,
+  )
+  // ...and it is not a FLAT tile either, which is the other half of the same
+  // bound: a texture that is one value everywhere also has a zero wrap step, and
+  // a canal whose surface does not vary along its length is a painted line. The
+  // crest-to-trough spread has to be a real fraction of the range.
+  let low = 255
+  let high = 0
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const value = red(x, y)
+      if (value < low) low = value
+      if (value > high) high = value
+    }
+  }
+  assert.ok(high - low > 40, `the shimmer spans only ${high - low}/255 from crest to trough, so there is no pattern to scroll`)
+  console.log(`\n  pass-8 canal: ${long.toFixed(1)} m long, crossing ${roadDistance(water[1].z).toFixed(1)} m from the centreline, shimmer ${after.toFixed(4)} after 4 s, tile wraps u${wrapU}/${maxInnerU} v${wrapV}/${maxInnerV} over ${high - low}/255 of crest-to-trough`)
 })
 
 check('the portal exclusion is CALLED, and not merely correct when asked', () => {

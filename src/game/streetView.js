@@ -2015,14 +2015,29 @@ const STREAK_RIM = 0.45
  * each side of a 90 mm-deep, 1.1 m-wide channel.
  *
  * `CANAL_SHIMMER_TILES` 7 is derived from the band count rather than picked:
- * `makeShimmerTexture` puts 1, 2.3 and 4.1 cycles across the channel's WIDTH,
- * which is 1.1 m, so the three bands repeat every 1.1 m along the channel and a
- * 3.7 m tile shows three and a half of each — enough structure to read as moving
- * water at 11 m (48 px) without a repeat a player can catch. `update()` scrolls
- * `offset.x` by `CANAL_SHIMMER_MPS * dt / (CANAL_LEN / CANAL_SHIMMER_TILES)`, so
- * the metres-per-second on the constant really is metres per second on the
- * ground and not tiles per second, which is the mistake that makes a "slow"
- * scroll 7x too fast.
+ * `makeShimmerTexture` puts 1, 2 and 4 cycles across the channel's WIDTH, which
+ * is 1.1 m, so the three bands repeat every 1.1 m across it and a 3.7 m tile
+ * carries two full cycles of the along-channel swell — enough structure to read
+ * as moving water at 11 m (48 px). The frequencies are whole numbers BECAUSE a
+ * sine meets its own tile edge only at an integer cycle, and `RepeatWrapping` on
+ * a map that does not meet itself draws that discontinuity as a hard seam once
+ * per tile. The honest cost is that the pattern DOES repeat, every 3.71 m,
+ * where the previous version of this comment claimed it did not; at the
+ * 5.6-31.6 m the canal is actually read from, that repeat is below the
+ * threshold at which the eye resolves one. A seam every 3.7 m is the
+ * smaller artefact.
+ *
+ * `update()` scrolls `offset.x` by `CANAL_SHIMMER_MPS * dt /
+ * (CANAL_LEN / CANAL_SHIMMER_TILES)`, so the metres-per-second on the constant
+ * is metres per second ON THE GROUND only if the map's U axis runs ALONG the
+ * 26 m channel. It did not, and this paragraph used to assert that it did. The
+ * water plane was laid down with `rotateX(-PI/2)` alone, which leaves U on the
+ * local X that `place()` scales by `CANAL_W` — so the scroll crossed the 1.1 m
+ * WIDTH at 0.0025 m/s, 23.6x slow and 90 degrees from the flow. The divisor was
+ * right and the axis was not, and a delta check that recomputes this same
+ * formula cannot see which. The pool's geometry now also carries
+ * `rotateY(PI/2)`, and `verify-world.mjs` measures the U axis off the BUILT
+ * geometry and converts it to metres-per-second rather than re-deriving it.
  *
  * `CANAL_LIP_H` 0.1 and `CANAL_DEPTH` 0.09: a 100 mm upstand with the water
  * 10 mm below its top. A real 側溝 is a precast concrete U — a 450-900 mm
@@ -2378,11 +2393,16 @@ function makePoolTexture({ size = 128, peak = 1, rim = 0 } = {}) {
  * (asphalt, siding, hedge) because those surfaces are *isotropic* — the grain of
  * tarmac has no direction. Water in a channel is emphatically not: it is
  * stretched along the flow, so a noise field on it reads as a dirty concrete
- * trough and not as water at all. Three sine bands at 1, 2.3 and 4.1 cycles
- * across the channel's width, multiplied and lifted, give the interference
- * pattern that moving water actually has — a few bright crests, wide dark
- * troughs — and the three are INCOMMENSURATE, so the pattern does not visibly
- * repeat over the 26 m of channel.
+ * trough and not as water at all. Three sine bands at 1, 2 and 4 cycles across
+ * the channel's width, multiplied and lifted, give the interference pattern
+ * that moving water actually has — a few bright crests, wide dark troughs — and
+ * because the tile is SEAMLESS the pattern is periodic, repeating every
+ * `CANAL_LEN / CANAL_SHIMMER_TILES` = 3.71 m rather than once over the whole
+ * channel. The review corrected that trade: a non-periodic pattern cannot tile,
+ * and a non-tiling pattern on a scrolled `RepeatWrapping` map is a hard seam
+ * once per tile. A seam every 3.7 m is a far smaller artefact than seven hard
+ * lines travelling down the water, and 3.71 m at the 11-30 m the canal is
+ * actually read from is under the threshold at which the eye resolves a repeat.
  *
  * The value is written to RGB and 255 to alpha, and this is the opposite
  * convention to `makePoolTexture` on purpose: this is a MAP on a lit surface,
@@ -2420,13 +2440,35 @@ function makeShimmerTexture({ size = 64, seed = 1, base = 0.5, contrast = 0.42, 
       const v = y / size
       // v ACROSS the channel, u ALONG it. The bands vary across and are
       // near-constant along, which is what "stretched along the flow" means.
+      //
+      // EVERY FREQUENCY IS AN INTEGER, and that is the second thing this
+      // function has to get right. The bands and the swell are sines, and a sine
+      // tiles seamlessly only when its frequency is a whole number of cycles
+      // across the tile: at 2.3 and 4.1 cycles the tile does not meet itself,
+      // and at `SURFACE_SEEDS.water` the wrap steps 70/255 on U against a 7/255
+      // interior step and 38/255 on V against 20. `update()` scrolls
+      // `offset.x` and the map is `RepeatWrapping`, which is precisely the
+      // configuration in which a non-tiling texture shows its discontinuity as
+      // a hard seam once per tile — seven hard lines down a 26 m channel,
+      // sliding at 0.06 m/s. That is the artefact the wrap mode exists to
+      // prevent, and the pass-8 review found it by measuring the generated
+      // pixels rather than by looking at the frame, where a step on a 1.1 m
+      // strip at 11 m is a few pixels of a dark trough.
+      //
+      // 1, 2 and 4 are still incommensurate ENOUGH: their sum has a period of
+      // one tile and the interference pattern is not a simple comb, so the
+      // channel reads as water rather than as a grating. What is given up is
+      // only the claim that the pattern does not visibly repeat over 26 m —
+      // with a seamless tile it repeats every 3.71 m by construction, and the
+      // honest version of that sentence is in the comment below.
       const bands =
         Math.sin(v * Math.PI * 2 * 1.0 + phase) * 0.5 +
-        Math.sin(v * Math.PI * 2 * 2.3 + phase * 1.7) * 0.32 +
-        Math.sin(v * Math.PI * 2 * 4.1 + phase * 0.6) * 0.18
+        Math.sin(v * Math.PI * 2 * 2.0 + phase * 1.7) * 0.32 +
+        Math.sin(v * Math.PI * 2 * 4.0 + phase * 0.6) * 0.18
       // A slow swell along the length, so a scrolled frame is not a rigid
-      // translation of a static stripe pattern.
-      const swell = Math.sin(u * Math.PI * 2 * 1.7 + phase * 2.3) * 0.16
+      // translation of a static stripe pattern. Integer cycles, for the reason
+      // above: this is the band that scrolls past the seam seven times.
+      const swell = Math.sin(u * Math.PI * 2 * 2.0 + phase * 2.3) * 0.16
       const value = Math.max(0, Math.min(255, Math.round((base + bands * contrast + swell) * 255)))
       const i = (y * size + x) * 4
       data[i] = value
@@ -4404,8 +4446,26 @@ export class StreetView {
     // not enough — a lip with no height has no top face and catches no light) and
     // a plane for the water. Three instances, one per copy.
     this.pools.canalLips = this._streetPool(names, 'canalLips', box(), this._materials.kerb, 6)
+    // The canal's water plane is Yawed as well as laid flat, and the yaw is the
+    // whole of the shimmer. `update()` scrolls `map.offset.x`, and a texture's
+    // U axis is its X axis, so the scroll runs along whichever LOCAL axis the
+    // plane's U happens to follow. `rotateX(-PI/2)` alone lays the plane down
+    // with U on the local X — the 1.1 m ACROSS the channel — so the water was
+    // scrolling sideways across a 1.1 m trough at 1/23.6th of the speed
+    // `CANAL_SHIMMER_MPS` promises (the divisor is `CANAL_LEN /
+    // CANAL_SHIMMER_TILES` = 3.71 m, a length that only exists along the
+    // channel, so the constant was doing its arithmetic on an axis 23.6x
+    // shorter than the one it names). `rotateY(PI/2)` after the lay-down moves U
+    // onto the local Z, which `place()` scales by `CANAL_LEN`, and the scroll
+    // then runs down the channel at the documented 0.06 m/s.
+    //
+    // Nothing else in the file uses this pool, so the yaw costs one rotation and
+    // no layout change: `place()` is still called with `(CANAL_W, 1, CANAL_LEN)`
+    // and the world still spans 1.1 m across and 26 m along. `verify-world.mjs`
+    // measures the U axis back off the built geometry and requires it to be the
+    // long one, so this cannot be undone by re-flattening the plane.
     this.pools.canalWater = this._streetPool(
-      names, 'canalWater', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this._materials.canalWater, 6,
+      names, 'canalWater', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).rotateY(Math.PI / 2), this._materials.canalWater, 6,
     )
     // ...and the four water render orders, read back by `verify-world.mjs`.
     // Set HERE rather than in `_buildWater` because a pool that is not created

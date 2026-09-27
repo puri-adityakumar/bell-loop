@@ -8790,12 +8790,59 @@ function waterClaims(source) {
       && /function makeShimmerTexture[\s\S]{0,2600}?texture\.repeat\.set\(repeat, 1\)/.test(code),
     'a clamped edge on a scrolled map is a hard seam travelling down the canal, and the shimmer is the one texture in this file whose offset is animated',
   )
+  // 13. THE TILE ACTUALLY TILES, and this is the claim a wrap mode cannot make on
+  // its own. Claim 12 says the map is `RepeatWrapping` and repeated 7 times; a
+  // texture that does not tile at its own edges produces exactly the hard seam
+  // that wrap mode exists to prevent, once per tile, sliding at 0.06 m/s. The
+  // wrap mode is the ENABLER of the seam, not the prevention of it.
+  //
+  // `makeShimmerTexture` is a sum of sines, and a sine tiles seamlessly only at a
+  // whole number of cycles across the tile. The pass shipped 2.3 and 4.1 cycles
+  // across the width and 1.7 along it — non-integers, chosen so the pattern
+  // "does not visibly repeat" — which at `SURFACE_SEEDS.water` leaves the tile
+  // wrapping by 70/255 on the scrolled axis against a 7/255 interior step, and
+  // 38/255 across it against 20. Seven of those down a 26 m channel.
+  //
+  // Asserted on the FREQUENCIES rather than on the pixels, because this is a pure
+  // gate and the generator is not exported: the source of the shimmer's period
+  // is a literal, and an integer is the whole of the claim. The numeric
+  // consequence (0 and 255/255 steps) is what the world suite's tileability
+  // check measures off the built texture.
+  const shimmer = /function makeShimmerTexture[\s\S]*?\n}/.exec(code)
+  const cycles = shimmer
+    ? [...shimmer[0].matchAll(/Math\.sin\(([uv]) \* Math\.PI \* 2 \* ([\d.]+)/g)]
+      .map((match) => ({ axis: match[1], cycles: Number(match[2]) }))
+    : []
+  claim(
+    'the shimmer\'s sine frequencies are whole cycles, so the tile has no seam',
+    cycles.length >= 4 && cycles.every((entry) => Number.isInteger(entry.cycles)),
+    'a sine at a fractional number of cycles does not meet itself at the tile edge, and on a scrolled RepeatWrapping map that discontinuity is a hard line once per tile — seven down the canal — which is the artefact claim 12 exists to prevent',
+  )
+  // 14. THE CANAL'S U AXIS IS THE LONG ONE, which is the other half of "the
+  // shimmer scrolls down the channel". `update()` scrolls `offset.x`, a
+  // texture's U is its X, and `PlaneGeometry(1,1).rotateX(-PI/2)` puts U on the
+  // local X — the 1.1 m WIDTH, not the 26 m length. The scroll ran sideways
+  // across the channel, 23.6x slower than `CANAL_SHIMMER_MPS` claims.
+  //
+  // The yaw is asserted here because this is a source-level property of how the
+  // pool's geometry is built; `verify-world.mjs` measures the same thing back off
+  // the built geometry's UVs, so neither file can be edited alone to make the
+  // other agree with a flat plane.
+  //
+  // The pattern is on the GEOMETRY EXPRESSION and not on the pool's name,
+  // because `stripProse` blanks every string literal to `""` and a regex that
+  // quoted `'canalWater'` could never match its own file.
+  claim(
+    'the canal water plane is yawed so its U axis runs along the channel',
+    /new THREE\.PlaneGeometry\(1, 1\)\.rotateX\(-Math\.PI \/ 2\)\.rotateY\(Math\.PI \/ 2\)/.test(code),
+    'the shimmer scrolls offset.x, and a flat plane puts U across the 1.1 m channel, so the water moves sideways at a twenty-third of the speed the constant promises',
+  )
   return claims
 }
 
 test('the water and reflections claims hold, and each one is a claim a comment would not', () => {
   const claims = waterClaims(STREET_VIEW_SOURCE)
-  assert.ok(claims.length >= 12, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  assert.ok(claims.length >= 14, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
   for (const entry of claims) {
     assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
   }
@@ -8832,6 +8879,10 @@ test('every water claim can fail, and a mutation names the one it breaks', () =>
       "names, 'puddles', wetDisc, this._materials.puddle", "names, 'puddles', disc(), this._materials.puddle"],
     ['a clamped shimmer', 'a hard seam travels down the canal', 'the shimmer map repeats on both axes, because it is scrolled',
       'texture.wrapS = THREE.RepeatWrapping\n  texture.wrapT = THREE.RepeatWrapping\n  texture.repeat.set(repeat, 1)', 'texture.wrapS = THREE.ClampToEdgeWrapping\n  texture.wrapT = THREE.ClampToEdgeWrapping\n  texture.repeat.set(repeat, 1)'],
+    ['a fractional shimmer cycle', 'a sine at 2.3 cycles does not meet itself at the tile edge', "the shimmer's sine frequencies are whole cycles, so the tile has no seam",
+      'Math.sin(v * Math.PI * 2 * 2.0 + phase * 1.7) * 0.32', 'Math.sin(v * Math.PI * 2 * 2.3 + phase * 1.7) * 0.32'],
+    ['a flat canal plane', 'the shimmer scrolls sideways across the channel', 'the canal water plane is yawed so its U axis runs along the channel',
+      "names, 'canalWater', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).rotateY(Math.PI / 2)", "names, 'canalWater', new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2)"],
   ]
   for (const [label, why, claim, from, to, expectedHits = 1] of mutations) {
     assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches streetView.js, so it is not testing anything`)
