@@ -39,7 +39,7 @@ import assert from 'node:assert/strict'
 // v2 slice 01. `hash32`, `streamAt` and the one `mulberry32` left in the
 // repository — v1's `maze.js` carried a second copy and slice 16 deleted it, so
 // the alias this import used to need (`mulberry32V2`) is gone with it.
-import { hash32, streamAt, mulberry32 } from './src/game/hash.js'
+import { flickerAt, hash32, streamAt, mulberry32 } from './src/game/hash.js'
 // v2 slice 02. Imported as a namespace because GRID, BLOCK and the BFS helper
 // names all collide with the v2 world modules' own vocabulary, and the v2 world
 // reads `hood.*` beside them.
@@ -2048,6 +2048,10 @@ test('the fog closes as the run advances', () => {
 })
 
 const STREET_VIEW_SOURCE = readFileSync(new URL('./src/game/streetView.js', import.meta.url), 'utf8')
+// Iteration 2, pass 7: the one claim that is about the PURE module rather than the
+// view, and it needs its own source string for the same reason the creature's does — a
+// mutation of `streetView.js` cannot break a claim about `hash.js`.
+const HASH_SOURCE = readFileSync(new URL('./src/game/hash.js', import.meta.url), 'utf8')
 const WORLD_SOURCE = readFileSync(new URL('./src/game/world.js', import.meta.url), 'utf8')
 const APP_SOURCE = readFileSync(new URL('./src/App.jsx', import.meta.url), 'utf8')
 // Read as text, not imported: `creatureView.js` touches Three.js, and §15.2's
@@ -7872,14 +7876,15 @@ test('the part budget is declared, and a maximal lot fits inside it', () => {
   // and it is here so a pass that wants to raise the ceiling has to say so in the
   // same commit that spends the parts.
   const budget = buildingNumber('LOT_PART_BUDGET')
-  assert.equal(budget, 40, 'LOT_PART_BUDGET — move this pin in the commit that spends the parts')
+  assert.equal(budget, 52, 'LOT_PART_BUDGET — move this pin in the commit that spends the parts')
   // ...and the ceiling has to be above what the pass actually spends, or the gate
-  // is asserting a budget the world is already over. The worst lot is 31 parts,
-  // measured by `verify-world.mjs` on the default seed, and there is room for
-  // passes 6-12 to add a pole, a sign and a hydrant without touching this pin.
-  const worst = 31
+  // is asserting a budget the world is already over. The worst lot is 46 parts,
+  // measured by `verify-world.mjs` on the default seed. ITERATION 2, PASS 7 moved the
+  // pin from 40 to 52 in the same commit that added the dressing; before that pass the
+  // worst lot was 31 and the headroom rule below was written for passes 6-12.
+  const worst = 46
   assert.ok(worst < budget, `the worst lot is ${worst} parts and the ceiling is ${budget}`)
-  assert.ok(budget - worst >= 4, 'less than four parts of headroom per lot, so pass 6 must raise the ceiling before it adds anything')
+  assert.ok(budget - worst >= 4, `only ${budget - worst} parts of headroom per lot, so the next pass must raise the ceiling before it adds anything`)
   // The pool capacities are derived per lot rather than typed, and the derivation
   // is the thing that has to survive: a capacity written as a literal is a
   // capacity somebody has to remember, and the first version of this block was one
@@ -8209,6 +8214,248 @@ test('every wire claim can actually fail, and a mutation names the one it breaks
     assert.ok(
       broken.some((entry) => entry.name === EYE_CLAIM),
       `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${EYE_CLAIM}" — ${why}`,
+    )
+  }
+})
+
+// ===========================================================================
+// STREET FURNITURE II (iteration 2, pass 7)
+//
+// WHAT PASS 7 CLAIMS, AND WHY ANY OF IT IS HERE RATHER THAN IN THE WORLD HARNESS
+// ---------------------------------------------------------------------------
+// Every claim below is one the built scene CANNOT answer. A world check can measure
+// that the flickering machine exists, that the poster is 0.42 x 0.60 and that nothing
+// stands within 12 m of a portal; it cannot tell whether the flicker would survive the
+// next person tidying `update()`, whether the lit liner would still be fogged if
+// somebody moved it back to `_glow`, or whether the dressing stream would still be the
+// pass's OWN region after a well-meaning refactor. Those are the defects this
+// repository's last two reviews actually found — both described at length in the
+// source as fixed, and both invisible to every measurement.
+//
+// (1) the ballast is HASHED, not summed, and it is stepped — a fourth sine would pass
+//     every world check and fail this one
+// (2) the flicker is written to `emissiveIntensity`, never to `color`
+// (3) the lit liner is a `MeshStandardMaterial` with fog ON, not a `_glow`
+// (4) the poster is `alphaTest`ed and not blended
+// (5) the dressing reads its OWN region of the mix, so it cannot move pass 5's lit
+//     windows or pass 6's poles
+// (6) EVERY family is filtered against the portal exclusion, including the poster —
+//     which the first version of the pass forgot, and which is how a poster ended up
+//     2.5 m from a gate
+// (7) the world's one flickering machine is a MINIMUM over the map, not a roll, so the
+//     count is exactly one on every seed rather than one on average
+// (8) `flickerAt` is pure: no clock, no `Math.random`, bounded output
+// (9) the machine's clock is incommensurate with the sodium's three sines
+// ===========================================================================
+
+section('Street furniture II (iteration 2, pass 7)')
+
+/**
+ * `methodBody` — one method's source, braces balanced, for a claim that is ABOUT a
+ * method rather than about a file.
+ *
+ * Two of pass 7's claims are negative over a method ("the dressing does not read the
+ * stream an earlier pass spends") and both were first written as negatives over the
+ * WHOLE FILE, where they fail on `_addFacadeDetail` and `makeWireMaterial` — pass 5's
+ * legitimate use of the shared stream and pass 6's legitimately transparent wire. A
+ * negative claim written too wide measures the other four thousand lines, and the
+ * failure it reports is not the failure it means.
+ *
+ * @param {string} code comment-stripped source
+ * @param {string} name the method's name, without the keyword
+ * @returns {string} the body including its braces, or '' if there is no such method
+ */
+function methodBody(code, name) {
+  const at = code.indexOf(`\n  ${name}(`)
+  if (at < 0) return ''
+  const open = code.indexOf('{', at)
+  let depth = 0
+  for (let i = open; i < code.length; i += 1) {
+    if (code[i] === '{') depth += 1
+    else if (code[i] === '}') {
+      depth -= 1
+      if (depth === 0) return code.slice(open, i + 1)
+    }
+  }
+  return ''
+}
+
+/**
+ * `dressingClaims` — pass 7's claims, as predicates over a source string.
+ *
+ * The same shape as `furnitureClaims` and `buildingClaims`, and for the same reason: a
+ * gate expressed as `assert.ok` can only ever run on the real file, and a gate that can
+ * only run on the real file cannot be asked whether it would have caught the bug. Each
+ * returns `ok` and a `why`, so a mutation names the claim it broke.
+ *
+ * @param {string} source `streetView.js`, comments NOT yet stripped
+ * @param {string} hash `hash.js`, for the one claim that is about the pure module
+ * @returns {{name: string, ok: boolean, why: string}[]}
+ */
+function dressingClaims(source, hash = HASH_SOURCE) {
+  const code = stripProse(source)
+  const claims = []
+  const claim = (name, ok, why) => claims.push({ name, ok: Boolean(ok), why })
+
+  claim(
+    'the ballast is hashed, not summed',
+    /return flickerAt\(seed, Math\.floor\(t \* VENDING_FLICKER_HZ\), VENDING_FLICKER_TICK_SALT, \{/.test(code)
+      && /const tick = Math\.floor\(t \* VENDING_FLICKER_HZ\)/.test(code) === false
+      && !/function vendingFlicker[\s\S]{0,400}Math\.sin/.test(code),
+    'the machine reuses the sodium\'s trigonometry, so a player who watched the lamps can predict the machine',
+  )
+  claim(
+    'the flicker is written to the emissive, never to the colour',
+    /vendingFaceFlicker\.emissiveIntensity = VENDING_FACE_EMISSIVE \* vendingFlicker\(t\)/.test(code)
+      && !/vendingFaceFlicker\.color/.test(code),
+    'multiplying the colour darkens the panel\'s albedo as well as its output, so a failing machine reads as a dirty one',
+  )
+  claim(
+    'the lit liner is a fogged standard material, not a glow',
+    /vendingFaceLit: this\._material\(\{/.test(code)
+      && /vendingFaceFlicker: this\._material\(\{/.test(code)
+      && /emissive: PALETTE\.vendingGlow/.test(code)
+      && !/vendingFaceLit: this\._glow/.test(code)
+      && !/vendingFaceFlicker: this\._glow/.test(code),
+    '`_glow` is `fog: false`, so a lit panel 40 m down a street punches through the amber haze into the creature\'s corridor',
+  )
+  // SCOPED TO THE POSTER MATERIALS, and the first version of this claim was a bare
+  // `!/transparent:/` over the whole file — which fails, correctly, on pass 6's wire
+  // `ShaderMaterial`, where `transparent: true` is the entire mechanism. A negative
+  // claim written over a whole file measures the other 4,000 lines.
+  const posterBlocks = [...code.matchAll(/(?:poster|posterTorn): this\._material\(\{([\s\S]*?)\}\),/g)].map(([, body]) => body)
+  claim(
+    'the poster is alpha-tested, not blended',
+    posterBlocks.length === 2
+      && posterBlocks.every((body) => /alphaTest: POSTER_ALPHA_TEST/.test(body) && !/\btransparent:/.test(body)),
+    'a blended torn sheet is a second transparent surface to sort against the wall, and a depth-sorted edge shimmers as the camera moves',
+  )
+  const dressing = methodBody(code, '_addLotDressing') + methodBody(code, '_addCornerDressing')
+  claim(
+    'the dressing reads its OWN region of the mix',
+    /streamAt\(hash32\(seed, cx \+ DRESSING_SALT, cz\), sideIndex, 0\)/.test(code)
+      && /streamAt\(hash32\(seed \+ VENDING_SALT, cx, cz\), sideIndex, 0\)/.test(code)
+      && /dressingStream\(this\.seed, chunk\.cx, chunk\.cz, SIDE_NAMES\.indexOf\(lot\.side\)\)/.test(dressing)
+      && /vendingDraw\(this\.seed, chunk\.cx, chunk\.cz, SIDE_NAMES\.indexOf\(lot\.side\)\)/.test(dressing)
+      && /streamAt\(hash32\(this\.seed, ax, az \+ DRESSING_SALT\), 0, 0\)/.test(dressing)
+      && !/streamAt\(this\.seed/.test(dressing),
+    'the dressing draws from a stream an earlier pass already spends, so every object added here moves every window and pole after it',
+  )
+  claim(
+    'every family is filtered against the portal exclusion',
+    (code.match(/this\._portalClear\(/g) || []).length >= 6 && /PORTAL_FURNITURE_CLEAR/.test(code),
+    'one unfiltered family is one object standing in a portal\'s stand-off, which is where the pass-3 pupil luma is measured',
+  )
+  claim(
+    'the one flickering machine is a minimum over the map, not a roll',
+    /if \(candidate < rank\)/.test(code)
+      && /if \(this\.anchorLots\.has\(key\)\) continue/.test(code)
+      && /const draw = vendingDraw\(this\.seed, cx, cz, side\)/.test(code),
+    'a roll gives an EXPECTED count of one, and on the wrong seed the pass delivers none while every comment still claims one',
+  )
+  claim(
+    'the machine gets its own liner pool, so a flicker is not shared',
+    /const face = flicker\s*\n\s*\? this\.pools\.vendingFlickerFaces\s*\n\s*: lit \? this\.pools\.vendingLitFaces : this\.pools\.vendingFaces/.test(code),
+    'one material slot per pool: a shared liner means `update()` gutters every lit machine in the district at once',
+  )
+  claim(
+    'flickerAt is pure, seeded and bounded',
+    /export function flickerAt\(seed, tick, salt, options = \{\}\)/.test(hash)
+      && !/function flickerAt[\s\S]{0,900}Math\.random/.test(hash)
+      && !/function flickerAt[\s\S]{0,900}Date\.now/.test(hash)
+      && /return Math\.max\(floor, 1 - depth \* wobble\)/.test(hash),
+    'an unseeded or clocked flicker is D10, and an unbounded one can produce a negative colour channel',
+  )
+  claim(
+    'the machine and the lamps run on different clocks',
+    /const VENDING_FLICKER_HZ = 11/.test(code) && /sin\(t \* 7\.3\)/.test(code) && /sin\(t \* 17\.7\)/.test(code),
+    'a flicker that lands on one of the sodium\'s three sines is a shared metronome, and a player can hear the two beating together',
+  )
+  return claims
+}
+
+test('the street furniture II claims hold, and each one is a claim a comment would not', () => {
+  const claims = dressingClaims(STREET_VIEW_SOURCE)
+  assert.ok(claims.length >= 10, `only ${claims.length} claims are defined, which is fewer than this pass needs`)
+  for (const entry of claims) {
+    assert.ok(entry.ok, `${entry.name}: ${entry.why}`)
+  }
+})
+
+test('flickerAt is a pure function of (seed, tick): same answer, bounded, stepped', () => {
+  // The numeric half of the claim, and the reason `flickerAt` lives in `hash.js` at
+  // all: `streamAt` returns a GENERATOR, so it cannot be re-read at an arbitrary
+  // point, and a flicker asked for the same tick twice in one frame has to give the
+  // same answer both times.
+  const a = flickerAt(0x56454e44, 7, 0x5449434b, { phaseSalt: 0x50484153, floor: 0.3, depth: 0.42, oneIn: 8 })
+  const b = flickerAt(0x56454e44, 7, 0x5449434b, { phaseSalt: 0x50484153, floor: 0.3, depth: 0.42, oneIn: 8 })
+  assert.equal(a, b, 'the same seed and tick gave two different levels')
+  // ...and a different tick does NOT give the same level, which is the other half.
+  const levels = new Set()
+  for (let tick = 0; tick < 400; tick += 1) {
+    levels.add(flickerAt(0x56454e44, tick, 0x5449434b, { phaseSalt: 0x50484153, floor: 0.3, depth: 0.42, oneIn: 8 }))
+  }
+  assert.ok(levels.size > 40, `400 ticks produced ${levels.size} levels, which is not a hashed ball`)
+  for (const level of levels) {
+    assert.ok(level >= 0.3 && level <= 1, `a level of ${level} is outside the [floor, 1] band a colour can be multiplied by`)
+  }
+  // About one dropout in eight, and the dropout is EXACTLY the floor rather than a
+  // value that happens to be near it.
+  let dropouts = 0
+  for (let tick = 0; tick < 800; tick += 1) {
+    if (flickerAt(0x56454e44, tick, 0x5449434b, { floor: 0.3, depth: 0.42, oneIn: 8 }) === 0.3) dropouts += 1
+  }
+  assert.ok(dropouts > 60 && dropouts < 140, `${dropouts} dropouts in 800 ticks, which is not about one in eight`)
+  // The default floor is a floor and not a zero, which is the difference between a
+  // FAILING machine and a DEAD one — and a default is what a second caller gets.
+  assert.equal(flickerAt(1, 0, 1) >= 0.18, true, 'the default floor is not 0.18')
+  // The phase salt is derived from the salt when it is not given, so two callers
+  // cannot accidentally share a wobble, and giving it explicitly changes the answer
+  // (which is what proves the two halves are really independent).
+  assert.notEqual(
+    flickerAt(9, 3, 5),
+    flickerAt(9, 3, 5, { phaseSalt: 6 }),
+    'the phase salt is not doing anything, so the dropout pattern and the wobble are one number',
+  )
+})
+
+test('every street furniture II claim can fail, and a mutation names the one it breaks', () => {
+  // The control for the test above, and the reason this section is a gate rather than
+  // a fingerprint of one file. Each row is the smallest edit that breaks ONE claim and
+  // a row that breaks none is worse than no row, because it counts.
+  const rows = [
+    ['the machine reuses the lamps\' sines', 'a second sine sum is a shared metronome', 'return flickerAt(seed, Math.floor(t * VENDING_FLICKER_HZ), VENDING_FLICKER_TICK_SALT, {', 'return 0.9 + Math.sin(t * 9.1) * 0.1; //', 'the ballast is hashed, not summed'],
+    ['the flicker is written to the colour', 'a failing machine reads as a dirty one', 'this._materials.vendingFaceFlicker.emissiveIntensity = VENDING_FACE_EMISSIVE * vendingFlicker(t)', 'this._materials.vendingFaceFlicker.color.setHex(0x111111)', 'the flicker is written to the emissive, never to the colour'],
+    ['the liner is a glow again', 'fog off, so the panel punches through the haze', 'vendingFaceLit: this._material({', 'vendingFaceLit: this._glow(PALETTE.vendingGlow, {', 'the lit liner is a fogged standard material, not a glow'],
+    ['the poster is blended', 'a torn sheet sorts against the wall and shimmers', 'alphaTest: POSTER_ALPHA_TEST,', 'transparent: true, alphaTest: 0,', 'the poster is alpha-tested, not blended'],
+    ['the dressing shares a stream', 'every bin moves a window three lots away', 'dressingStream(this.seed, chunk.cx, chunk.cz, SIDE_NAMES.indexOf(lot.side))', 'streamAt(this.seed, chunk.cx, chunk.cz)', 'the dressing reads its OWN region of the mix'],
+    ['the poster skips the exclusion', 'a poster 2.5 m from a gate, in the pupil stand-off', '      if (this._portalClear(px, pz, copy)) {', '      if (true) {', 'every family is filtered against the portal exclusion'],
+    ['the flickering lot is a maximum', 'the pass claims one machine and delivers the far end of the map', 'if (candidate < rank) {', 'if (candidate > rank) {', 'the one flickering machine is a minimum over the map, not a roll'],
+    ['the liner pools are merged', 'every lit machine in the district gutters together', '      ? this.pools.vendingFlickerFaces\n      : lit ? this.pools.vendingLitFaces : this.pools.vendingFaces', '      ? this.pools.vendingLitFaces\n      : lit ? this.pools.vendingLitFaces : this.pools.vendingFaces', 'the machine gets its own liner pool, so a flicker is not shared'],
+    ['the machine shares the lamp clock', 'the two misbehaviours beat against each other', 'const VENDING_FLICKER_HZ = 11', 'const VENDING_FLICKER_HZ = 7.3', 'the machine and the lamps run on different clocks'],
+  ]
+  for (const [label, why, from, to, expected] of rows) {
+    assert.ok(STREET_VIEW_SOURCE.includes(from), `the mutation "${label}" no longer matches the file, so it is not testing anything`)
+    const broken = dressingClaims(STREET_VIEW_SOURCE.replace(from, to)).filter((entry) => !entry.ok)
+    assert.ok(broken.length > 0, `"${label}" changed the file and broke NO claim — ${why}, and the section is not measuring it`)
+    assert.ok(
+      broken.some((entry) => entry.name === expected),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] but should have broken "${expected}" — the gate is measuring something other than what it says`,
+    )
+  }
+  // ...and the one claim that is about `hash.js` gets its own rows, because a mutation
+  // of `streetView.js` could never break it and a row that cannot fail is worse than
+  // no row at all.
+  const hashRows = [
+    ['the ballast is unseeded', 'the same world gives every player a different machine', 'if (hash32(seed, tick, salt) % oneIn === 0) return floor', 'if (Math.random() < 1 / oneIn) return floor'],
+    ['the floor is a zero', 'a fully dark panel is a dead machine, not a failing one', 'return Math.max(floor, 1 - depth * wobble)', 'return Math.max(0, 1 - depth * wobble)'],
+  ]
+  for (const [label, why, from, to] of hashRows) {
+    assert.ok(HASH_SOURCE.includes(from), `the mutation "${label}" no longer matches hash.js, so it is not testing anything`)
+    const broken = dressingClaims(STREET_VIEW_SOURCE, HASH_SOURCE.replace(from, to)).filter((entry) => !entry.ok)
+    assert.ok(
+      broken.some((entry) => entry.name === 'flickerAt is pure, seeded and bounded'),
+      `"${label}" broke [${broken.map((entry) => entry.name).join(', ')}] — ${why}`,
     )
   }
 })

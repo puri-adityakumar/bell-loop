@@ -84,7 +84,13 @@ import { OCCLUDER_KINDS } from './creature.js'
 // chunk-addressed stream rather than a counter. `streamAt` is the same entry point
 // `neighborhood.js` uses for its own draws, which is the point: one PRNG, one
 // contract, and a shuffled `buildChunks` still produces the same world.
-import { streamAt } from './hash.js'
+//
+// ITERATION 2, PASS 7 adds `hash32` beside it, and the reason is the one thing
+// `streamAt` cannot do: a GENERATOR has state, so it cannot be re-read at an
+// arbitrary point, and the vending machine's flicker is asked for the same tick
+// twice in the same frame (once to build, once to measure) and has to give the
+// same answer. `hash32` is the stateless half of the same mix.
+import { flickerAt, hash32, streamAt } from './hash.js'
 
 // ---------------------------------------------------------------------------
 // palette (§12.3) — extended from v1's PALETTE, which lived in world.js
@@ -271,6 +277,76 @@ export const PALETTE = Object.freeze({
   sign: 0x4a463f,
   hydrant: 0x5a2a26,
   drain: 0x1a181d,
+  // ITERATION 2, PASS 7 — STREET FURNITURE II
+  // ----------------------------------------
+  // BEFORE: nothing. Pass 6 put hardware on the PAVEMENT — poles, wires, signs,
+  // hydrants, grates — and the world had no object anywhere else: no bin, no bag,
+  // no bicycle, no machine, no shelter, and not one thing on a wall. AESTHETIC-
+  // NOTES §5 asks for exactly this list, and its reason is the one that applies to
+  // every entry below: the reference reads as a place because of *a lot of small
+  // interruptions at human scale*, and eight of them per block is not a lot.
+  //
+  // AFTER: seven surfaces and one light. Six of the seven obey pass 6's rule
+  // verbatim — a surface here is a VARIATION ON A DARK, because §12.1's silhouette
+  // rule needs all of them to stay dark shapes against a sodium haze — and the
+  // seventh is T11's new rung, which is a light source and is ranked as one.
+  //
+  //   dumpster   0x2b3038   luma 47.5  a galvanised bin, one step above `pole` and
+  //                                 two below `sign`. A dumpster is a big object
+  //                                 and a big object has to be DARKER than the
+  //                                 building it stands against or it becomes the
+  //                                 subject of the frame, which a bin is not.
+  //   trashBag   0x1c1b20   luma 27.6  black polythene, the second-darkest surface
+  //                                 in the world after `wire` — a bag full of
+  //                                 rubbish is a hole with a lid on it, and a hole
+  //                                 is darker than the thing around it (`drain`
+  //                                 makes the same argument for the same reason).
+  //   bike       0x2a2f36   luma 46.4  a steel frame, and one value from the
+  //                                 dumpster on purpose: a bicycle is a 1.75 m
+  //                                 SCRIBBLE of thin tubes, and a scribble reads
+  //                                 as a scribble only if it is one value.
+  //   vending    0x353a42   luma 57.5  the cabinet, and the only new surface above
+  //                                 `drain` and `sign` in this block.
+  //   vendingGlow 0xc9b79a  luma 184.7 T11's FIFTH RUNG — see the ladder note. It
+  //                                 sits between a lamp head (177.5) and a lit
+  //                                 window (198.3), which is where AESTHETIC-NOTES
+  //                                 §5 puts it: "portal cyan, sodium lamp head, the
+  //                                 single lit vending machine, one or two lit
+  //                                 windows, the exit car's plate". A lamp head is
+  //                                 a reflector seen edge-on and a lit window is a
+  //                                 source seen through glass, so the machine's
+  //                                 backlit liner belongs BETWEEN them, not above
+  //                                 either.
+  //   shelter    0x2f343b   luma 51.4  a bus shelter's steel, deliberately the
+  //                                 same family as the pole arm's 47.5: a shelter
+  //                                 is a pole with a roof on it, and if the two
+  //                                 disagree the street loses the family read.
+  //   adPanel    0x4e4839   luma 72.2  the DIM bus-shelter ad panel the checklist
+  //                                 asks for. It is a `_material`, not a `_glow`,
+  //                                 which is the whole of "dim": a backlit panel
+  //                                 that is a fifth emissive in the frame would
+  //                                 break T11's closed ladder for the sake of a
+  //                                 rectangle nobody reads at 40 m. As a lit
+  //                                 surface it is the second-palest furniture
+  //                                 value here and it stays below the sky.
+  //   poster     0x5c5749   luma 87.1  paper, and the one value in this block
+  //                                 close to the sky (89.9). That is deliberate and
+  //                                 it is the ONLY exception to the "under half
+  //                                 the sky" rule the other six obey: a fly-poster
+  //                                 is a pale rectangle on a dark wall, and if it
+  //                                 is not pale it is not a poster — it is a grey
+  //                                 rectangle, which is worse than nothing. It
+  //                                 cannot become a light source because it is a
+  //                                 `_material`, so the 87.1 is an ALBEDO the
+  //                                 sodium has to reach, not a brightness.
+  dumpster: 0x2b3038,
+  trashBag: 0x1c1b20,
+  bike: 0x2a2f36,
+  vending: 0x353a42,
+  vendingGlow: 0xc9b79a,
+  shelter: 0x2f343b,
+  adPanel: 0x4e4839,
+  poster: 0x5c5749,
 })
 
 /** §5.1: one portal per liminal structure, in PORTAL_IDS order. */
@@ -826,8 +902,20 @@ const BELT_PROUD = 0.05
  * the mean hides the block whose four façades all face a street, and that is the
  * one a player walks past most. It also measures the SPREAD, because a max equal
  * to the mean would mean nothing varies and the budget would be measuring noise.
+ *
+ * ITERATION 2, PASS 7 — 40 to 52, moved in the same commit that spent the parts and
+ * with the reason written here rather than in the diff. The worst lot was 31 before
+ * this pass and is 46 after (mean 13.2 -> 17.0, measured by `partBudget()`), and the
+ * fifteen is the honest cost of the content: a bin is four instances, three bags are
+ * six, a machine is four, a bollard run is four, and the worst lot is the one that
+ * drew all of them. 52 is 46 plus six parts of headroom, which is three more than
+ * the four-part rule this gate was written with — deliberately, because the next
+ * pass in this iteration is ground detail and ground detail is per-lot by
+ * definition. A ceiling that has to be re-litigated on every pass is a ceiling that
+ * stops being a budget; what the gate protects is the MAX, and the max is measured,
+ * not asserted.
  */
-const LOT_PART_BUDGET = 40
+const LOT_PART_BUDGET = 52
 
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1287,477 @@ const CORNER_SIGNS = Object.freeze([
 
 
 // ---------------------------------------------------------------------------
+// ITERATION 2, PASS 7 — STREET FURNITURE II
+//
+// AESTHETIC-NOTES §5's pass-7 line is "Dumpsters, bollards, trash bags,
+// bus-shelter ad panels (dim), and the one lit vending machine. Per-district
+// placement rules, because uniformity is what makes a generated street read as
+// generated." This block is the numbers, the per-district table, and the two
+// exclusion rules the supervisor named for this pass.
+//
+// WHAT IS HERE AND WHY IT IS ONE BLOCK
+// ------------------------------------
+// Six families, in the order they are placed: the bins (dumpster + bags), the
+// machines (cabinet + lit liner), the shelter (frame + ad panel), the bollards,
+// the posters, and the bicycles — which are the odd one out, because a bicycle is
+// chained to a POLE and the poles are pass 6's, so the bikes are placed from
+// `_buildStreetFurniture` where the pole already is and not from the per-lot
+// builder that owns everything else.
+//
+// A dumpster is FIVE instances, a machine four, a shelter seven, a bollard one, a
+// poster one, a bicycle seven. Per lot that is at most 5 + 7 + 3 = 15 extra parts
+// on the 588 lot-instances T5 pays three times over, which is why
+// `LOT_PART_BUDGET` moves in this pass and the pin moves with it.
+// ---------------------------------------------------------------------------
+
+/**
+ * DUMPSTER — a 240-litre commercial bin, in metres.
+ *
+ * BEFORE: n/a. AFTER a 1.30 x 0.78 x 1.05 body with the lid `DUMPSTER_LID_PROUD`
+ * overhanging on every side. `DESIGN.md` §4 (quoted in AESTHETIC-NOTES mechanism 2)
+ * prints no bin, so the number is a real one from the same family as the vending
+ * machine it sits next to in this list: a 240 L wheelie bin is 0.55 x 0.72 x 1.00
+ * and the 660 L commercial one it is modelled on is 1.30 x 0.78 x 1.20. 1.05 rather
+ * than 1.20 because a lidded commercial bin stands on castors and the lid is what
+ * a camera at 40 m actually resolves.
+ */
+const DUMPSTER_W = 1.3
+const DUMPSTER_D = 0.78
+const DUMPSTER_H = 1.05
+
+/**
+ * The lid, and why it overhangs.
+ *
+ * BEFORE: n/a. AFTER `DUMPSTER_LID_PROUD` proud of the body on all four sides and
+ * `DUMPSTER_LID_T` thick. This is mechanism 1 (silhouette first) applied to one
+ * object: a bin with a flush lid is a BOX, and a box is the thing the pass exists
+ * to stop adding. 40 mm is a real cill and it is the same figure the parapet uses
+ * for the same reason — a horizontal edge flush with the wall below it catches no
+ * light and changes no outline.
+ */
+const DUMPSTER_LID_PROUD = 0.04
+const DUMPSTER_LID_T = 0.06
+
+/**
+ * The castors, and the `DUMPSTER_FOOT` that lifts the body onto them.
+ *
+ * BEFORE: n/a. AFTER two 0.13 blocks under the front third, raising the body
+ * `DUMPSTER_FOOT` (0.1) off the ground. The reason is the reference's own failure
+ * list ("floating/sunken objects"): a bin whose body starts at y = 0 has no
+ * contact patch, and at 40 m a floating box reads as a bug even when it is not
+ * one. 0.1 m is the real clearance of a 125 mm castor.
+ */
+const DUMPSTER_FOOT = 0.1
+const DUMPSTER_CASTOR = 0.13
+
+/**
+ * TRASH_BAG — one tied 45-litre bag, in metres.
+ *
+ * BEFORE: n/a. AFTER 0.52 x 0.40 x 0.58. A 45 L bag is about 0.55 m across and
+ * 0.6 m tall once it is full and tied, and the numbers are deliberately not round
+ * because a bag is a squashed lump and a 0.5 x 0.5 x 0.5 cube is a box. The bag
+ * is placed with its own yaw off the lot's, which is the only thing in this pass
+ * that makes a lump read as a lump.
+ */
+const TRASH_BAG_W = 0.52
+const TRASH_BAG_D = 0.4
+const TRASH_BAG_H = 0.58
+
+/**
+ * DISTRICT_DRESSING — how often each family appears, per DISTRICT, as `one in N`.
+ *
+ * BEFORE: n/a — pass 6 places one pole, two signs and maybe a hydrant per
+ * intersection and nothing anywhere else, so every block in the world is the same
+ * block. AFTER: four rows, four different mixes, and **three kinds are absent from
+ * at least one district each** — `vending` and `bike` from district 0 (the
+ * north-west), `shelter` from district 3 (the south-east). That absence is the
+ * load-bearing part. AESTHETIC-NOTES §5's sentence is about uniformity making a
+ * street read as generated, and a rate that is the same in four districts satisfies
+ * the letter of "per district rules" and none of the intent; a kind that is missing
+ * from a whole quadrant is what a player notices.
+ *
+ * THE COMPASS NAMES ARE MEASURED, NOT ASSUMED, and the first draft of this table
+ * got two of the four wrong. `districtOf` is `(cx < half ? 0 : 1) * 2 + (cz < half
+ * ? 0 : 1)`, chunk 0 is the HIGH-x, HIGH-z corner, and an N lot faces -z — so 0 is
+ * north-west, 1 is SOUTH-west, 2 is north-east and 3 is south-east. (Note that this
+ * is not the same numbering as `CORNER_SIGNS`, whose comments label which CORNER of
+ * the junction each district's pole stands on, not which quadrant the district is;
+ * the two are a permutation of each other and only the corners have to be distinct.)
+ * `verify-world.mjs` derives each district's quadrant from the built lots rather
+ * than from a comment, which is how the two errors were found.
+ *
+ * The numbers are also a COST statement. `DISTRICT_DRESSING` is the table the
+ * pools' capacities are derived from, so a rate of 12 is not "rare", it is
+ * "twelve lots in twelve get one" and the capacity arithmetic can be checked
+ * against it rather than estimated.
+ */
+const DISTRICT_DRESSING = Object.freeze([
+  // 0, NORTH-WEST (cx < half, cz < half): the commercial edge. Bins and bollards, and
+  // no machine and no bike anywhere in the quadrant.
+  Object.freeze({ dumpster: 4, bags: 3, poster: 2, vending: 0, shelter: 9, bollard: 2, bike: 0 }),
+  // 1, SOUTH-WEST (cx < half, cz >= half): the residential run. Shelters, one machine
+  // in seven.
+  Object.freeze({ dumpster: 6, bags: 5, poster: 1, vending: 7, shelter: 4, bollard: 3, bike: 5 }),
+  // 2, NORTH-EAST (cx >= half, cz < half): the transit corner. Both machines and
+  // shelters, few bins.
+  Object.freeze({ dumpster: 9, bags: 6, poster: 3, vending: 4, shelter: 3, bollard: 2, bike: 2 }),
+  // 3, SOUTH-EAST (cx >= half, cz >= half): the back of the map. Bare — no shelter at
+  // all, and on the default seed no bicycle either.
+  Object.freeze({ dumpster: 12, bags: 8, poster: 4, vending: 9, shelter: 0, bollard: 5, bike: 6 }),
+])
+
+/**
+ * The keys `DISTRICT_DRESSING` must carry, so a forgotten one is a failed build
+ * rather than a `undefined` rate that silently places nothing.
+ */
+const DRESSING_KINDS = Object.freeze(['dumpster', 'bags', 'poster', 'vending', 'shelter', 'bollard', 'bike'])
+
+/**
+ * VENDING — the machine, in metres, from the scale table.
+ *
+ * BEFORE: n/a. AFTER 1.00 wide x 0.75 deep x 1.83 tall, which is `DESIGN.md` §4's
+ * own figure ("vending machine 1.83 x 1.0 x 0.75 m", quoted verbatim in
+ * AESTHETIC-NOTES mechanism 2). It is the only number in this pass that is a
+ * citation rather than a judgement, and it is the tallest new object in the
+ * world — which is why the carriageway set-back below, and not a height test, is
+ * what keeps it out of the creature's sightline.
+ */
+const VENDING_W = 1
+const VENDING_D = 0.75
+const VENDING_H = 1.83
+
+/**
+ * The lit liner and the unlit one.
+ *
+ * BEFORE: n/a. AFTER a `VENDING_FACE_W` x `VENDING_FACE_H` panel set
+ * `VENDING_FACE_INSET` INTO the cabinet's front, and `VENDING_RAIL_COUNT` product
+ * rails across it. "Set into" rather than "on" is T3's depth rule applied to a
+ * machine: a panel lying on the face is a sticker, and the reveal is the only
+ * thing that makes a 1.83 m box read as a machine at 30 m. The rails are what
+ * stop the lit face being a single flat rectangle, which is the exact defect
+ * pass 3's swirl gate was written to catch on a portal — a lit panel with no
+ * structure in it averages out to one value and stops being a machine.
+ */
+const VENDING_FACE_INSET = 0.05
+const VENDING_FACE_W = 0.76
+const VENDING_FACE_H = 1.1
+const VENDING_FACE_Y = 1.12
+const VENDING_RAIL_COUNT = 2
+const VENDING_RAIL_T = 0.05
+const VENDING_RAIL_INSET = 0.03
+
+/**
+ * VENDING_LIT_ONE_IN — how many machines have a lit liner at all.
+ *
+ * BEFORE: n/a. AFTER one in two. D6 caps a FRAME at four saturated things and the
+ * lit machine is one of the four, so the question is not "are they lit" but "can
+ * two of them be in the same shot". One in two, spread over a 1-in-4 to 1-in-9
+ * per-district machine rate, keeps the lit machines APART: `verify-world.mjs`
+ * measures the nearest PAIR of lit liners on the real buffers and requires 12 m
+ * between them, and it is 16.8 m on the default seed.
+ *
+ * 12 m and not 60 m, and the reason is that the honest claim is weaker than the one
+ * this paragraph first made. The fog (40-80 m of visibility) is not enough to
+ * guarantee that two lit machines are never both in a frame from 16.8 m apart, so
+ * the gate measures the thing that IS true — no two lit liners are within a
+ * block-and-a-half of each other — and the gallery is the check for the rest. A
+ * constant whose comment claims a frame-level guarantee no measurement supports is
+ * worse than a smaller true claim.
+ */
+const VENDING_LIT_ONE_IN = 2
+
+/**
+ * VENDING_FLICKER_SEED — the documented seed for the one machine that misbehaves.
+ *
+ * BEFORE: n/a — the only flicker in the world was the sodium's, and it is a sum of
+ * three sines with no seed at all, so it is the same in every run and could not be
+ * moved by changing anything but the three numbers. AFTER: a named 32-bit seed,
+ * mixed per TICK by `hash32`, so the bad machine's gutter is a pure function of
+ * (seed, tick) and can be re-derived by anyone who reads the constant. D7 is the
+ * reason the pass has one at all: "if a fidelity pass makes the lamps look calmer,
+ * that is a regression." A vending machine's ballast is the one fitting on a
+ * street that misbehaves on a different clock from the lamps, and mixing the tick
+ * through `hash32` rather than reusing the lamp's three sines is what stops the
+ * two families beating against each other in a way a player could learn.
+ */
+const VENDING_FLICKER_SEED = 0x56454e44
+
+/**
+ * The flicker's clock and its three numbers, in `vendingFlicker`.
+ *
+ * BEFORE: n/a. AFTER 11 Hz, a floor of 0.30 and a depth of 0.42, so the tube holds
+ * somewhere in 0.58-1.00 and drops to 0.30 on a dropout. 11 Hz is deliberate
+ * rather than a
+ * round 10 or 12: the sodium's three sines run at 7.3 / 2.9 / 17.7 Hz, and a
+ * flicker at 11 quantises against all three of them without ever landing on one,
+ * which is what makes the two misbehaviours read as unrelated rather than as a
+ * shared metronome. The floor is 0.30 and not 0 because a fluorescent tube that
+ * goes fully out is a different tell — a dead machine — and this one is failing,
+ * not dead, and a failing tube is the one that is scarier.
+ *
+ * `VENDING_FLICKER_DROPOUT_ONE_IN` is 8, and it is a figure rather than a fraction
+ * of a period for the same reason 11 is: at 11 Hz it is one event every 0.73 s,
+ * which is faster than a person can stop looking and slower than the eye stops
+ * noticing it. A rarer dropout (one in twenty) reads as a single dead moment the
+ * player files and forgets; a common one (one in three) reads as a disco.
+ */
+const VENDING_FLICKER_HZ = 11
+const VENDING_FLICKER_FLOOR = 0.3
+const VENDING_FLICKER_DEPTH = 0.42
+const VENDING_FLICKER_DROPOUT_ONE_IN = 8
+
+/**
+ * The lit liner's own brightness, and the lift that keeps it off the cabinet's
+ * front plane.
+ *
+ * BEFORE: n/a. AFTER `VENDING_FACE_EMISSIVE` 1.25, which is the ONE emissive
+ * intensity in the file and is therefore a constant rather than a literal: it is
+ * the rung T11's ladder puts between a lamp head and a lit window, and a rung that
+ * is typed into a material is a rung the next pass cannot find. `VENDING_FACE_LIFT`
+ * is 6 mm — the liner is set INTO the cabinet (`VENDING_FACE_INSET`) and lifted 6 mm
+ * proud of the front plane so it is visible at all; the recess the eye reads at
+ * 30 m is made by the two product rails standing 30 mm proud of the LINER, not by
+ * sinking the liner into a box it would never be seen inside.
+ */
+const VENDING_FACE_EMISSIVE = 1.25
+const VENDING_FACE_LIFT = 0.006
+
+/**
+ * `POSTER_ALPHA_TEST` — the torn sheet's cut-off.
+ *
+ * BEFORE: n/a. AFTER 0.5, and NOT 0.5 in a `transparent` material. The torn poster
+ * is a hole in the sheet, and a hole is either there or it is not: an alpha BLEND
+ * gives a 30 m poster a second transparent surface to sort against the house wall
+ * behind it, which is a depth-sorted edge that changes with the camera and reads as
+ * a shimmer. `alphaTest` is a discard, the fragment is either drawn or it is not,
+ * and the torn edge stays razor sharp at every distance for free. 0.5 rather than
+ * 0.1 because the print's own ink density goes down to 0.42 in the dark blocks —
+ * a test at 0.1 would punch holes in the artwork, not just at the tear.
+ */
+const POSTER_ALPHA_TEST = 0.5
+
+/**
+ * SHELTER — a bus shelter, in metres, and the reason it is not a phone box.
+ *
+ * BEFORE: n/a. AFTER 3.20 long x 1.50 deep x 2.30 tall, with a
+ * `SHELTER_ROOF_OVERHANG` of 0.35 m. A shelter's dimensions are fixed by its bench:
+ * `DESIGN.md` §4 gives a bench seat at 0.44 m and a shelter is a roof over one, so
+ * the roof is at 2.30, the bench seat is at 0.44, and the back panel is 1.85 of it.
+ *
+ * AND NOT A PHONE BOX, which is a decision rather than an omission. §5.1 already
+ * spends two of the world's three liminal structures on exactly this silhouette —
+ * `PORTAL_STRUCTURES` is `['shed', 'busShelter', 'phoneBox']` — and §4's promise is
+ * that "a player who has learned to recognise the phone box is steering by a
+ * memory". A second, unlit, identical box on a street corner spends that memory for
+ * nothing, and the portal would then be the third bus shelter in its district
+ * rather than the only one. So the checklist's "phone booths or bus shelters" is
+ * answered with the shelter, which is the one of the two that is NOT already a
+ * portal, and `verify.mjs` asserts that no pass-7 pool carries the portal colour
+ * so the two can never be confused in a frame.
+ */
+const SHELTER_W = 3.2
+const SHELTER_D = 1.5
+const SHELTER_H = 2.3
+const SHELTER_ROOF_OVERHANG = 0.35
+const SHELTER_ROOF_T = 0.09
+const SHELTER_POST = 0.09
+const SHELTER_BACK_H = 1.85
+const SHELTER_BENCH_Y = 0.44
+const SHELTER_BENCH_H = 0.08
+const SHELTER_BENCH_D = 0.4
+const SHELTER_AD_W = 1.1
+const SHELTER_AD_H = 1.7
+const SHELTER_AD_Y = 1.25
+
+/**
+ * Where on a corner a shelter stands, in metres from the intersection, PER AXIS.
+ *
+ * BEFORE: n/a. AFTER `SHELTER_CORNER_X` 7.9 and `SHELTER_CORNER_Z` 8.0, both
+ * derived rather than typed, and derived differently on purpose. The corner is where
+ * two walks meet, and the only way to fit a 3.20 x 1.50 box on a 3.0 m walk is to
+ * turn it: `SHELTER_CORNER_X` is the walk's own midline
+ * (`STREET_HALF_WIDTH` + `KERB_WIDTH` + `SIDEWALK_WIDTH / 2`) and the shelter is
+ * 1.50 deep across it, so it spans 7.15-8.65 with 0.75 m of walk on either side.
+ * `SHELTER_CORNER_Z` is the KERB face plus half the shelter's LENGTH, so its front
+ * post finishes on the kerb and its back panel 0.2 m behind the frontage line —
+ * which is inside the 0.5 m hedge run and is what a shelter standing against a
+ * boundary actually looks like. The first draft of this paragraph claimed the back
+ * was flush and it was not; the 0.2 m is the real number and it is harmless, since
+ * the only thing at the frontage is a 1.3 m hedge.
+ *
+ * Both are at least `STREET_HALF_WIDTH + KERB_WIDTH` (6.4) from their own road's
+ * centreline, which is the number `verify-world.mjs` measures every pass-7 instance
+ * against: the creature walks the carriageway, so furniture inside 6.0 m of a
+ * centreline is furniture in its eye line, and 6.4 is the kerb face between the two.
+ */
+const SHELTER_CORNER_X = STREET_HALF_WIDTH + KERB_WIDTH + SIDEWALK_WIDTH / 2
+const SHELTER_CORNER_Z = STREET_HALF_WIDTH + KERB_WIDTH + SHELTER_W / 2
+
+/**
+ * BOLLARD — a kerb bollard, in metres.
+ *
+ * BEFORE: n/a. AFTER 0.90 tall, 0.11 across, with a `BOLLARD_CAP_H` retroreflective
+ * band. Real Japanese kerb bollards are 0.8-1.0 m and 80-120 mm, and the band is
+ * the strip that makes one visible in a headlight — which is the whole reason a
+ * bollard is a bollard and not a short post. It is placed in `painted`, the same
+ * material as the signs and the pole insulators, so it costs no new material and
+ * no new draw call, which is T1's "one material serves every colour" taken
+ * literally rather than as a comment.
+ */
+const BOLLARD_H = 0.9
+const BOLLARD_R = 0.055
+const BOLLARD_CAP_H = 0.1
+const BOLLARDS_PER_RUN = 2
+const BOLLARD_RUN_SPACING = 2.2
+
+/**
+ * POSTER — a fly-poster, in metres, and how far off the wall it is.
+ *
+ * BEFORE: n/a. AFTER a 0.42 x 0.60 sheet standing `POSTER_LIFT` (6 mm) proud of the
+ * siding at `POSTER_Y` (1.55 m). The lift is T10's decal discipline verbatim: a
+ * poster flush with the wall z-fights, and a z-fight in a still capture is a
+ * defect a reader finds instantly. 1.55 m is chest height, which is where a
+ * fly-poster goes and where a player walking past reads it; 0.42 x 0.60 is an A2
+ * sheet with the corners left on. `POSTER_U` is 0.3 of the wall's own width, which
+ * is the same inset fraction as `WINDOW_INSET` and for the same reason — a sheet
+ * hard against a corner reads as a crack.
+ */
+const POSTER_W = 0.42
+const POSTER_H = 0.6
+const POSTER_LIFT = 0.006
+const POSTER_Y = 1.55
+const POSTER_U = 0.3
+const POSTER_TORN_ONE_IN = 3
+
+/**
+ * BIKE — a bicycle, in metres, and the reason it is built from seven parts.
+ *
+ * BEFORE: n/a. AFTER a 1.75 m machine on a 1.05 m wheelbase with 0.67 m wheels,
+ * which is `DESIGN.md` §4's bicycle again and a real 700c. Seven instances: two
+ * wheels, a main triangle in two bars, a saddle, a handlebar, and the chain. A
+ * bicycle is silhouette-thin (AESTHETIC-NOTES §0: "each interruption is 8-40
+ * triangles") and at 40 m what resolves is two discs and a diagonal, so the frame
+ * is two bars rather than eight tubes.
+ *
+ * `BIKE_WHEEL_R` is 0.335, not 0.34: a 700c wheel with a 25 mm tyre is 0.67 m across
+ * the tyre and 0.69 across the rim, and 0.335 is the tyre radius.
+ */
+const BIKE_WHEEL_R = 0.335
+const BIKE_WHEEL_T = 0.04
+const BIKE_WHEELBASE = 1.05
+const BIKE_FRAME_T = 0.05
+const BIKE_LOWER_Y = 0.42
+const BIKE_UPPER_Y = 0.86
+const BIKE_SADDLE_Y = 0.98
+const BIKE_BAR_Y = 1.04
+const BIKE_BAR_W = 0.44
+const BIKE_SADDLE_W = 0.24
+const BIKE_CHAIN_R = 0.11
+const BIKE_CHAIN_T = 0.02
+const BIKE_PARK_OFFSET = 0.62
+const BIKE_PARK_SPACING = 1.1
+
+/**
+ * PORTAL_FURNITURE_CLEAR — the exclusion zone the supervisor named for this pass.
+ *
+ * BEFORE: n/a, and that is the interesting part. There was no exclusion because
+ * there was nothing to exclude: pass 6's furniture stands on the PAVEMENT and a
+ * portal stands in a LOT behind the frontage, so the two had never met. This pass
+ * puts objects on the pavement in front of a lot AND in the lot's side yard, which
+ * is the first time a piece of street furniture can be anywhere near a portal's
+ * stand-off.
+ *
+ * AFTER: 12 m, and the number is derived rather than chosen. §16.5.5 photographs
+ * portal A from 4.5 m out on the structure's own `facing`; a 2.30 m shelter standing
+ * between that camera and a 1.18 m gate is the one new object in the world that
+ * could put something other than the portal in the middle of `portal-located.png`,
+ * and the pupil luma the pass-3 gate measures (luma <= 20) is a measurement OF THE
+ * HOLE — so a foreground object does not merely look wrong there, it invalidates
+ * the gate. 12 m is 2.7x the stand-off, which keeps the whole frontage run of a
+ * portal's own lot clear; that is also the right thing for a player walking up to
+ * one, which is the other reason the number is generous rather than minimal.
+ *
+ * It is checked rather than commented. `verify-world.mjs` reads every pass-7
+ * instance back out of the matrix buffers and requires its distance to all three
+ * portal anchors to be at least this, AND requires the filter to have REJECTED
+ * something: a rule that never fires is the "filter, not a spatial test" the
+ * pass-6 review left as residual risk, and this is the pass that closes it.
+ */
+const PORTAL_FURNITURE_CLEAR = 12
+
+/**
+ * The two set-backs that keep the new pavement objects off the carriageway, in
+ * metres in front of a lot's frontage line.
+ *
+ * BEFORE: n/a. AFTER `VENDING_SETBACK` 1.1 and `BOLLARD_SETBACK` 2.4. (This block
+ * also carried a `SHELTER_SETBACK` until the shelter moved to being an INTERSECTION
+ * object — see `SHELTER_CORNER_X`, which derives the same intent from the kerb face
+ * and the shelter's own length. A constant with no caller is a comment that has
+ * drifted out of the code, so it is deleted rather than kept "for symmetry".)
+ *
+ * The arithmetic that matters is the lot's: the walk runs from `STREET_HALF_WIDTH` 6
+ * + `KERB_WIDTH` 0.4 out to 9.4, so a set-back `s` measured in front of the frontage
+ * stands `9.4 - s` from the centreline. A machine is therefore at 8.3 m and a
+ * bollard at 7.0 m — both on the walk, and clear of the kerb face at 6.4 m by 1.9
+ * and 0.6 m. (The first draft of this paragraph claimed 7.9 and 6.6 and was wrong by
+ * the same half-metre twice, which is what a comment nobody recomputed looks like;
+ * `verify-world.mjs` now measures the real distance instead of trusting it.)
+ *
+ * `BOLLARD_SETBACK` is the one that is not decoration: a bollard at the kerb is then
+ * at 7.0 m, and `verify-world.mjs` requires EVERY pass-7 instance
+ * to be more than `STREET_HALF_WIDTH + KERB_WIDTH` (6.4) from every road
+ * centreline. That single number is what keeps this pass's furniture out of the
+ * creature's eye line, because the creature walks the carriageway and its eye is
+ * the one mark `creatureContrast` anchors on. It is the structural form of "the eye
+ * gate must still pass", as `PORTAL_FURNITURE_CLEAR` is the structural form of
+ * "the pupil must stay luma <= 20".
+ */
+const VENDING_SETBACK = 1.1
+const BOLLARD_SETBACK = 2.4
+
+/**
+ * DUMPSTER_INWARD and DUMPSTER_ALONG — where a bin goes, and WHY IT IS THERE.
+ *
+ * BEFORE: n/a. AFTER `DUMPSTER_INWARD` 0.72 of the lot's depth (7.2 m of 10) and
+ * `DUMPSTER_ALONG` 0.425 of its length (11.05 m of 26), which puts it in the SIDE
+ * YARD at the back of the lot.
+ *
+ * The brief says "behind buildings" and this is the only honest place for that in
+ * this world, and the reason is a property of the lot geometry rather than a
+ * choice: `_addLot` places the house at `atDepth(frame, frame.short - depth, depth)`,
+ * whose back face lands on the lot's BACK EDGE exactly. There is no rear yard to
+ * put a bin in. What there is, on a 26 x 10 m lot carrying a 0.7 x 26 m house, is
+ * 3.9 m of side gap either side of the building running the full depth — and the
+ * back 5.5 m of that gap is behind the frontage, invisible from the street, which is
+ * where a real bin is. 0.425 of the length is the middle of that gap: 0.5 would be
+ * the lot's own edge, 0.35 the house's flank, and 0.425 clears both by a metre.
+ */
+const DUMPSTER_INWARD = 0.72
+const DUMPSTER_ALONG = 0.425
+const TRASH_BAG_ONE_IN = 2
+const TRASH_BAGS_MAX = 3
+const TRASH_BAG_JITTER = 0.34
+
+/**
+ * `DRESSING_SALT` and the three salts that are not a region.
+ *
+ * BEFORE: n/a. AFTER four offsets into `hash32`'s 32-bit mix. The salts are what
+ * stop this pass from moving pass 5's lit windows or pass 6's poles when it adds a
+ * draw to a shared stream: `hash32` adds its arguments before mixing, so two
+ * streams whose coordinate pairs differ are unrelated, and a stream that differed
+ * only in its *consumption order* would move every draw after it.
+ * `DRESSING_SALT` is the per-lot region's own seed and `VENDING_SALT` is a second,
+ * independent region for the machine roll, so a pass that added a bin could not
+ * re-roll a machine. The two flicker salts are the tick and the phase, neither of
+ * which is a coordinate.
+ */
+const DRESSING_SALT = 0x44524553
+const VENDING_SALT = 0x56454e53
+const VENDING_FLICKER_TICK_SALT = 0x5449434b
+const VENDING_FLICKER_PHASE_SALT = 0x50484153
+
+
+// ---------------------------------------------------------------------------
 // procedural textures — canvas, no downloads, and no path drawing
 // ---------------------------------------------------------------------------
 
@@ -1439,6 +1998,83 @@ function makeSwirlTexture({
   return texture
 }
 
+/**
+ * `makePosterTexture` — a fly-poster, and the torn variant, as ONE texture with an
+ * alpha channel rather than as two.
+ *
+ * BEFORE: n/a — `makeSurfaceTexture` is the only texture primitive in the file and
+ * it is greyscale-with-opaque-alpha, which cannot express a tear. AFTER: a 64²
+ * sheet whose alpha is 1 everywhere except a torn lower corner, and it is TWO
+ * textures from TWO seeds rather than one texture with a torn half, because the
+ * whole point of the torn variant is that it looks like a DIFFERENT sheet.
+ *
+ * WHY ALPHA AND NOT A SHORTER BOX, which is the version this pass tried first and
+ * which is wrong in a way a screenshot would not show. A torn poster drawn as a
+ * 0.42 x 0.4 box is a *smaller rectangle*, and a smaller rectangle is a different
+ * size of the same object, not a damaged one. The tear has to be a ragged EDGE, and
+ * an edge is what alpha is for. What is cheap here and not elsewhere: the material
+ * is `alphaTest`, not `transparent`, so the torn corner is a discarded fragment
+ * rather than a blended one — the sheet stays in the OPAQUE queue, which is the
+ * same reason the creature's eye is safe from it (see `EYE_RENDER_ORDER`).
+ *
+ * Written per-pixel through `createImageData` / `putImageData` for the reason
+ * every other texture in this file is, and one member more: the stub in
+ * `verify-world.mjs` hands back a real `Uint8ClampedArray` for the alpha channel,
+ * so a torn sheet constructs in the harness where a path-drawn one would rot.
+ *
+ * @param {object} options
+ * @param {number} options.seed noise seed, its own per variant
+ * @param {boolean} [options.torn] cut the lower-left corner away
+ * @returns {THREE.CanvasTexture}
+ */
+function makePosterTexture({ size = 64, seed = 1, torn = false }) {
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const noise = noiseField(seed)
+  const image = ctx.createImageData(size, size)
+  const data = image.data
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const u = x / size
+      const v = y / size
+      // The print: a block of tone at the top third, a rule, then a smaller block
+      // — a fly-poster is mostly paper with a few rectangles of ink on it, and the
+      // rectangles are what stop it being a beige square at 40 m.
+      const head = v < 0.3 ? 0.42 : 0
+      const rule = v > 0.36 && v < 0.4 ? 0.55 : 0
+      const body = v > 0.46 && v < 0.66 && u > 0.12 && u < 0.88 ? 0.3 : 0
+      let tone = 0.86 - head - rule - body
+      tone += (noise(u, v) - 0.5) * 0.1
+      const value = Math.max(0, Math.min(255, Math.round(tone * 255)))
+      const i = (y * size + x) * 4
+      data[i] = value
+      data[i + 1] = value
+      data[i + 2] = value
+      // The tear: a diagonal cut across the lower-left, jittered by the same
+      // noise field so the edge is ragged rather than a clean triangle. The
+      // jitter amplitude is 0.22 of the sheet, which is about 90 mm on an A2 —
+      // the width of a torn corner on a sheet that has been rained on.
+      let alpha = 255
+      if (torn) {
+        const edge = 0.34 + (1 - v) * 0.42 + (noise(u * 2.3, v * 2.3) - 0.5) * 0.22
+        if (u < edge) alpha = 0
+      }
+      data[i + 3] = alpha
+    }
+  }
+  ctx.putImageData(image, 0, 0)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  // Clamped rather than repeated: a poster is ONE sheet with one print on it, and
+  // `RepeatWrapping` on a texture that is mapped 1:1 onto a quad is a promise
+  // about a second use that does not exist.
+  texture.wrapS = THREE.ClampToEdgeWrapping
+  texture.wrapT = THREE.ClampToEdgeWrapping
+  return texture
+}
+
 
 export const SURFACE_SEEDS = Object.freeze({
   asphalt: 0x515f,
@@ -1452,7 +2088,62 @@ export const SURFACE_SEEDS = Object.freeze({
   // people will change differently — and it is the one seed a player can see
   // rotating, so it must not be a function of any surface's.
   swirl: 0x5197,
+  // ITERATION 2, PASS 7 — two more, for the same reason and one more reason on
+  // top: a WHOLE poster and a TORN poster are two textures, and a torn sheet
+  // built from the whole one's noise would tear the same way every time, which
+  // is a texture a player learns. `0x50f1` and `0x5047` are `P1` and `PG`.
+  poster: 0x50f1,
+  posterTorn: 0x5047,
 })
+
+
+/**
+ * `vendingFlicker` — the world's one badly-behaved ballast, on the world's clock.
+ *
+ * BEFORE: n/a. The only flicker in the game was `update()`'s
+ * `0.88 + (sin(7.3t) + sin(2.9t + 1.1) + sin(17.7t)) * 0.04`, which is a continuous
+ * sum of sines with no seed: it is identical in every run, it has no irregular
+ * term, and there is nothing to vary but the three coefficients. AFTER a stepped,
+ * quantised, seeded level — and the three differences are each a deliberate
+ * property rather than a stylistic one.
+ *
+ * **Stepped, not smooth.** A failing ballast does not breathe; it holds, and then
+ * it drops for a tick, and then it holds again. The world clock is quantised into
+ * `VENDING_FLICKER_HZ` ticks and the whole value is a function of the TICK INDEX,
+ * which is what makes a dropout an EVENT rather than a dip a renderer can
+ * interpolate away. It is also what makes it re-derivable: given `t` and the seed,
+ * anyone can print the next ten ticks and see the pattern.
+ *
+ * **Hashed, not summed.** The level comes out of `flickerAt` — and therefore out of
+ * `hash32` — rather than out of trigonometry, so it does not share a period with
+ * the sodium's three sines. Two sines and an avalanche are incommensurate, and a
+ * player who watched the lamps for a minute could predict a sine but cannot
+ * predict a 32-bit mix.
+ *
+ * **Seeded, and only seeded.** `VENDING_FLICKER_SEED` is a named constant, the two
+ * salts keep the tick and the phase in different regions of the mix, and there is
+ * no `Math.random` and no clock read anywhere in this function. That is D10 — "any
+ * technique whose output depends on iteration order or unseeded randomness is out" —
+ * and it is also what lets `verify-world.mjs` drive the world to the same time
+ * twice and require the material's emissive to come back bit-identical, which is
+ * the only honest way to test a flicker.
+ *
+ * The band is `[VENDING_FLICKER_FLOOR, 1]`: a failing tube that never goes dark,
+ * because a dark one is a DEAD machine and a dead machine is furniture, and a
+ * failing one is a thing that might work.
+ *
+ * @param {number} t seconds on the world's own clock
+ * @param {number} [seed] `VENDING_FLICKER_SEED`, or a test's own
+ * @returns {number} a multiplier in `[VENDING_FLICKER_FLOOR, 1]`
+ */
+function vendingFlicker(t, seed = VENDING_FLICKER_SEED) {
+  return flickerAt(seed, Math.floor(t * VENDING_FLICKER_HZ), VENDING_FLICKER_TICK_SALT, {
+    phaseSalt: VENDING_FLICKER_PHASE_SALT,
+    floor: VENDING_FLICKER_FLOOR,
+    depth: VENDING_FLICKER_DEPTH,
+    oneIn: VENDING_FLICKER_DROPOUT_ONE_IN,
+  })
+}
 
 
 // ---------------------------------------------------------------------------
@@ -2051,6 +2742,123 @@ function onFacade(pool, wall, u, y, proud, w, h, d, color = null) {
 }
 
 /**
+ * `inLot` — a point in a lot's OWN frame, returned in world, in one call.
+ *
+ * ITERATION 2, PASS 7. T6's `facadeFrame` made wall-mounted placement a two-line
+ * call, and this is the same trade for the other half of a lot: `along` is metres
+ * from the lot's CENTRE along the frontage and `inward` is metres BEHIND the
+ * frontage line, so a negative `inward` walks out onto the pavement. Every pass-7
+ * placement is written in those two numbers, which is why none of them mentions
+ * whether the lot is long in x or long in z.
+ *
+ * The sign is derived from the lot rather than from the side name, and it is
+ * `atDepth`'s sign: the frontage is nearer the road, the back is nearer the block's
+ * middle, and a lot on the far side of an avenue has its back at a SMALLER world
+ * coordinate. A caller that guessed `-1` for an N lot would put a dumpster in the
+ * next street.
+ *
+ * @param {object} frame `lotFrame`'s output
+ * @param {object} lot the lot itself, for its centre
+ * @param {number} copy the wrapped copy, one of `WRAP_COPIES`
+ * @param {number} along metres along the frontage from the lot's centre
+ * @param {number} inward metres behind the frontage; negative is on the pavement
+ * @returns {{x: number, z: number}} the point, in the drawn copy
+ */
+function inLot(frame, lot, copy, along, inward) {
+  const back = frame.back >= frame.front ? 1 : -1
+  const shift = copy * WORLD_EXTENT
+  const alongAxis = (frame.alongX ? lot.x : lot.z) + along + shift
+  const inwardAxis = frame.front + back * inward + shift
+  return frame.alongX ? { x: alongAxis, z: inwardAxis } : { x: inwardAxis, z: alongAxis }
+}
+
+/**
+ * `onWall` — place one QUAD against a wall, facing out of it, in wall coordinates.
+ *
+ * The box sibling of `onFacade`, and it exists because a poster is a plane: a
+ * `PlaneGeometry` faces its local +z, so placing one needs a YAW as well as a
+ * position, and `onFacade` composes no yaw at all (every part it places is a box,
+ * and a box has no face to point anywhere). The yaw is derived from the wall's own
+ * `face` and `sign` in the one place, so a caller still never has to know which
+ * world axis the wall points along.
+ *
+ * `proud` is signed exactly as in `onFacade` — positive stands the sheet out of
+ * the wall — and the sheet is placed 10 mm thick along the wall's normal so it has
+ * a measurable depth in the matrix buffer. A zero-thickness plane would still draw,
+ * but a gate that reads depth out of an instance buffer would have nothing to read.
+ *
+ * @param {InstancePool} pool a pool whose geometry is a unit plane in XY
+ * @param {object} wall from `facadeFrame`
+ * @param {number} u metres along the wall from its midpoint
+ * @param {number} y height above the lot
+ * @param {number} proud metres out of the wall
+ * @param {number} w extent along the wall
+ * @param {number} h height
+ * @param {THREE.Color|null} [color] per-instance colour
+ */
+function onWall(pool, wall, u, y, proud, w, h, color = null) {
+  // The wall's outward normal in world (x, z), as the yaw that turns a plane's own
+  // +z onto it: `place` yaws about Y, and a yaw of `t` sends (0, 0, 1) to
+  // (sin t, 0, cos t).
+  const yaw = wall.face === 'z'
+    ? (wall.sign > 0 ? 0 : Math.PI)
+    : (wall.sign > 0 ? Math.PI / 2 : -Math.PI / 2)
+  if (wall.face === 'z') pool.place(wall.along + u, y, wall.plane + wall.sign * proud, w, h, 0.01, yaw, color)
+  else pool.place(wall.plane + wall.sign * proud, y, wall.along + u, 0.01, h, w, yaw, color)
+}
+
+/**
+ * `dressingStream` — this pass's own stream for one lot, and NOT pass 5's.
+ *
+ * `DRESSING_SALT` is folded into the chunk's x BEFORE the mix rather than
+ * multiplied into the seed afterwards, because `hash32` is additive and a salt
+ * added to the seed region would be indistinguishable from a neighbouring chunk's
+ * coordinates. The result is four streams per chunk that are as unrelated to each
+ * other, and to `streamAt(this.seed, cx, cz)` which pass 5's lit windows and pass
+ * 6's poles read, as those are to each other — so this pass spends draws without
+ * moving a single thing that came before it.
+ *
+ * @param {number} seed the run seed
+ * @param {number} cx chunk x
+ * @param {number} cz chunk z
+ * @param {number} sideIndex index into `SIDE_NAMES`
+ * @returns {() => number} a private generator
+ */
+function dressingStream(seed, cx, cz, sideIndex) {
+  return streamAt(hash32(seed, cx + DRESSING_SALT, cz), sideIndex, 0)
+}
+
+/**
+ * `vendingDraw` — whether this lot carries a machine, and whether it is lit.
+ *
+ * PURE, and on a stream of its own rather than on `dressingStream`, which is the
+ * whole reason the world's ONE flickering machine can be found before the world is
+ * built. If the machine's roll came out of the shared dressing stream it would sit
+ * at a different position depending on how many bins had already been rolled for
+ * that lot, and a pass that added a dumpster would silently re-roll every machine
+ * in the map. So this is `VENDING_SALT`'s own region, and the two callers — the
+ * pre-pass that picks the flickering lot and the placement in `_addLotDressing` —
+ * are guaranteed the same answer because they are the same function.
+ *
+ * A district whose rate is 0 returns `null` rather than a `{ lit: false }`, because
+ * "this district has no machines" and "this lot drew no machine" are different
+ * facts and only one of them is a draw.
+ *
+ * @param {number} seed the run seed
+ * @param {number} cx chunk x
+ * @param {number} cz chunk z
+ * @param {number} sideIndex index into `SIDE_NAMES`
+ * @returns {{lit: boolean, rates: object}|null} the draw, or null for no machine
+ */
+function vendingDraw(seed, cx, cz, sideIndex) {
+  const rates = DISTRICT_DRESSING[districtOf(cx, cz)]
+  if (rates.vending === 0) return null
+  const rng = streamAt(hash32(seed + VENDING_SALT, cx, cz), sideIndex, 0)
+  if (Math.floor(rng() * rates.vending) !== 0) return null
+  return { lit: Math.floor(rng() * VENDING_LIT_ONE_IN) === 0, rates }
+}
+
+/**
  * `makeFrameGeometry` — one rectangular annulus, unit-sized, centred, 1 m deep.
  *
  * This is the window and door *frame* as a single piece of geometry rather than
@@ -2254,6 +3062,22 @@ export class StreetView {
 
   _texture(options) {
     const texture = makeSurfaceTexture(options)
+    this.textures.push(texture)
+    return texture
+  }
+
+  /**
+   * `_posterTexture` — a sheet of paper with a print on it, registered for teardown.
+   *
+   * `makePosterTexture` is not `makeSurfaceTexture` and so does not go through
+   * `_texture`, which means it needs registering by hand or §15's teardown check
+   * counts a texture the world still holds. A poster is two 64² canvases for the
+   * whole map, so this is the smallest reason in the file to get right and the one
+   * most likely to be missed: a leak here is 16 kB a hot reload, which never shows
+   * up as a bug and is exactly the kind of debt pass 19 exists to sweep.
+   */
+  _posterTexture(seed, torn) {
+    const texture = makePosterTexture({ size: 64, seed, torn })
     this.textures.push(texture)
     return texture
   }
@@ -2467,6 +3291,69 @@ export class StreetView {
       // lighter, which is the opposite of what "metal grate" wants to be and the
       // reason a grate reads at 40 m at all.
       drain: this._material({ color: PALETTE.drain, roughness: 0.8, metalness: 0.25 }),
+      // ITERATION 2, PASS 7 — the eight new surfaces. Six are `_material` and
+      // follow pass 6's rule verbatim (a variation on a dark, so §12.1's silhouette
+      // rule holds); the vending liner is the seventh and the only one here that
+      // emits, and the reason it is a `_material` and NOT a `_glow` is the whole of
+      // the next paragraph.
+      dumpster: this._material({ color: PALETTE.dumpster, roughness: 0.78, metalness: 0.34 }),
+      trashBag: this._material({ color: PALETTE.trashBag, roughness: 0.52, metalness: 0.04 }),
+      bike: this._material({ color: PALETTE.bike, roughness: 0.55, metalness: 0.5 }),
+      vending: this._material({ color: PALETTE.vending, roughness: 0.46, metalness: 0.36 }),
+      // THE DEAD LINER, and it is `drain` rather than a ninth palette entry on
+      // purpose: an unlit machine's product window is a hole with a lit edge, and a
+      // hole is the same value as every other hole in this world (see the gully).
+      vendingFaceDead: this._material({ color: PALETTE.drain, roughness: 0.34, metalness: 0.1 }),
+      // THE LIT LINER, and the one material in this file that has to carry fog
+      // while behaving like a light. `_glow` is `MeshBasicMaterial` with
+      // `fog: false`, which is correct for a portal rim and a lamp head — they are
+      // SOURCES seen against the sky — and catastrophically wrong here: an unfogged
+      // emissive panel 40 m down a street punches a hole in the amber haze and is
+      // visible from the far end of an avenue, straight through the corridor the
+      // creature is supposed to be the only thing moving in. A `MeshStandardMaterial`
+      // with an `emissive` and fog left on is the fix, and it costs the machine
+      // nothing: `emissiveIntensity` is the same knob either way.
+      vendingFaceLit: this._material({
+        color: 0x0b0d11,
+        emissive: PALETTE.vendingGlow,
+        emissiveIntensity: VENDING_FACE_EMISSIVE,
+        roughness: 0.3,
+      }),
+      // ...and the bad one is a SEPARATE material instance for the reason pass 5
+      // split the siding: one slot per pool, and a flicker written into the shared
+      // material would gutter every lit machine in the district at once. Two draw
+      // calls for "one machine misbehaves" is the price, and it is a price worth
+      // naming rather than hiding.
+      vendingFaceFlicker: this._material({
+        color: 0x0b0d11,
+        emissive: PALETTE.vendingGlow,
+        emissiveIntensity: VENDING_FACE_EMISSIVE,
+        roughness: 0.3,
+      }),
+      shelter: this._material({ color: PALETTE.shelter, roughness: 0.72, metalness: 0.34 }),
+      // The ad panel is DIM, and "dim" here means "not emissive" rather than "a
+      // small emissive": a backlit panel bright enough to read as a light source
+      // would be a fifth rung on T11's ladder, spent on a rectangle no player can
+      // read at 40 m. A `_material` at `adPanel`'s 72.2 luma is lit BY the sodium
+      // like everything else, which is what "dim" means in a world with four lights.
+      adPanel: this._material({ color: PALETTE.adPanel, roughness: 0.82, metalness: 0.02 }),
+      // The poster: the paper is `PALETTE.poster` and the print is a greyscale
+      // multiplier on top of it — so the rendered albedo is 0.72-0.86 of 87.1 luma,
+      // which is 63-75 and still the palest furniture value in the block.
+      // `alphaTest` and not `transparent`, for the reason `POSTER_ALPHA_TEST`
+      // gives.
+      poster: this._material({
+        color: PALETTE.poster,
+        map: this._posterTexture(SURFACE_SEEDS.poster, false),
+        alphaTest: POSTER_ALPHA_TEST,
+        roughness: 0.9,
+      }),
+      posterTorn: this._material({
+        color: PALETTE.poster,
+        map: this._posterTexture(SURFACE_SEEDS.posterTorn, true),
+        alphaTest: POSTER_ALPHA_TEST,
+        roughness: 0.9,
+      }),
       // The wire, and the only material in this file that is not a
       // `MeshStandardMaterial`. T8 owns it because the width is computed in the
       // vertex shader, and a `ShaderMaterial` therefore gets no fog unless the
@@ -2784,6 +3671,96 @@ export class StreetView {
       names, 'drainBars', box(), this._materials.metal, poles * DRAIN_BAR_COUNT + 8,
     )
 
+    // ITERATION 2, PASS 7 — fifteen pools, and T5's rule is the reason every
+    // capacity below is a MAXIMUM multiplied out rather than the number this seed
+    // happens to place. `DISTRICT_DRESSING`'s fastest rate is 1, so a chunk can put
+    // a bin, three bags, a machine, a poster and a bollard run on every one of its
+    // four lots, and a capacity sized for the seed's actual draw silently drops the
+    // extras — the exact failure the pass-5 review found in the window frames, and
+    // the only symptom would be `pool.overflow`, which nothing counts but
+    // `verify-world.mjs`.
+    //
+    // FIFTEEN POOLS FOR EIGHT KINDS, and the count is the point rather than an
+    // accident: an `InstancedMesh` has ONE material slot, so a bin and a bag cannot
+    // share a pool, and a lit liner and a dead liner cannot either. The merges that
+    // ARE available have been taken — a dumpster's body, lid and castors are one
+    // pool, a bag and its knot are one pool, a bike's five frame bars are one pool,
+    // a shelter's posts, back and roof are one pool — so fifteen is the floor for
+    // this content and not a first draft.
+    //
+    // `nodes * WRAP_COPIES.length` is 147, the most shelters or bikes the map can
+    // hold: one per intersection per copy.
+    const dressed = nodes * WRAP_COPIES.length
+    // A bin is four instances (two castors, a body, a lid) and there is at most one
+    // per lot; the fastest district rate is 4, so `lot` is the honest maximum.
+    this.pools.dumpsters = this._streetPool(names, 'dumpsters', box(), this._materials.dumpster, lot * 4 + 8)
+    // Three bags at two instances each.
+    this.pools.trashBags = this._streetPool(names, 'trashBags', box(), this._materials.trashBag, lot * 6 + 8)
+    // One machine per lot, one liner, and `VENDING_RAIL_COUNT` rails.
+    this.pools.vendingBodies = this._streetPool(names, 'vendingBodies', box(), this._materials.vending, lot + 8)
+    this.pools.vendingFaces = this._streetPool(names, 'vendingFaces', box(), this._materials.vendingFaceDead, lot + 8)
+    this.pools.vendingLitFaces = this._streetPool(names, 'vendingLitFaces', box(), this._materials.vendingFaceLit, lot + 8)
+    // ONE in the world, so three — one per wrapped copy — and eight for the same
+    // reason every other pool carries slack: a capacity of 1 would turn a future
+    // pass's second machine into a silent hole rather than an `overflow` count.
+    this.pools.vendingFlickerFaces = this._streetPool(names, 'vendingFlickerFaces', box(), this._materials.vendingFaceFlicker, WRAP_COPIES.length + 1)
+    this.pools.vendingRails = this._streetPool(names, 'vendingRails', box(), this._materials.painted, lot * VENDING_RAIL_COUNT + 8)
+    // A shelter is a roof, a back, two posts and a bench; the ad panel is its own
+    // pool because it is the one DIM surface and shares no material with the steel.
+    this.pools.shelterSteel = this._streetPool(names, 'shelterSteel', box(), this._materials.shelter, dressed * 4 + 8)
+    this.pools.shelterBenches = this._streetPool(names, 'shelterBenches', box(), this._materials.trim, dressed + 8)
+    this.pools.shelterAds = this._streetPool(names, 'shelterAds', box(), this._materials.adPanel, dressed + 8)
+    // A bollard is a shaft and a retroreflective band, and a run is two of them.
+    this.pools.bollards = this._streetPool(
+      names, 'bollards', new THREE.CylinderGeometry(0.5, 0.5, 1, 6), this._materials.painted,
+      lot * BOLLARDS_PER_RUN * 2 + 8,
+    )
+    // A bike is five frame bars and two wheels, and the wheels are a TORUS rather
+    // than a cylinder for the reason `BIKE_WHEEL_R` gives: a cylinder seen edge-on
+    // is a rectangle and a bicycle has no rectangles in it. 16x8 segments is 256
+    // triangles a wheel, which is inside AESTHETIC-NOTES §0's 8-40-per-interruption
+    // budget for a pair and is the only geometry in this pass that is not a box.
+    this.pools.bikeFrames = this._streetPool(names, 'bikeFrames', box(), this._materials.bike, dressed * 5 + 8)
+    this.pools.bikeWheels = this._streetPool(
+      names, 'bikeWheels', new THREE.TorusGeometry(0.5, (BIKE_WHEEL_T / 2) / (BIKE_WHEEL_R * 2), 6, 16),
+      this._materials.bike, dressed * 2 + 8,
+    )
+    // Two poster pools, whole and torn, because the tear is in the ALPHA and a
+    // pool's material is where alpha lives. `POSTER_U` is the sheet's own aspect:
+    // 0.42 x 0.60 is A2 and a square texture on it stretches the print by 1.43.
+    this.pools.posters = this._streetPool(
+      names, 'posters', new THREE.PlaneGeometry(POSTER_U, 1), this._materials.poster, lot + 8,
+    )
+    this.pools.postersTorn = this._streetPool(
+      names, 'postersTorn', new THREE.PlaneGeometry(POSTER_U, 1), this._materials.posterTorn, lot + 8,
+    )
+
+    // The world's ONE flickering machine, chosen BEFORE any lot is built.
+    //
+    // It could have been a 1-in-20 roll on each machine's own stream, and that
+    // version cannot promise "one": with ~30 machines the expected count is 1.5
+    // and the seed decides whether the pass delivered zero or three. Instead this
+    // is a MINIMUM over the map: every lot whose `vendingDraw` says it carries a
+    // LIT machine is a candidate, the one with the lowest `hash32` wins, and the
+    // answer is the same on every machine, in every build order, for every run of
+    // this seed. Anchor lots are excluded because a machine inside
+    // `PORTAL_FURNITURE_CLEAR` would be filtered away and the world would then
+    // have a flickering machine that is not there.
+    this.dressingRejected = 0
+    // `dressingLog` — one entry per placed object, published rather than discarded,
+    // for the same reason `wireSpans` and `polePositions` are: the claim "no machine
+    // exists in the district whose rate is zero" is a claim about ADDRESSING, and a
+    // check cannot recover the addressing from world coordinates. The wrap is the
+    // reason this is not derivable in the harness either: `canonicalCoord` is a fold
+    // of a LINE onto a 448 m window, it is not order-preserving, and a machine at
+    // world x = 248 folds to -7.9 — so a quadrant derived in the folded frame calls
+    // the easternmost machine in the world a western one. Two earlier versions of the
+    // district check got that wrong in opposite directions before the log existed.
+    // `district` is `districtOf(chunk.cx, chunk.cz)`, the same value the rate lookup
+    // reads, which is what makes "a rate of zero placed nothing" a real assertion.
+    this.dressingLog = []
+    this.flickerLot = this._pickFlickerLot()
+
     this.buildChunks()
     // The lamps are built *before* the commit loop, and that order is the whole
     // reason this call is here rather than after it. `InstancePool.commit()` is
@@ -2842,20 +3819,32 @@ export class StreetView {
     const z = lot.z + copy * WORLD_EXTENT
     const tint = lot.tint % PALETTE.siding.length
 
-    // the lot's own ground: a yard slab, so a driveway reads as a driveway.
+    // The lot's own ground: a yard slab, so a driveway reads as a driveway.
     // `YARD_TOP - 0.1` is the same 0.1 the slab is thick, written so the apron's
     // `YARD_TOP` and this placement cannot drift apart into a buried decal
     this.pools.yards.place(x, YARD_TOP - 0.1, z, frame.long, 0.1, frame.short)
 
+    // The building's box, hoisted out of the branch below and computed whether or
+    // not there IS a building. BEFORE it was four `const`s inside `if (!isAnchor)`,
+    // which is exactly the shape that makes a later pass re-derive them: pass 7
+    // hangs a poster on this wall and needed the same four numbers, and copying
+    // them into a second place is how a poster ends up 4.5 m out in the yard —
+    // the bug `houseFaces` documents at length. One computation, one owner, and an
+    // anchor lot simply gets `house === null` where a poster can be skipped.
+    const wall = lot.kind === 'house' ? WALL_HEIGHT : lot.kind === 'garage' ? 2.7 : 2.2
+    const depth = frame.short * (lot.kind === 'house' ? 0.55 : 0.5)
+    const width = frame.long * (lot.kind === 'house' ? 0.7 : lot.kind === 'garage' ? 0.34 : 0.2)
+    const centre = atDepth(frame, frame.short - depth, depth)
+    const house = {
+      cx: frame.alongX ? x : x + (centre - lot.x),
+      cz: frame.alongX ? z + (centre - lot.z) : z,
+      w: frame.alongX ? width : depth,
+      d: frame.alongX ? depth : width,
+      kind: lot.kind,
+    }
+
     if (!isAnchor) {
-      const wall = lot.kind === 'house' ? WALL_HEIGHT : lot.kind === 'garage' ? 2.7 : 2.2
-      const depth = frame.short * (lot.kind === 'house' ? 0.55 : 0.5)
-      const width = frame.long * (lot.kind === 'house' ? 0.7 : lot.kind === 'garage' ? 0.34 : 0.2)
-      const centre = atDepth(frame, frame.short - depth, depth)
-      const cx = frame.alongX ? x : x + (centre - lot.x)
-      const cz = frame.alongX ? z + (centre - lot.z) : z
-      const w = frame.alongX ? width : depth
-      const d = frame.alongX ? depth : width
+      const { cx, cz, w, d } = house
       if (lot.kind === 'house') {
         // §12.3's siding, per-lot deterministic, carried in the INSTANCE colour
         // rather than the material. `tint` comes from the chunk's own stream, so
@@ -2927,12 +3916,333 @@ export class StreetView {
       }
     }
 
+    // ITERATION 2, PASS 7 — the lot's own furniture, and it goes in BEFORE the part
+    // count below so the budget in T5 is a budget for the whole lot. A pass that
+    // dressed its lots outside the measurement would be reporting a number that
+    // does not describe the thing the number is about, and the pin in
+    // `verify.mjs` would be moving for a lie.
+    this._addLotDressing(chunk, lot, frame, isAnchor, copy, isAnchor ? null : house)
+
     // ...and the lot's part count, recorded last so it covers the yard, the
-    // building, the façade and the frontage. A DIFF, not a tally: see the note on
+    // building, the façade, the frontage and this pass's dressing. A DIFF, not a
+    // tally: see the note on
     // `partsBefore` at the top of this method. The fixture pass is deliberately
     // NOT counted here — §3.6's dressing is per-loop and the budget is about the
     // static street, which is what "a per-lot part" means in T5.
     this.lotParts.push(this._partsUsed() - partsBefore)
+  }
+
+  /**
+   * `_pickFlickerLot` — which lot carries the world's one failing ballast.
+   *
+   * A MINIMUM, not a roll, and the difference is the whole claim. A 1-in-N draw per
+   * machine gives an expected count, and on a seed that lands on 0 the pass has
+   * quietly delivered no flicker at all while every comment in the file still
+   * claims one — the class of defect this benchmark's whole verify layer exists to
+   * catch, arrived at by a shorter road. Taking the lowest `hash32` over every
+   * candidate is order-independent (it is a function of the seed and nothing else),
+   * build-order-independent (nothing is drawn while it is chosen), and EXACTLY one
+   * whenever at least one candidate exists.
+   *
+   * Anchor lots are skipped, and not for tidiness: a machine inside
+   * `PORTAL_FURNITURE_CLEAR` is filtered out at placement, so a flickering lot
+   * that is an anchor lot is a flickering machine that does not exist.
+   *
+   * @returns {string|null} the `cx,cz,side` key, or null if the seed has no lit
+   *   machine at all — in which case `update()` has nothing to drive and says so
+   */
+  _pickFlickerLot() {
+    let best = null
+    let rank = Infinity
+    for (let cx = 0; cx < GRID; cx += 1) {
+      for (let cz = 0; cz < GRID; cz += 1) {
+        for (let side = 0; side < SIDE_NAMES.length; side += 1) {
+          const key = `${cx},${cz},${SIDE_NAMES[side]}`
+          if (this.anchorLots.has(key)) continue
+          const draw = vendingDraw(this.seed, cx, cz, side)
+          if (!draw || !draw.lit) continue
+          const candidate = hash32(this.seed + VENDING_SALT, cx, cz * SIDE_NAMES.length + side)
+          if (candidate < rank) {
+            rank = candidate
+            best = key
+          }
+        }
+      }
+    }
+    return best
+  }
+
+  /**
+   * `_portalClear` — is this spot far enough from every portal to keep it?
+   *
+   * The structural form of "the pupil must stay luma <= 20". §16.5.5 photographs a
+   * portal from 4.5 m out and the pass-3 gate measures the luma of the HOLE in that
+   * frame, so anything standing between that camera and the gate does not merely
+   * look wrong in a screenshot — it invalidates the gate that the rest of the
+   * iteration is measured against. `PORTAL_FURNITURE_CLEAR` is 12 m, 2.7x the
+   * stand-off, which clears the whole frontage run of a portal's own lot.
+   *
+   * A FILTER, and the distinction matters: it is a predicate applied at placement
+   * and counted, not a spatial test run afterwards. `dressingRejected` is published
+   * so `verify-world.mjs` can require that this fired at least once — a rule that
+   * never rejects is indistinguishable from a rule that is not there, which is the
+   * residual risk the pass-6 review left behind.
+   *
+   * FOLDED TO CANONICAL, which is the half that matters. The caller has already
+   * added `copy * WORLD_EXTENT` and this subtracts it again, because a portal's
+   * drawn position is translated by `recentre` by that same amount and the drawn
+   * distance between two things is the canonical distance between them. Without
+   * the fold, copies -1 and +1 would each sit 448 m from every portal, pass
+   * trivially, and the exclusion would silently exist in one ninth of the world.
+   * `verify-world.mjs` reads the instances back in canonical coordinates and
+   * measures the same number this predicate decided on.
+   *
+   * @param {number} x world x, in the drawn copy
+   * @param {number} z world z, in the drawn copy
+   * @param {number} copy the wrapped copy the caller is placing into
+   * @returns {boolean} true if the spot may be dressed
+   */
+  _portalClear(x, z, copy) {
+    const shift = copy * WORLD_EXTENT
+    for (const anchor of this.objectives.portals) {
+      if (Math.hypot(x - shift - anchor.position.x, z - shift - anchor.position.z) < PORTAL_FURNITURE_CLEAR) {
+        this.dressingRejected += 1
+        return false
+      }
+    }
+    return true
+  }
+
+  /**
+   * `_addLotDressing` — everything on this lot that is not the lot.
+   *
+   * Four families and a rate table, and the table is the pass: AESTHETIC-NOTES §5
+   * asks for "per-district placement rules, because uniformity is what makes a
+   * generated street read as generated", which is a claim about DIFFERENCE. A rate
+   * that is the same in four districts satisfies the words and none of the idea, so
+   * two kinds are absent from a whole quadrant (`vending` and `bike` from the
+   * north-west, `shelter` from the south-east) and `verify-world.mjs` measures the
+   * absence out of the built world rather than reading this comment.
+   *
+   * THE STREAM IS THIS PASS'S OWN, and that is load-bearing rather than tidy. Pass
+   * 5 spends `streamAt(this.seed, cx, cz)` on lit windows and pass 6 spends another
+   * on spans; if this method drew from either, every draw added below would shift
+   * every draw after it and a dumpster would silently un-light a window three lots
+   * away. `dressingStream` is a different region of the same mix, so this pass is
+   * additive to the world and invisible to everything already in it.
+   *
+   * `copy === 0` guards every collider, for the reason the pole's does: the wrapped
+   * copies exist to be seen, never walked into, and the player is always within half
+   * a period of the canonical one.
+   *
+   * @param {object} chunk the chunk this lot belongs to
+   * @param {object} lot the lot
+   * @param {object} frame `lotFrame`'s output
+   * @param {boolean} isAnchor an objective's lot
+   * @param {number} copy the wrapped copy
+   * @param {object|null} house the building's box, or null on an anchor lot
+   * @returns {void}
+   */
+  _addLotDressing(chunk, lot, frame, isAnchor, copy, house) {
+    const rates = DISTRICT_DRESSING[districtOf(chunk.cx, chunk.cz)]
+    for (const kind of DRESSING_KINDS) {
+      if (rates[kind] === undefined) throw new Error(`DISTRICT_DRESSING has no ${kind} rate`)
+    }
+    const rng = dressingStream(this.seed, chunk.cx, chunk.cz, SIDE_NAMES.indexOf(lot.side))
+    const district = districtOf(chunk.cx, chunk.cz)
+    const record = (kind, x, z) => this.dressingLog.push({ kind, district, copy, x, z })
+    // ---- the bin, and the bags beside it, in the SIDE YARD --------------------
+    //
+    // A bin needs the gap between the house's flank and the lot's own boundary,
+    // which is 3.9 m of nothing on a 26 x 10 m lot, so an anchor lot (no house) has
+    // nowhere to put one and does not get one. That is a property of the world, not
+    // a special case: there is no rear yard in this geometry at all — the house's
+    // back face lands on the lot's back edge — and the brief's "behind buildings"
+    // resolves to the back third of the side gap or it does not resolve at all.
+    if (house && rates.dumpster > 0 && Math.floor(rng() * rates.dumpster) === 0) {
+      const side = rng() < 0.5 ? -1 : 1
+      const spot = inLot(frame, lot, copy, side * DUMPSTER_ALONG * frame.long, DUMPSTER_INWARD * frame.short)
+      if (this._portalClear(spot.x, spot.z, copy)) {
+        record('dumpster', spot.x, spot.z)
+        this._addDumpster(spot.x, spot.z, frame.yaw, copy)
+        // The bags, at their own rate, capped, and each with its OWN yaw off the
+        // lot's. A bag's yaw is the only thing here that makes a lump read as a
+        // lump: three identical boxes at one angle is a stack of crates, and
+        // jittering only the POSITION leaves the parallelism that gives it away.
+        for (let bag = 0; bag < TRASH_BAGS_MAX; bag += 1) {
+          if (Math.floor(rng() * TRASH_BAG_ONE_IN) !== 0) break
+          const jx = (rng() * 2 - 1) * TRASH_BAG_JITTER
+          const jz = (rng() * 2 - 1) * TRASH_BAG_JITTER
+          const bagX = spot.x + (frame.alongX ? jx : jz)
+          const bagZ = spot.z + (frame.alongX ? jz : jx)
+          this._addTrashBag(bagX, bagZ, frame.yaw + (rng() * 2 - 1) * 1.2)
+          record('bag', bagX, bagZ)
+        }
+      }
+    }
+    // ---- the machine, on the pavement in front of the frontage ----------------
+    //
+    // `vendingDraw` and not a roll from `rng`: the machine is the one thing here
+    // that another method has to be able to ask about BEFORE the world exists
+    // (`_pickFlickerLot`), and a draw that depended on how many bags had been rolled
+    // first could not be asked twice. A negative `inward` is the pavement.
+    const machine = vendingDraw(this.seed, chunk.cx, chunk.cz, SIDE_NAMES.indexOf(lot.side))
+    if (machine) {
+      const along = (rng() * 2 - 1) * (frame.long / 2 - 1.6)
+      const spot = inLot(frame, lot, copy, along, -VENDING_SETBACK)
+      if (this._portalClear(spot.x, spot.z, copy)) {
+        record('vending', spot.x, spot.z)
+        this._addVendingMachine(spot.x, spot.z, frame.yaw, machine.lit, `${chunk.cx},${chunk.cz},${lot.side}` === this.flickerLot, copy)
+      }
+    }
+
+    // ---- the poster, on the street wall --------------------------------------
+    //
+    // Wall-mounted, so it needs a wall: an anchor lot's objective has no building to
+    // paste anything on. The house's OWN street face, not the lot's frontage line —
+    // `houseFaces` calls that distinction the bug it was written around, and a
+    // poster placed against the lot rather than the house is 4.5 m out in the yard,
+    // hanging in mid-air.
+    if (house && rates.poster > 0 && Math.floor(rng() * rates.poster) === 0) {
+      const wall = houseFaces(frame, house.cx, house.cz, house.w, house.d).street
+      const u = (rng() * 2 - 1) * (wall.size / 2 - 0.45)
+      // The exclusion runs on the WALL'S OWN PLANE, and this line is here because the
+      // first version of the pass did not run it at all: a poster 6 mm off a siding is
+      // 2.5 m from one portal on the default seed, and it is a poster — flat, pale,
+      // and 0.42 x 0.60 — directly in the stand-off of a gate whose pupil luma is the
+      // pass-3 measurement. A wall decal needs the filter more than a bollard does,
+      // because it is the only thing in this pass that is ON a wall rather than ON the
+      // ground, and the wall is the one surface a portal's own lot always has.
+      const px = wall.face === 'z' ? wall.along + u : wall.plane + wall.sign * POSTER_LIFT
+      const pz = wall.face === 'z' ? wall.plane + wall.sign * POSTER_LIFT : wall.along + u
+      if (this._portalClear(px, pz, copy)) {
+        const torn = Math.floor(rng() * POSTER_TORN_ONE_IN) === 0
+        onWall(torn ? this.pools.postersTorn : this.pools.posters, wall, u, POSTER_Y, POSTER_LIFT, POSTER_W, POSTER_H)
+        record(torn ? 'posterTorn' : 'poster', px, pz)
+      }
+    }
+    // ---- the bollard run, at the kerb ----------------------------------------
+    //
+    // A RUN and not a bollard: two posts `BOLLARD_RUN_SPACING` apart is a gate
+    // marking a driveway, and a single post in the middle of a pavement is a thing
+    // with no reason to be there. Both sit `BOLLARD_SETBACK` in front of the
+    // frontage, which is the number the creature's eye line is measured against.
+    if (rates.bollard > 0 && Math.floor(rng() * rates.bollard) === 0) {
+      const along = (rng() * 2 - 1) * (frame.long / 2 - 3)
+      for (let index = 0; index < BOLLARDS_PER_RUN; index += 1) {
+        const spot = inLot(frame, lot, copy, along + (index - 0.5) * BOLLARD_RUN_SPACING, -BOLLARD_SETBACK)
+        if (!this._portalClear(spot.x, spot.z, copy)) continue
+        this.pools.bollards.place(spot.x, (BOLLARD_H - BOLLARD_CAP_H) / 2, spot.z, BOLLARD_R * 2, BOLLARD_H - BOLLARD_CAP_H, BOLLARD_R * 2)
+        // The retroreflective band at the very top, in the same pool: same colour,
+        // same material, and a bollard whose band is a different value is a bollard
+        // wearing a hat.
+        this.pools.bollards.place(spot.x, BOLLARD_H - BOLLARD_CAP_H / 2, spot.z, BOLLARD_R * 2.1, BOLLARD_CAP_H, BOLLARD_R * 2.1)
+        record('bollard', spot.x, spot.z)
+        if (copy === 0) this._collider(spot.x, spot.z, BOLLARD_R * 2, BOLLARD_R * 2, 'bollard')
+      }
+    }
+  }
+
+  /**
+   * `_addDumpster` — a 660-litre bin: two castors, a body, and a lid that overhangs.
+   *
+   * FOUR instances in one pool, and the two that matter for the silhouette are the
+   * castors and the lid. The lid is `DUMPSTER_LID_PROUD` proud on all four sides
+   * because a flush lid is a BOX, and mechanism 1 (silhouette first) is the reason
+   * this pass exists. The castors are `DUMPSTER_FOOT` of clearance because a bin
+   * whose body starts at y = 0 has no contact patch, and the reference's own failure
+   * list names floating objects as the thing that reads as a bug at 40 m even when
+   * it is not one.
+   *
+   * @param {number} x the bin's centre
+   * @param {number} z the bin's centre
+   * @param {number} yaw the lot's own yaw, so the long axis runs along the gap
+   * @param {number} copy the wrapped copy
+   * @returns {void}
+   */
+  _addDumpster(x, z, yaw, copy) {
+    const castor = DUMPSTER_CASTOR
+    for (const end of [-1, 1]) {
+      const along = end * (DUMPSTER_W / 2 - castor)
+      this.pools.dumpsters.place(
+        x + (yaw === 0 ? along : 0), castor / 2, z + (yaw === 0 ? 0 : along),
+        castor, castor, castor, yaw,
+      )
+    }
+    this.pools.dumpsters.place(x, DUMPSTER_FOOT + DUMPSTER_H / 2, z, DUMPSTER_W, DUMPSTER_H, DUMPSTER_D, yaw)
+    this.pools.dumpsters.place(
+      x, DUMPSTER_FOOT + DUMPSTER_H + DUMPSTER_LID_T / 2, z,
+      DUMPSTER_W + 2 * DUMPSTER_LID_PROUD, DUMPSTER_LID_T, DUMPSTER_D + 2 * DUMPSTER_LID_PROUD, yaw,
+    )
+    if (copy === 0) this._collider(x, z, DUMPSTER_W, DUMPSTER_D, 'dumpster')
+  }
+
+  /**
+   * `_addTrashBag` — one tied bag and its knot, in two instances of one material.
+   *
+   * The knot is 0.12 m of the same polythene on top of a 0.58 m lump, and it is the
+   * whole difference between a bag and a box: a bag is a thing that was filled and
+   * twisted, and the twist is the only part of that a silhouette can show. Two
+   * instances rather than a second geometry, because the material is the same and
+   * `place` is the only thing that differs.
+   *
+   * @param {number} x the bag's centre
+   * @param {number} z the bag's centre
+   * @param {number} yaw this bag's own yaw, deliberately NOT the lot's
+   * @returns {void}
+   */
+  _addTrashBag(x, z, yaw) {
+    this.pools.trashBags.place(x, TRASH_BAG_H / 2, z, TRASH_BAG_W, TRASH_BAG_H, TRASH_BAG_D, yaw)
+    this.pools.trashBags.place(x, TRASH_BAG_H + 0.06, z, 0.14, 0.12, 0.14, yaw)
+  }
+
+  /**
+   * `_addVendingMachine` — a cabinet, a liner, and the rails that make the liner a
+   * machine rather than a rectangle of light.
+   *
+   * FOUR instances, and which POOL the liner lands in is the pass's headline. The
+   * dead liner and the lit liner cannot share a pool because an `InstancedMesh` has
+   * one material slot, and the flickering liner cannot share the lit one for the
+   * reason pass 5 split the siding: `update()` writes `emissiveIntensity`, and a
+   * shared material is a shared flicker. Three pools, three draw calls, and exactly
+   * one machine in the world that misbehaves.
+   *
+   * THE RAILS ARE NOT DECORATION. A lit panel with nothing in it averages to a
+   * single value at 30 m and stops being a machine — the same defect pass 3's swirl
+   * gate was written to catch on a portal. Two bars standing `VENDING_RAIL_INSET`
+   * proud of a liner set `VENDING_FACE_INSET` into the cabinet is the depth stack T3
+   * asks for on a window, at the scale of a drinks machine.
+   *
+   * @param {number} x the cabinet's centre
+   * @param {number} z the cabinet's centre
+   * @param {number} yaw the lot's own yaw, so the liner faces the street
+   * @param {boolean} lit whether this is one of the lit machines
+   * @param {boolean} flicker whether this is THE machine that misbehaves
+   * @param {number} copy the wrapped copy
+   * @returns {void}
+   */
+  _addVendingMachine(x, z, yaw, lit, flicker, copy) {
+    this.pools.vendingBodies.place(x, VENDING_H / 2, z, VENDING_W, VENDING_H, VENDING_D, yaw)
+    // The liner sits on the cabinet's front plane, `VENDING_FACE_LIFT` proud of it,
+    // offset along the cabinet's own forward — `sin(yaw), cos(yaw)` is the unit
+    // vector `place` turns local +z into, so the same expression places the face
+    // and the rails and cannot disagree about which way the machine faces.
+    const face = flicker
+      ? this.pools.vendingFlickerFaces
+      : lit ? this.pools.vendingLitFaces : this.pools.vendingFaces
+    const fx = x + Math.sin(yaw) * (VENDING_D / 2 + VENDING_FACE_LIFT)
+    const fz = z + Math.cos(yaw) * (VENDING_D / 2 + VENDING_FACE_LIFT)
+    face.place(fx, VENDING_FACE_Y, fz, VENDING_FACE_W, VENDING_FACE_H, 0.01, yaw)
+    for (let rail = 0; rail < VENDING_RAIL_COUNT; rail += 1) {
+      const y = VENDING_FACE_Y - VENDING_FACE_H / 2 + (VENDING_FACE_H * (rail + 1)) / (VENDING_RAIL_COUNT + 1)
+      this.pools.vendingRails.place(
+        x + Math.sin(yaw) * (VENDING_D / 2 + VENDING_FACE_INSET),
+        y,
+        z + Math.cos(yaw) * (VENDING_D / 2 + VENDING_FACE_INSET),
+        VENDING_FACE_W, VENDING_RAIL_T, VENDING_RAIL_INSET, yaw,
+      )
+    }
+    if (copy === 0) this._collider(x, z, VENDING_W, VENDING_D, 'vending')
   }
 
   /**
@@ -3318,6 +4628,10 @@ export class StreetView {
           if (ax < GRID - 1) this._addSpan(pole, this._poleAt(ax + 1, az, copy), 1, this._isLowSpan(ax, az, 0))
           if (az < GRID - 1) this._addSpan(pole, this._poleAt(ax, az + 1, copy), 0, this._isLowSpan(ax, az, 1))
           this._addIntersectionFurniture(ax, az, copy)
+          // ITERATION 2, PASS 7 — the two intersection families, on the same corner
+          // and the same loop, so a shelter and a pole cannot disagree about which
+          // corner of the junction they are on.
+          this._addCornerDressing(ax, az, copy)
         }
       }
     }
@@ -3575,6 +4889,156 @@ export class StreetView {
         )
       }
     }
+  }
+
+  /**
+   * `_addCornerDressing` — the two families that belong to an INTERSECTION rather
+   * than to a lot: a bus shelter and a bicycle locked to the pole.
+   *
+   * Neither could go in `_addLotDressing`. A shelter is 3.2 m long and a corner is
+   * where two 26 m lots meet, so a lot-addressed shelter can only ever be a
+   * rectangle floating in the middle of a frontage; and a bicycle is defined by its
+   * relationship to a POLE, which is an intersection object. So this method takes
+   * the same `DISTRICT_DRESSING` rates, in the same `one in N` sense, and addresses
+   * the same corner the district's pole is on — which is also what makes a shelter
+   * and a pole agree about which corner of the junction they are standing at.
+   *
+   * The stream is `hash32(this.seed, ax, az + DRESSING_SALT)` — a different region
+   * again from the per-lot one and from pass 6's two, so this pass moves nothing
+   * that came before it.
+   *
+   * @param {number} ax avenue axis
+   * @param {number} az street axis
+   * @param {number} copy the wrapped copy
+   * @returns {void}
+   */
+  _addCornerDressing(ax, az, copy) {
+    const district = districtOf(ax, az)
+    const rates = DISTRICT_DRESSING[district]
+    const node = streetNodeToWorld(streetNodeId(ax, az))
+    const [sx, sz] = CORNER_SIGNS[district]
+    const rng = streamAt(hash32(this.seed, ax, az + DRESSING_SALT), 0, 0)
+    // A rate of 0 is the district that does not get this family at all — the
+    // south-east has no shelter anywhere on it, and that absence is the point.
+    if (rates.shelter > 0 && Math.floor(rng() * rates.shelter) === 0) {
+      const x = node.x + sx * SHELTER_CORNER_X + copy * WORLD_EXTENT
+      const z = node.z + sz * SHELTER_CORNER_Z + copy * WORLD_EXTENT
+      if (this._portalClear(x, z, copy)) {
+        // Facing the avenue: `place` turns local +z by the yaw and the shelter's
+        // front is its local +z, so the yaw that points it back at the centreline
+        // is the one whose `sin` is `-sx`.
+        this._addShelter(x, z, sx > 0 ? -Math.PI / 2 : Math.PI / 2, copy)
+        this.dressingLog.push({ kind: 'shelter', district, copy, x, z })
+      }
+    }
+    if (rates.bike > 0 && Math.floor(rng() * rates.bike) === 0) {
+      // `BIKE_PARK_OFFSET` out from the pole towards the walk and
+      // `BIKE_PARK_SPACING` along the kerb, which is the geometry of a bike locked
+      // to a pole: the frame is parallel to the kerb, not radiating from the pole,
+      // and at 0.62 m out the bars clear the 0.22 m shaft.
+      const x = node.x + sx * (POLE_STANDOFF + BIKE_PARK_OFFSET) + copy * WORLD_EXTENT
+      const z = node.z + sz * (POLE_STANDOFF + BIKE_PARK_SPACING) + copy * WORLD_EXTENT
+      if (this._portalClear(x, z, copy)) {
+        this._addBike(x, z)
+        this.dressingLog.push({ kind: 'bike', district, copy, x, z })
+      }
+    }
+  }
+
+
+
+  /**
+   * `_addShelter` — a roof, a back, two posts, a bench and the ad panel.
+   *
+   * SIX instances across three pools, and the split is the ad panel: it is the one
+   * DIM surface in the pass and it shares no material with the steel, so it sits in
+   * its own pool rather than the shelter's. A backlit panel bright enough to read as
+   * a light would be a fifth rung on T11's ladder, spent on a rectangle nobody reads
+   * at 40 m.
+   *
+   * The back is at the far end from the street and the two posts at the near end, so
+   * the shelter has a front and a back — a panel between two symmetric posts reads
+   * as a phone box, which is the silhouette §5.1 already spends two of the world's
+   * three liminal structures on.
+   *
+   * @param {number} x the shelter's centre
+   * @param {number} z the shelter's centre
+   * @param {number} yaw facing the street
+   * @param {number} copy the wrapped copy
+   * @returns {void}
+   */
+  _addShelter(x, z, yaw, copy) {
+    const postH = SHELTER_H - SHELTER_ROOF_T
+    // `sin(yaw), cos(yaw)` is the unit vector `place` sends the shelter's own local
+    // +z to, so every offset below is written once and the whole method is
+    // orientation-free.
+    const fx = Math.sin(yaw)
+    const fz = Math.cos(yaw)
+    const bx = x - fx * (SHELTER_D / 2)
+    const bz = z - fz * (SHELTER_D / 2)
+    this.pools.shelterSteel.place(bx, SHELTER_BACK_H / 2, bz, SHELTER_W, SHELTER_BACK_H, 0.1, yaw)
+    for (const end of [-1, 1]) {
+      this.pools.shelterSteel.place(
+        x + fx * (SHELTER_D / 2 - SHELTER_POST) + fz * end * (SHELTER_W / 2 - SHELTER_POST),
+        postH / 2,
+        z + fz * (SHELTER_D / 2 - SHELTER_POST) - fx * end * (SHELTER_W / 2 - SHELTER_POST),
+        SHELTER_POST, postH, SHELTER_POST, yaw,
+      )
+    }
+    this.pools.shelterSteel.place(
+      x, SHELTER_H - SHELTER_ROOF_T / 2, z,
+      SHELTER_W + 2 * SHELTER_ROOF_OVERHANG, SHELTER_ROOF_T, SHELTER_D + 2 * SHELTER_ROOF_OVERHANG, yaw,
+    )
+    this.pools.shelterBenches.place(
+      x - fx * (SHELTER_D / 2 - SHELTER_BENCH_D / 2 - 0.1), SHELTER_BENCH_Y,
+      z - fz * (SHELTER_D / 2 - SHELTER_BENCH_D / 2 - 0.1),
+      SHELTER_W - 0.4, SHELTER_BENCH_H, SHELTER_BENCH_D, yaw,
+    )
+    // The ad panel, on the STREET side of the back panel — a poster inside a shelter
+    // is a poster nobody can see.
+    this.pools.shelterAds.place(bx + fx * 0.07, SHELTER_AD_Y, bz + fz * 0.07, SHELTER_AD_W, SHELTER_AD_H, 0.04, yaw)
+    if (copy === 0) this._collider(x, z, SHELTER_D, SHELTER_W, 'shelter')
+  }
+
+  /**
+   * `_addBike` — a bicycle, upright, in seven instances across two pools.
+   *
+   * UPRIGHT AND NOT LEANED, which is a decision and not a simplification. A real
+   * parked bike leans 5-15 degrees onto whatever is holding it, and a lean is a
+   * rotation about an axis ALONG the ground plane, which `place` cannot compose —
+   * it composes yaw about Y and nothing else. Leaning properly would mean either a
+   * second geometry per lean angle or a per-instance quaternion, and both are a whole
+   * mechanism for a 6 degree tilt on an object whose silhouette is 0.7 m of frame.
+   * Standing it against a pole reads identically at every distance the player will
+   * see it from, and it costs one axis.
+   *
+   * TWO POOLS, and the wheels are a `TorusGeometry` in the second one: a cylinder
+   * seen edge-on is a rectangle, and a bicycle has no rectangles in it. Both wheels
+   * are yawed 90 degrees, so the torus's own axis — its local z — lies ACROSS the
+   * direction of travel, which is the only orientation in which a ring reads as a
+   * wheel on a bicycle rather than a hoop on a cart.
+   *
+   * @param {number} x the bike's centre
+   * @param {number} z the bike's centre
+   * @returns {void}
+   */
+  _addBike(x, z) {
+    const half = BIKE_WHEELBASE / 2
+    for (const end of [-1, 1]) {
+      this.pools.bikeWheels.place(
+        x, BIKE_WHEEL_R, z + end * half,
+        BIKE_WHEEL_R * 2, BIKE_WHEEL_R * 2, BIKE_WHEEL_R * 2, Math.PI / 2,
+      )
+    }
+    // The main triangle as TWO bars rather than eight tubes, which is what
+    // `BIKE_LOWER_Y` and `BIKE_UPPER_Y` are for: at 40 m what resolves is two discs
+    // and a diagonal, and AESTHETIC-NOTES §0's budget is 8-40 triangles per
+    // interruption, which eight tubes per bike would not fit inside.
+    this.pools.bikeFrames.place(x, BIKE_LOWER_Y, z, BIKE_FRAME_T, BIKE_FRAME_T, BIKE_WHEELBASE)
+    this.pools.bikeFrames.place(x, BIKE_UPPER_Y, z + 0.1, BIKE_FRAME_T, BIKE_FRAME_T, BIKE_WHEELBASE * 0.8)
+    this.pools.bikeFrames.place(x, BIKE_SADDLE_Y, z - half + 0.24, BIKE_SADDLE_W, 0.06, 0.22)
+    this.pools.bikeFrames.place(x, BIKE_BAR_Y, z + half - 0.08, BIKE_BAR_W, BIKE_FRAME_T, BIKE_FRAME_T)
+    this.pools.bikeFrames.place(x, BIKE_LOWER_Y + 0.06, z + 0.06, BIKE_CHAIN_R * 2, BIKE_CHAIN_R * 2, BIKE_CHAIN_T)
   }
 
   // -------------------------------------------------------------------------
@@ -4265,6 +5729,23 @@ export class StreetView {
     // the sodium family giving the flicker away.
     this._materials.sodiumPool.color.setHex(PALETTE.sodium).multiplyScalar(flicker)
     const pulse = 0.86 + Math.sin(t * 1.9) * 0.1 + Math.sin(t * 0.61) * 0.04
+    // ITERATION 2, PASS 7 — the world's one failing ballast, and the only reason
+    // this pass needed a function from `hash.js` rather than a fourth sine.
+    //
+    // It is written to `emissiveIntensity` and NOT to `color`: a lit liner is an
+    // EMISSIVE surface, and multiplying its colour would darken the panel's own
+    // albedo at the same time, which is a different and much less legible fault —
+    // the machine would look like a dirty one rather than a failing one. The floor
+    // of 0.30 means the panel never goes black, which is the difference between a
+    // machine with a bad ballast and a dead machine.
+    //
+    // Driven on `this._time`, the same clock as the sodium, so a capture that steps
+    // to a given time gets the same flicker — and `verify-world.mjs` drives it to
+    // the same time twice and requires the value back bit-identical, which is the
+    // only way to test a seeded flicker honestly.
+    if (this.flickerLot) {
+      this._materials.vendingFaceFlicker.emissiveIntensity = VENDING_FACE_EMISSIVE * vendingFlicker(t)
+    }
     for (const portal of this.portals) {
       if (portal.shut) continue
       portal.light.intensity = 9 * pulse

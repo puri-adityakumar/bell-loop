@@ -65,6 +65,7 @@
  * Run: node verify-world.mjs   (exit code 0 = the whole loop works)
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 // slice 11: the fake audio replays the world's frame through the *real* router, so
 // this harness needs the pure half of the audio module. It is a pure module per
 // §15.1, which is the property that makes this import possible at all.
@@ -4238,6 +4239,454 @@ check('the wire shader is told the DEVICE resolution, and follows a resize', () 
   game.resize()
   assert.equal(uniform.x, game._bufferSize().x, 'a resize did not tell the wire how big the buffer is')
   assert.equal(uniform.y, game._bufferSize().y)
+})
+
+// ===========================================================================
+// STREET FURNITURE II (iteration 2, pass 7)
+//
+// Six claims, all of them about the BUILT scene, because every one of them is a
+// claim a comment in the source would satisfy:
+//
+//   1. the fifteen pools are placed, and every object is the number of pieces it
+//      claims (a machine with no liner passes a `> 0` test and fails this)
+//   2. the rate table is real — three kinds are MISSING from a whole quadrant — and
+//      the districts' compass names are DERIVED from the built lots, not read out
+//      of the comment that got two of them wrong
+//   3. nothing stands in a carriageway and nothing stands within 12 m of a portal.
+//      This is the structural form of the pass-3 pupil gate (luma <= 20, measured in
+//      `portal-located.png` from 4.5 m) and of the pass-6 creature gate (a 9x7 eye
+//      in `creature-stalking.png`): a 2.30 m shelter in the stand-off does not merely
+//      look wrong, it changes the number the iteration is measured against.
+//      `creatureView.js` is untouched and `verify.mjs` still asserts EYE_RENDER_ORDER.
+//   4. the lit liner is a fogged SURFACE rather than an unfogged glow, and exactly
+//      ONE machine in the world misbehaves
+//   5. the flicker is a pure function of the clock, stepped, floored, and written to
+//      the bad machine's material only
+//   6. a bin stands on its castors, a bike's wheels touch the ground, and a poster
+//      is an alpha-tested 0.42 x 0.60 decal
+// ===========================================================================
+
+/**
+ * The rate table, read out of the source.
+ *
+ * From the file rather than typed here, so the check and the thing it checks cannot
+ * disagree about what the rates are — the same reason `verify.mjs` reads
+ * `LOT_PART_BUDGET` from `streetView.js` instead of repeating 40. It is a table in a
+ * comment-free `Object.freeze` call, so a regex is a complete parse of it.
+ */
+const STREET_VIEW_SOURCE = readFileSync(new URL('./src/game/streetView.js', import.meta.url), 'utf8')
+
+/** The fifteen pools this pass adds, in creation order. */
+const PASS7_POOLS = Object.freeze([
+  'dumpsters', 'trashBags', 'vendingBodies', 'vendingFaces', 'vendingLitFaces',
+  'vendingFlickerFaces', 'vendingRails', 'shelterSteel', 'shelterBenches',
+  'shelterAds', 'bollards', 'bikeFrames', 'bikeWheels', 'posters', 'postersTorn',
+])
+
+/** The families that stand on the PAVEMENT, and so are measured against the road. */
+const PASS7_PAVEMENT_POOLS = Object.freeze([
+  'vendingBodies', 'vendingFaces', 'vendingLitFaces', 'vendingFlickerFaces',
+  'vendingRails', 'bollards', 'shelterSteel', 'shelterBenches', 'shelterAds',
+  'bikeFrames', 'bikeWheels',
+])
+
+/**
+ * `canonicalXZ` — fold a drawn coordinate back to the canonical copy.
+ *
+ * `neighborhood.js`'s own `canonicalCoord`, and the reason this is not three lines of
+ * `round` is that the first version of this fold was wrong in a way that invented a
+ * bug. The world's canonical window is NOT [-224, +224]: `CANONICAL_ORIGIN` puts it at
+ * [32 - 224, 32 + 224], and the drawn world runs from -184 to +248. A machine placed
+ * at canonical x = 248.1 is drawn at -199.9 in copy -1, and a symmetric fold left it
+ * at -199.9 — inside the naive window, 16 m outside the real one, and 448 m from the
+ * lot that owns it. The check then reported a machine in a carriageway that does not
+ * exist. `originFor` is the one definition of "which copy is this" in this
+ * repository and this defers to it, which is also why `creature.js` uses it.
+ *
+ * Every spatial check below folds FIRST: a check that measured copy -1 against a
+ * canonical portal would see a whole period of nothing and pass everything.
+ */
+function canonicalXZ(x, z) {
+  return { x: hood.canonicalCoord(x), z: hood.canonicalCoord(z) }
+}
+
+/** Every road centreline in the world. */
+function roadAxes() {
+  const axes = []
+  for (let i = 0; i < hood.GRID; i += 1) axes.push(hood.canonicalCoord(hood.roadAxisToWorld(i)))
+  return axes
+}
+
+/** Every lot of the world, canonical, with the district its chunk is in. */
+function lotTable(view) {
+  const table = []
+  for (let cx = 0; cx < hood.GRID; cx += 1) {
+    for (let cz = 0; cz < hood.GRID; cz += 1) {
+      for (const lot of hood.chunkAt(view.seed, cx, cz).lots) {
+        const at = canonicalXZ(lot.x, lot.z)
+        table.push({ x: at.x, z: at.z, side: lot.side, w: lot.w, d: lot.d, district: hood.districtOf(cx, cz) })
+      }
+    }
+  }
+  return table
+}
+
+/** Every intersection, canonical, with the district `districtOf` gives it. */
+function nodeTable() {
+  const nodes = []
+  for (let ax = 0; ax < hood.GRID; ax += 1) {
+    for (let az = 0; az < hood.GRID; az += 1) {
+      const node = hood.streetNodeToWorld(hood.streetNodeId(ax, az))
+      const at = canonicalXZ(node.x, node.z)
+      nodes.push({ x: at.x, z: at.z, district: hood.districtOf(ax, az) })
+    }
+  }
+  return nodes
+}
+
+/** The nearest node to a point — the owner of a shelter or a bicycle. */
+function nearestNode(nodes, x, z) {
+  return nodes.reduce((best, node) => (
+    Math.hypot(node.x - x, node.z - z) < best.d ? { d: Math.hypot(node.x - x, node.z - z), node } : best
+  ), { d: Infinity, node: null }).node
+}
+
+/**
+ * The per-instance SCALE out of a matrix buffer, which is where a size claim lives.
+ *
+ * COLUMN NORMS and not the raw elements, which is the whole of it: `place` composes
+ * a yaw, so element 0 of a yawed instance is `scaleX * cos(yaw)` and element 5 is
+ * `scaleY`. Reading the elements directly reported a lid as SMALLER than the body it
+ * overhangs for every lot on the south side of an avenue — a size check that is wrong
+ * for exactly half the world, and wrong in the direction that makes a defect look
+ * like a pass.
+ */
+function scales(pool) {
+  const array = pool.mesh.instanceMatrix.array
+  const out = []
+  for (let i = 0; i < pool.used; i += 1) out.push({ ...frameScale(array, i), ...frameOffset(array, i) })
+  return out
+}
+
+/** The scale of one instance: the length of each basis column. */
+function frameScale(array, i) {
+  const at = (k) => array[i * 16 + k]
+  const norm = (a, b, c) => Math.hypot(at(a), at(b), at(c))
+  return { sx: norm(0, 1, 2), sy: norm(4, 5, 6), sz: norm(8, 9, 10) }
+}
+
+/** The translation of one instance. */
+function frameOffset(array, i) {
+  return { x: array[i * 16 + 12], y: array[i * 16 + 13], z: array[i * 16 + 14] }
+}
+
+check('every pass-7 family is placed, and every object is the pieces it claims', () => {
+  // T5's rule applied to fifteen pools at once, and the assertions are ARITHMETIC
+  // identities between pools rather than "more than zero". A machine with no liner, a
+  // shelter with no ad panel and a bike with three wheels all pass a `> 0` test.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  for (const name of PASS7_POOLS) {
+    assert.ok(view.pools[name], `the pass-7 pool ${name} does not exist, so this pass is not in the build`)
+    assert.ok(view.pools[name].used > 0, `${name} placed nothing at all, so its rate is not a rate`)
+    assert.equal(view.pools[name].overflow, 0, `${name} overflowed and dropped ${view.pools[name].overflow} instances`)
+  }
+  // A machine is a body, ONE liner and two rails, and the liner is in exactly one of
+  // the three liner pools — so the three liners sum to the bodies.
+  const bodies = view.pools.vendingBodies.used
+  assert.equal(
+    view.pools.vendingFaces.used + view.pools.vendingLitFaces.used + view.pools.vendingFlickerFaces.used,
+    bodies,
+    'a machine has no liner, or two of them',
+  )
+  assert.equal(view.pools.vendingRails.used, bodies * 2, 'a machine does not have two product rails')
+  // A shelter is a back, two posts and a roof — four — plus a bench and an ad panel.
+  const shelters = view.pools.shelterAds.used
+  assert.equal(view.pools.shelterSteel.used, shelters * 4, 'a shelter is not a back, two posts and a roof')
+  assert.equal(view.pools.shelterBenches.used, shelters, 'a shelter with no bench is a bus stop sign')
+  // A bike is five frame bars and two wheels; a bin is four pieces; a bag is two.
+  assert.equal(view.pools.bikeWheels.used % 2, 0, 'a bike has an odd number of wheels')
+  assert.equal(view.pools.bikeFrames.used, (view.pools.bikeWheels.used / 2) * 5, 'a bike is not five bars and two wheels')
+  assert.equal(view.pools.dumpsters.used % 4, 0, 'a bin is not two castors, a body and a lid')
+  assert.equal(view.pools.trashBags.used % 2, 0, 'a bag is not a lump and a knot')
+  assert.equal(view.pools.bollards.used % 4, 0, 'a bollard run is not two posts of two pieces')
+  // Both poster pools are used: "a torn sheet" as a claim with no torn sheet in the
+  // world is a claim about a texture nobody ever sees.
+  assert.ok(view.pools.postersTorn.used > 0, 'no torn poster exists, so the tear is a texture and not a feature')
+  const tornShare = view.pools.postersTorn.used / (view.pools.posters.used + view.pools.postersTorn.used)
+  assert.ok(tornShare > 0.2 && tornShare < 0.5, `${(tornShare * 100).toFixed(0)}% of the posters are torn, which is not one in three`)
+  // ...and the pass costs exactly fifteen draw calls on top of the thirty already there.
+  assert.equal(view.streetPools.length, 30 + PASS7_POOLS.length, 'the pass added a different number of pools than it claims')
+})
+
+check('the district table is real: three kinds are missing from a whole quadrant', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const log = view.dressingLog
+  assert.ok(log.length > 0, 'the world published no dressing log, so the rate table cannot be read back')
+  // The four districts, and the compass names DERIVED from the built lots rather than
+  // read out of the comment. The first draft of `DISTRICT_DRESSING` called districts 1
+  // and 2 the wrong way round and nothing in the source could have caught it: the
+  // rates are a table, the names are a comment.
+  const lots = lotTable(view)
+  const quadrant = [0, 1, 2, 3].map(() => ({ x: [], z: [] }))
+  for (const lot of lots) {
+    quadrant[lot.district].x.push(lot.x)
+    quadrant[lot.district].z.push(lot.z)
+  }
+  const centre = (values) => values.reduce((a, b) => a + b, 0) / values.length
+  const byX = quadrant.map((q) => centre(q.x))
+  const byZ = quadrant.map((q) => centre(q.z))
+  const xEdge = (Math.min(...byX) + Math.max(...byX)) / 2
+  const zEdge = (Math.min(...byZ) + Math.max(...byZ)) / 2
+  const compass = quadrant.map((q, d) => `${byX[d] < xEdge ? 'W' : 'E'}${byZ[d] < zEdge ? 'N' : 'S'}`)
+  assert.equal(new Set(compass).size, 4, `the four districts are ${compass.join(', ')}, which is not four different quadrants`)
+  // The rates, read out of the source table rather than hard-coded here, so this
+  // check and the file under test cannot disagree about what the rates are.
+  const table = [...STREET_VIEW_SOURCE.matchAll(/Object\.freeze\(\{ dumpster: (\d+), bags: (\d+), poster: (\d+), vending: (\d+), shelter: (\d+), bollard: (\d+), bike: (\d+) \}\)/g)]
+    .map(([, dumpster, bags, poster, vending, shelter, bollard, bike]) => ({
+      dumpster: +dumpster, bags: +bags, poster: +poster, vending: +vending, shelter: +shelter, bollard: +bollard, bike: +bike,
+    }))
+  assert.equal(table.length, 4, 'the district rate table is not four rows any more')
+  // The claim: a rate of zero places NOTHING, in the whole quadrant. `dressingLog`
+  // carries the district each object was addressed to, which is the same value the
+  // rate lookup read — so this fails the moment a placement stops consulting the table.
+  for (let d = 0; d < 4; d += 1) {
+    for (const kind of ['vending', 'shelter', 'bike', 'dumpster', 'poster', 'bollard']) {
+      const placed = log.filter((entry) => entry.kind === kind && entry.district === d).length
+      if (table[d][kind] === 0) {
+        assert.equal(placed, 0, `district ${d} (${compass[d]}) has ${placed} ${kind} objects and its rate is zero`)
+      }
+    }
+  }
+  // A non-zero rate is NOT asserted to place something in EVERY district, because that
+  // is a claim about sample size and not about the code: the south-east is nine
+  // intersections and a bicycle rate of six, and on this seed it places none — a
+  // (5/6)^9 chance, which is a legitimate outcome of a small draw rather than a defect.
+  // The strong direction is the one above; this one is only that every family with a
+  // rate somewhere exists in the world at all.
+  for (const kind of ['vending', 'shelter', 'bike', 'dumpster', 'poster', 'bollard']) {
+    const total = log.filter((entry) => entry.kind === kind).length
+    assert.ok(table.some((row) => row[kind] > 0), `the rate table has no ${kind} rate anywhere, so the family is dead code`)
+    assert.ok(total > 0, `the ${kind} family is placed nowhere in the world`)
+  }
+  // ...and the four districts are genuinely DIFFERENT, which is the whole point of
+  // "per district rules". Four identical rows would pass every test above.
+  const machines = [0, 1, 2, 3].map((d) => log.filter((entry) => entry.kind === 'vending' && entry.district === d).length)
+  assert.ok(new Set(machines).size >= 3, `the machine counts are ${machines.join('/')}, which is not four different mixes`)
+  const posters = [0, 1, 2, 3].map((d) => log.filter((entry) => entry.kind === 'poster' && entry.district === d).length)
+  assert.ok(new Set(posters).size >= 3, `the poster counts are ${posters.join('/')}, which is not four different mixes`)
+  // ...and the log agrees with the geometry, which is what makes it evidence rather
+  // than a second opinion: every logged object has an instance, at the SAME drawn
+  // position, in the pool it names. No fold is involved, and that is deliberate — the
+  // log is written in the drawn frame (it comes from `inLot`, which has already added
+  // `copy * WORLD_EXTENT`) and folding it with the check's own convention would move
+  // every entry by a third of a period. The comparison is exact, to a millimetre.
+  // A shelter is logged at its CENTRE, which is where its roof sits — the ad panel is
+  // half a shelter's depth away on the back wall, so `shelterAds` is the wrong pool to
+  // look in and the wrong one to have found this.
+  const poolOf = { bag: 'trashBags', vending: 'vendingBodies', shelter: 'shelterSteel', bike: 'bikeFrames', dumpster: 'dumpsters', poster: 'posters', posterTorn: 'postersTorn', bollard: 'bollards' }
+  // A MILLIMETRE of tolerance, and that is not slack: the matrix buffer is a
+  // `Float32Array`, so an instance's position is the double the placement computed
+  // rounded to 24 bits of mantissa — about 0.06 mm at 600 m. The first version of
+  // this compared `toFixed(3)` strings, which is the same tolerance with a
+  // knife-edge: a value 0.0001 mm from a millimetre boundary lands on both sides of
+  // it, and one entry in a thousand then "has no instance there".
+  const drawnAt = {}
+  for (const name of Object.values(poolOf)) drawnAt[name] = instances(view.pools[name]).map((piece) => ({ x: piece.x, z: piece.z }))
+  for (const entry of log) {
+    const pool = poolOf[entry.kind]
+    const found = drawnAt[pool].some((piece) => Math.abs(piece.x - entry.x) < 1e-3 && Math.abs(piece.z - entry.z) < 1e-3)
+    assert.ok(found, `the log says a ${entry.kind} is at ${entry.x.toFixed(2)},${entry.z.toFixed(2)} and ${pool} has no instance there`)
+  }
+})
+
+check('nothing stands in a carriageway, and nothing stands in front of a portal', () => {
+  // The REGRESSION GUARD this pass owes passes 3 and 6, and it is spatial rather than
+  // visual because both of those gates are measurements OF AN IMAGE. The pass-3 pupil
+  // luma (<= 20) is read out of `portal-located.png` from 4.5 m out; the creature gate
+  // anchors on a 9x7 eye. A 2.30 m shelter in the stand-off does not merely look wrong,
+  // it changes the number the iteration is measured against.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const axes = roadAxes()
+  const kerbFace = hood.STREET_HALF_WIDTH + 0.4
+  let nearest = Infinity
+  for (const name of PASS7_PAVEMENT_POOLS) {
+    for (const piece of instances(view.pools[name])) {
+      const at = canonicalXZ(piece.x, piece.z)
+      nearest = Math.min(nearest, ...axes.map((axis) => Math.abs(at.x - axis)), ...axes.map((axis) => Math.abs(at.z - axis)))
+    }
+  }
+  // 6.0 is the carriageway and 6.4 the kerb face between the two; the fixture measures
+  // 6.49 on this seed, which is the shelter's front post standing on the kerb.
+  assert.ok(nearest >= kerbFace, `a pass-7 object is ${nearest.toFixed(2)} m from a road centreline, inside the ${kerbFace} m kerb face`)
+  // ...and the portal exclusion, read off the same buffers and compared against the
+  // anchors rather than against the constant.
+  let portalNearest = Infinity
+  for (const name of PASS7_POOLS) {
+    for (const piece of instances(view.pools[name])) {
+      const at = canonicalXZ(piece.x, piece.z)
+      for (const anchor of view.objectives.portals) {
+        const gate = canonicalXZ(anchor.position.x, anchor.position.z)
+        portalNearest = Math.min(portalNearest, Math.hypot(at.x - gate.x, at.z - gate.z))
+      }
+    }
+  }
+  assert.ok(portalNearest >= 12, `a pass-7 object is ${portalNearest.toFixed(2)} m from a portal, inside the 12 m stand-off`)
+  // The exclusion is a FILTER and it FIRED — a rule that never rejects anything is
+  // indistinguishable from a rule that is not implemented, and this is the residual
+  // risk the pass-6 review left behind.
+  assert.ok(view.dressingRejected > 0, 'the portal exclusion rejected nothing, so it is not being applied')
+})
+
+check('the lit liner is a fogged SURFACE, and exactly one machine misbehaves', () => {
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const materials = view._materials
+  // `_glow` is `MeshBasicMaterial` with `fog: false`, and that is right for a lamp
+  // head and a portal rim — both are SOURCES seen against the sky. It is wrong for a
+  // panel 40 m down a street: an unfogged emissive punches a hole in the amber haze
+  // and is visible from the far end of an avenue, which is the creature's corridor.
+  // The assertion is on the MATERIAL, not on a comment about it.
+  for (const name of ['vendingFaceLit', 'vendingFaceFlicker']) {
+    const material = materials[name]
+    assert.ok(material.isMeshStandardMaterial, `${name} is not a standard material, so it is either unfogged or unlit`)
+    assert.notEqual(material.fog, false, `${name} has fog off, so a lit machine punches through the haze`)
+    assert.equal(material.emissive.getHex(), 0xc9b79a, `${name} emits the wrong colour`)
+  }
+  assert.notEqual(materials.vendingFaceLit, materials.vendingFaceFlicker, 'the flickering liner SHARES the lit material, so every machine in the district gutters together')
+  // The dim half of the pass: a machine with no tube, a backlit ad panel, and a sheet
+  // of paper. None of the three may emit, and the ad panel is what the checklist
+  // asked for by name.
+  assert.equal(materials.vendingFaceDead.emissive.getHex(), 0x000000, 'a dead machine is emitting light')
+  assert.equal(materials.adPanel.emissive.getHex(), 0x000000, 'the ad panel is emissive, which is a fifth rung on T11 for a rectangle nobody reads')
+  assert.equal(materials.poster.emissive.getHex(), 0x000000, 'a paper poster is emitting light')
+  // EXACTLY ONE, one per wrapped copy, and the world can say which lot owns it.
+  assert.equal(view.pools.vendingFlickerFaces.used, 3, 'the world does not have exactly one flickering machine in each of its three copies')
+  assert.ok(view.flickerLot, 'no lot owns the flickering machine')
+  assert.match(view.flickerLot, /^\d+,\d+,[NSEW]$/, 'the flickering lot is not a cx,cz,side key')
+  // ...and the lit machines are kept APART, which is the measurable half of D6's
+  // "a frame does not hold two of them". 16.8 m on the default seed.
+  // Folded, then DEDUPED: all three copies of a machine fold to the same canonical
+  // point, so without the dedupe every lit machine is its own nearest neighbour at a
+  // distance of exactly zero. (The first version of this filtered on
+  // `|x| <= WORLD_EXTENT / 2` instead, which is a different window again and kept all
+  // three copies — and reported a 0.00 m separation between two machines 16.8 m
+  // apart.)
+  const seen = new Set()
+  const lit = []
+  for (const piece of instances(view.pools.vendingLitFaces)) {
+    const at = canonicalXZ(piece.x, piece.z)
+    const key = `${at.x.toFixed(3)},${at.z.toFixed(3)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    lit.push(at)
+  }
+  let nearestPair = Infinity
+  for (let i = 0; i < lit.length; i += 1) {
+    for (let j = i + 1; j < lit.length; j += 1) {
+      nearestPair = Math.min(nearestPair, Math.hypot(lit[i].x - lit[j].x, lit[i].z - lit[j].z))
+    }
+  }
+  assert.ok(nearestPair >= 12, `two lit machines are ${nearestPair.toFixed(1)} m apart, close enough to read as one bright thing`)
+})
+
+check('the flicker is a function of the clock, stepped, floored, and the bad machine only', () => {
+  // The honest test for a seeded flicker is not "it changes" — a sum of sines changes
+  // too. It is that the SAME time gives the SAME value, that the values are quantised,
+  // that the floor is a floor, and that a GOOD machine is never written to at all.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const steady = view._materials.vendingFaceLit.emissiveIntensity
+  view._time = 0
+  view.update(0.5)
+  const first = view._materials.vendingFaceFlicker.emissiveIntensity
+  // A second of clock later, and then BACK to the same half second. The first version
+  // of this check compared two consecutive `update` calls and called the difference a
+  // broken clock; it was a check that forgot the clock had moved.
+  view.update(0.5)
+  const later = view._materials.vendingFaceFlicker.emissiveIntensity
+  view._time = 0
+  view.update(0.5)
+  const again = view._materials.vendingFaceFlicker.emissiveIntensity
+  assert.equal(first, again, 'driving the world back to the same time did not give the same level, so the flicker is not a function of the clock')
+  const distinct = new Set(Array.from({ length: 40 }, (_, i) => {
+    view._time = i / 11
+    view.update(0)
+    return view._materials.vendingFaceFlicker.emissiveIntensity
+  })).size
+  assert.ok(distinct > 10, `forty consecutive ticks produced ${distinct} levels, which is not a stepped flicker`)
+  assert.ok(Number.isFinite(later), 'the level is not a number')
+  // A STEP, not a breath: 200 ticks at 11 Hz, about 25 dropouts, and a lot of
+  // distinct levels.
+  const levels = new Set()
+  let dropouts = 0
+  for (let tick = 0; tick < 200; tick += 1) {
+    view._time = tick / 11
+    view.update(0)
+    const level = view._materials.vendingFaceFlicker.emissiveIntensity
+    levels.add(level)
+    if (level <= 1.25 * 0.31) dropouts += 1
+  }
+  assert.ok(levels.size > 20, `200 ticks produced ${levels.size} distinct levels, which is not a hashed ball`)
+  assert.ok(dropouts > 5 && dropouts < 45, `${dropouts} dropouts in 200 ticks, which is not about one in eight`)
+  assert.ok(Math.min(...levels) > 0, 'the machine went fully dark, which is a dead machine rather than a failing one')
+  assert.ok(Math.max(...levels) <= 1.25, 'the machine is brighter than its own emissive rung')
+  assert.equal(view._materials.vendingFaceLit.emissiveIntensity, steady, 'a good machine changed brightness, so the pass has a second flicker')
+})
+
+check('a bin stands on its castors, a bike stands on its wheels, a poster is a decal', () => {
+  // The reference's own failure list names floating and sunken objects as the defect
+  // a viewer finds instantly and cannot name, so the families that touch the ground
+  // are measured against it rather than photographed.
+  game.restart()
+  run(game, 0.5)
+  const view = game.streetView
+  const parts = instances(view.pools.dumpsters)
+  const size = scales(view.pools.dumpsters)
+  for (let bin = 0; bin < parts.length / 4; bin += 1) {
+    const group = parts.slice(bin * 4, bin * 4 + 4)
+    const castors = group.filter((piece) => piece.y < 0.07)
+    assert.equal(castors.length, 2, `a bin has ${castors.length} castors, so its body starts at y = 0 with no contact patch`)
+    const body = size[bin * 4 + 2]
+    const lid = size[bin * 4 + 3]
+    assert.ok(lid.sx > body.sx && lid.sz > body.sz, 'the lid is not proud of the body, so a bin is a box')
+    assert.ok(lid.sy < body.sy, 'the lid is as thick as the body it caps')
+  }
+  for (const piece of instances(view.pools.bikeWheels)) {
+    assert.ok(Math.abs(piece.y - 0.335) < 1e-3, `a bicycle wheel is ${piece.y.toFixed(3)} m up, so the bike is floating or sunk`)
+  }
+  // The poster: A2, 10 mm thick, alpha-TESTED rather than blended — a blended torn
+  // sheet is a second transparent surface to sort against the wall behind it, and a
+  // depth-sorted edge that shimmers as the camera moves.
+  const materials = view._materials
+  for (const name of ['poster', 'posterTorn']) {
+    assert.ok(materials[name].alphaTest > 0, `${name} is not alpha-tested, so its tear is a blend`)
+    assert.notEqual(materials[name].transparent, true, `${name} is transparent, which sorts against the wall`)
+    assert.ok(materials[name].map, `${name} has no print on it, so it is a beige rectangle`)
+  }
+  assert.notEqual(materials.poster.map, materials.posterTorn.map, 'the whole and torn posters share one texture, so the tear is the same sheet')
+  for (const name of ['posters', 'postersTorn']) {
+    const sheets = scales(view.pools[name])
+    assert.ok(sheets.length > 0, `${name} placed nothing`)
+    for (const sheet of sheets) {
+      assert.ok(Math.abs(sheet.sy - 0.6) < 1e-6, `a poster is ${sheet.sy.toFixed(3)} m tall, which is not A2's short side`)
+      const short = Math.min(sheet.sx, sheet.sz)
+      const long = Math.max(sheet.sx, sheet.sz)
+      assert.ok(Math.abs(short - 0.01) < 1e-6, 'a poster has no thickness, so a gate reading depth out of this buffer has nothing to read')
+      assert.ok(Math.abs(long - 0.42) < 1e-6, `a poster is ${long.toFixed(3)} m on its long side, which is not A2's 0.42`)
+    }
+  }
+  // ...and they are all at chest height, which is where a fly-poster goes and where a
+  // player walking past reads one.
+  const heights = new Set(instances(view.pools.posters).map((piece) => piece.y.toFixed(3)))
+  assert.equal(heights.size, 1, `the posters are at ${[...heights].join(', ')} m`)
 })
 
 check('dispose() tears the whole world down without throwing', () => {
