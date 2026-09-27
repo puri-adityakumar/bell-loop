@@ -4451,10 +4451,19 @@ function fakeAudioContext() {
   const written = []
   const param = () => ({
     value: 0,
+    // REVIEW 14. `setTargetAtTime`'s THIRD argument is the time constant, and for
+    // this file's finale it is the whole design: 0.12 s is a cut and 0.6 s is a
+    // duck, and the two are the same number written to the same node. A stub that
+    // records only the value cannot tell a cut from a fade, which is why the
+    // pass-13 review's line and the pass-14 order claim were both source matches.
+    // `taus` is the list of every constant the graph was given, in order.
+    taus: [],
     setValueAtTime() {},
     linearRampToValueAtTime() {},
-    setTargetAtTime(value) {
+    setTargetAtTime(value, _at, tau) {
       this.value = value
+      this.taus.push(tau)
+      this.lastTau = tau
       written.push(value)
     },
     exponentialRampToValueAtTime(value) {
@@ -6614,6 +6623,23 @@ function musicClaims(api, source) {
     /out\.connect\(this\.music\.bus\)/.test(note) && !/ambient/.test(stripProse(note)),
     'a note is played into the world bed',
   )
+  // 4b. REVIEW 14. A graph that is BUILT and then told nothing must not be heard.
+  // The ladder, the hiss and the finale's tone are all constructed at 0.0001 and
+  // not at their own nominal levels, for the reason the manager's sentinels give:
+  // a level of 0 and a gain of 0 are the same silence, so the other voices can
+  // build at their routed value and be wrong for one frame. The music cannot —
+  // and re-introducing this exact bug (the pad constructed at `MUSIC_PAD.level`)
+  // passed 285/285 before this claim existed, which is the review's second finding.
+  claim(
+    'a music graph built and then told nothing is silent',
+    /level\.gain\.value = 0\.0001/.test(build)
+      && /hissLevel\.gain\.value = 0\.0001/.test(build)
+      && /toneLevel\.gain\.value = 0\.0001/.test(build)
+      && !/gain\.value = MUSIC_PAD\.level/.test(build)
+      && !/gain\.value = MUSIC_HISS\.level/.test(build)
+      && !/gain\.value = MUSIC_FINALE\.tone\.level/.test(build),
+    'a graph that is built and then told nothing is heard at its nominal level',
+  )
   // 5. THE PAD'S FILTER IS SWEPT, by an oscillator into an AudioParam.
   claim(
     'the pad\'s cutoff is swept by a very slow LFO',
@@ -6736,8 +6762,16 @@ function musicClaims(api, source) {
   )
   claim(
     'the tone rises slowly after the cut',
-    api.MUSIC_FINALE.tone.rise > api.MUSIC_FINALE.cut * 5,
-    'the tone arrives as fast as the music left',
+    // REVIEW 14. This was the TABLE only, and the table is true however the code
+    // USES it: swapping the call site's `MUSIC_FINALE.tone.rise` for the cut left
+    // 285/285 green, and the docblock two hundred lines above calls this ORDER the
+    // whole beat. The sibling claim above already asserts its own half against
+    // `apply`; this is the same discipline applied to the other half. See
+    // MUSIC_MUTANTS, "the low tone arrives with the cut", which is the mutant that
+    // used to survive.
+    api.MUSIC_FINALE.tone.rise > api.MUSIC_FINALE.cut * 5
+      && /params\.tone > 0 \? MUSIC_FINALE\.tone\.rise : MUSIC_FINALE\.cut/.test(apply),
+    'the tone arrives as fast as the music left, or leaves as slowly',
   )
   // 12. THE NOTE: on the frame clock, gated, sparse, pitched from the scale, and
   // never the bell.
@@ -6830,6 +6864,14 @@ const MUSIC_MUTANTS = Object.freeze([
   ['the low tone is put under the ladder', 'toneLevel.connect(bus)', 'toneLevel.connect(level)', 'the finale\'s low tone hangs off the bus, below the ladder'],
   ['the hiss is put off the ladder', 'hissLevel.connect(level)', 'hissLevel.connect(bus)', 'the finale\'s low tone hangs off the bus, below the ladder'],
   ['a note is played into the world bed', 'out.connect(this.music.bus)', 'out.connect(this.ambient.bus)', 'a note lands on the music bus'],
+  // REVIEW 14. The pass says it caught this one itself — "the pad constructed gain
+  // at nominal not silence" — and the fix is in the file, but re-introducing the
+  // exact bug left 285/285 green: the property was in a docblock and in a commit
+  // message and in neither gate. A self-caught bug with no check behind it is the
+  // one that comes back in four passes.
+  ['the pad is constructed at its nominal level', 'level.gain.value = 0.0001', 'level.gain.value = MUSIC_PAD.level', 'a music graph built and then told nothing is silent'],
+  ['the hiss is constructed at its nominal level', 'hissLevel.gain.value = 0.0001', 'hissLevel.gain.value = MUSIC_HISS.level', 'a music graph built and then told nothing is silent'],
+  ["the finale's tone is constructed audible", 'toneLevel.gain.value = 0.0001', 'toneLevel.gain.value = MUSIC_FINALE.tone.level', 'a music graph built and then told nothing is silent'],
   ['the cutoff LFO is unwired', 'depth.connect(low.frequency)', 'depth.connect(low.Q)', 'the pad\'s cutoff is swept by a very slow LFO'],
   ['the sweep is retuned to a 6 s breath', 'lfoRate: 0.011,', 'lfoRate: 0.17,', 'the pad\'s cutoff is swept by a very slow LFO'],
   ['the sweep is deeper than the cutoff', 'lfoDepth: 190,', 'lfoDepth: 900,', 'the pad\'s cutoff is swept by a very slow LFO'],
@@ -6854,6 +6896,11 @@ const MUSIC_MUTANTS = Object.freeze([
   ['the low tone rings under the win chord', 'tone: finale && !won ? MUSIC_FINALE.tone.level * phase : 0,', 'tone: finale ? MUSIC_FINALE.tone.level : 0,', 'the finale leaves one low tone'],
   ['the cut is retuned to a duck', 'cut: 0.12,', 'cut: 0.9,', 'the cut is a cut and not a duck'],
   ['the tone rises as fast as it leaves', 'rise: 1.6 }', 'rise: 0.05 }', 'the tone rises slowly after the cut'],
+  // REVIEW 14. The row above retunes the TABLE, which is the half the claim already
+  // held. This one is the half it did not: the TABLE can be perfect and the CALL
+  // SITE still not use it, and swapping `rise` for the cut there left 285/285 green.
+  ['the low tone arrives with the cut', 'params.tone > 0 ? MUSIC_FINALE.tone.rise : MUSIC_FINALE.cut', 'MUSIC_FINALE.cut', 'the tone rises slowly after the cut'],
+  ['the low tone leaves as slowly as it arrives', 'params.tone > 0 ? MUSIC_FINALE.tone.rise : MUSIC_FINALE.cut', 'MUSIC_FINALE.tone.rise', 'the tone rises slowly after the cut'],
   ['the notes are two seconds apart', "motif: Object.freeze({ id: 'motif', code: 0x1d7e3b95, gap: Object.freeze({ min: 8, max: 20 })", "motif: Object.freeze({ id: 'motif', code: 0x1d7e3b95, gap: Object.freeze({ min: 2, max: 4 })", 'the motif is a seeded stream on the frame clock'],
   ['the silence gate moves inside the note callback, so the clock still advances', "    if (params.playing !== true) return\n    if (params.silent === true) return\n    if (!(params.motif > 0)) return\n    if (!this.ambient) this.startAmbient()\n    if (!this.music) this._buildMusic()\n    if (!this.music) return\n    this._advanceAmbience('motif', dt, (event) => {\n      this._musicMotif(event, params)\n    })", "    if (params.playing !== true) return\n    if (!this.ambient) this.startAmbient()\n    if (!this.music) this._buildMusic()\n    if (!this.music) return\n    this._advanceAmbience('motif', dt, (event) => {\n      if (params.silent === true || !(params.motif > 0)) return\n      this._musicMotif(event, params)\n    })", 'the motif does not fire while the music is cut'],
   ['a note is retuned out of the scale', 'const degree = degrees[Math.min(degrees.length - 1, Math.floor(clamp01(event?.b ?? 0.5) * degrees.length))]', 'const degree = degrees[Math.min(degrees.length - 1, Math.floor(clamp01(event?.b ?? 0.5) * degrees.length))] + 1', 'every note is a note of the scale, a whole number of octaves up'],
@@ -6993,6 +7040,31 @@ test('a real AudioContext: the music builds, the ladder reaches its bus, and the
     manager.startAmbient()
     assert.ok(manager.bed, 'the bed was not built behind a real context')
     assert.equal(manager.music, null, 'the music was built by something other than a routed frame')
+    // REVIEW 14. THE CONSTRUCTED STATE, read straight out of the BUILDER and before
+    // anything routes a level. This is the review's second finding: the pass caught
+    // this bug itself — the ladder constructed at `MUSIC_PAD.level` rather than at
+    // silence — the fix is in the file, and re-introducing the bug left 285/285
+    // green, because the property lived in a docblock and a commit message and in
+    // neither gate. It has to be read HERE: an assertion placed after the first
+    // `update` passes whether or not the graph was ever silent, because the router
+    // overwrites all three gains on that frame.
+    //
+    // The caches are SENTINELS for the same reason and the same shape: a cache that
+    // starts at a value the first frame might also route decides the first frame is
+    // "already correct" and never writes it at all.
+    assert.equal(manager.musicLevel, -1, 'the level cache started at a value, not a sentinel')
+    assert.equal(manager.musicHiss, -1, 'the hiss cache started at a value, not a sentinel')
+    assert.equal(manager.musicTone, -1, 'the tone cache started at a value, not a sentinel')
+    assert.equal(manager.musicChord, -1, 'the chord cache started at a value, not a sentinel')
+    const built = manager._buildMusic()
+    assert.ok(built, 'the builder produced no graph behind a real context')
+    for (const [name, node] of [
+      ['the ladder', built.level],
+      ['the hiss', built.hiss.level],
+      ["the low tone", built.tone.level],
+    ]) {
+      assert.ok(node.gain.value < 0.001, `${name} was built at ${node.gain.value} rather than silent`)
+    }
 
     const frame = {
       ...PLAYING_FRAME,
@@ -7009,6 +7081,16 @@ test('a real AudioContext: the music builds, the ladder reaches its bus, and the
     const music = manager.music
     assert.ok(music, 'the music row did not build the music')
     assert.equal(music.bus.kind, 'gain')
+    // the same three gains, now AFTER the first frame routed them: silent before,
+    // and at the routed level after, which is the whole discipline in two reads
+    assert.ok(
+      Math.abs(music.level.gain.value - audio.musicVoice(frame).level) < 1e-12,
+      'the pad is not at the routed level',
+    )
+    assert.ok(
+      Math.abs(music.hiss.level.gain.value - audio.musicVoice(frame).hiss) < 1e-12,
+      'the hiss is not at the routed level',
+    )
     assert.ok(music.bus.sinks.includes(manager.master), 'the music bus does not reach the master')
     assert.equal(
       music.bus.sinks.includes(manager.ambient.bus),
@@ -7086,6 +7168,27 @@ test('a real AudioContext: the music builds, the ladder reaches its bus, and the
       'the low tone is under the ladder, so the cut takes it with everything else',
     )
     assert.equal(manager.music.tone.level.sinks.includes(manager.music.bus), true, 'the low tone is not on the music bus')
+
+    // THE ORDER, AS A MEASUREMENT. `MUSIC_FINALE`'s docblock calls the order the
+    // whole beat — the cut is instant and the tone is slow — and until this review
+    // the gate held that only against the TABLE, where it is true however the code
+    // uses it. The two constants are the third argument of `setTargetAtTime`, and
+    // the stub now records them, so this is a fact about the automation the graph
+    // was actually given rather than a grep for a ternary.
+    assert.deepEqual(
+      [manager.music.level.gain.lastTau, manager.music.hiss.level.gain.lastTau],
+      [audio.MUSIC_FINALE.cut, audio.MUSIC_FINALE.cut],
+      `the pad and the hiss were not cut (${manager.music.level.gain.lastTau} s)`,
+    )
+    assert.equal(
+      manager.music.tone.level.gain.lastTau,
+      audio.MUSIC_FINALE.tone.rise,
+      'the low tone arrived as fast as the music left',
+    )
+    assert.ok(
+      audio.MUSIC_FINALE.tone.rise > audio.MUSIC_FINALE.cut * 5,
+      'a tone that arrives with the cut is a switch, not something left behind',
+    )
 
     // THE NOTE, on its real due frame. The one-shot is the most code in the pass and
     // the least reachable from a pure function, so it is driven here: the cursor is

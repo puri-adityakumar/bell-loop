@@ -8782,9 +8782,159 @@ check('the note stream is the world\'s, and the finale takes it with it', () => 
   assert.equal(played.length, before, 'a note was scheduled into the silence')
 })
 
+// ---------------------------------------------------------------------------
+// ITERATION 2, PASS 14 — ADDED BY THE REVIEW
+// ---------------------------------------------------------------------------
+//
+// Four claims the pass states in prose and in its own commit message, and holds
+// nowhere in this file. All four are about things only a REAL WORLD can show,
+// which is why they are here and not in `verify.mjs`:
+//
+//   1. **A STAGGER MUST NOT PULSE THE SILENCE BACK.** The pass's message says it
+//      ran this as an ad-hoc mutant ("the latch read off the creature's state
+//      string") — a mutant with no committed check behind it is a story, and the
+//      first pass to retune `_audioFrame` would have found nothing. §7.4's
+//      connected swing puts the creature into `stagger` for 1.5 s, and §10.2
+//      says that is a re-emergence DELAY and not a phase: the finale is still
+//      running, so the music is still cut, and a pad that came back for it would
+//      be a pulse the player cannot predict.
+//   2. **THE PROGRESSION IS FROZEN BY A PAUSE.** The block above proves the world
+//      stops handing over facts; this one proves the number the chord is a
+//      function of stopped too, over five real minutes of pause.
+//   3. **THE PROGRESSION IS ON THE WORLD'S CLOCK.** `world.js` is the only file
+//      that decides what `frame.time` is, and no pure check can see it. This one
+//      is deliberately a SOURCE read, because a claim about a line in `world.js`
+//      asserted only by behaviour survives a well-behaved substitute — and a
+//      substitute that hands the audio its own `performance.now()` is precisely
+//      the bug the block above was written to catch.
+//   4. **DETERMINISM ACROSS TWO WORLDS**, run against run rather than check
+//      against itself.
+// ---------------------------------------------------------------------------
 
+check('a STAGGER in the finale does not pulse the silence back (§7.4, §10.2)', () => {
+  game.restart()
+  game.start()
+  run(game, 1.2)
+  game.creature = beast.createCreature({ state: 'stalk', awareness: 0 })
+  game.state = { ...game.state, finale: true }
+  game.update(DT)
+  assert.equal(audio.lastFrame.finaleEnraged, true, 'the world did not report the finale')
+  assert.equal(audioModule.musicVoice(audio.lastFrame).level, 0, 'the music is playing in the finale')
+  // every posture the creature can be in, in the order §7.4 reaches them. The
+  // stagger is written THREE times with a live recoil, so a gate that sampled it
+  // once would miss a world whose stagger only lasts a frame or two.
+  for (const state of ['stagger', 'stalk', 'chase', 'dormant', 'reposition', 'enraged', 'stagger', 'stagger']) {
+    game.creature = { ...game.creature, state, staggerSeconds: 1.4, finale: true }
+    game.state = { ...game.state, finale: true }
+    game.update(DT)
+    const voice = audioModule.musicVoice(audio.lastFrame)
+    assert.equal(audio.lastFrame.finaleEnraged, true, `the world dropped the finale on ${state}`)
+    assert.equal(voice.silent, true, `a ${state} creature un-silenced the music in the finale`)
+    assert.equal(voice.level, 0, `a ${state} creature brought the pad back in the finale`)
+    assert.equal(voice.hiss, 0, `a ${state} creature brought the hiss back in the finale`)
+    assert.equal(voice.motif, 0, `a ${state} creature scheduled a note in the finale`)
+  }
+  // and the flag LATCHES across the capture, which is §9.1's half and the reason
+  // the latch is a flag rather than a posture
+  game.state = { ...game.state, finale: true }
+  game.creature = beast.createCreature({ state: 'stagger', staggerSeconds: 0.5 })
+  game.store.update((state) => ({ ...state, phase: 'reset' }))
+  for (let i = 0; i < 20; i += 1) game.update(DT)
+  assert.equal(audio.lastFrame.started, true, 'the black did not hand the audio a frame')
+  assert.equal(audio.lastFrame.finaleEnraged, true, 'the finale did not survive the black')
+  assert.equal(audioModule.musicVoice(audio.lastFrame).level, 0, 'the pad came back for the black')
+})
 
+check('the progression is frozen by a pause, over five real minutes of one', () => {
+  game.restart()
+  game.start()
+  run(game, 3.4)
+  // The chord is a function of the world's CLOCK, and the clock is `animTime` — so
+  // the claim is about `animTime`, not about what the paused frame carried. A
+  // paused world hands the audio `{ started: false }` and no facts at all, so
+  // reading `lastFrame.time` there is reading nothing, which is the trap the block
+  // above documents at length.
+  const before = audioModule.musicChordAt(game.animTime, game.seed)
+  const clock = game.animTime
+  game.setPaused(true)
+  for (let i = 0; i < 60 * 300; i += 1) game.update(DT)
+  assert.equal(game.animTime, clock, 'the world clock moved over five minutes of pause')
+  assert.equal(audio.lastFrame.started, false, 'a paused world still handed the audio a frame of facts')
+  assert.deepEqual(
+    audioModule.musicChordAt(game.animTime, game.seed),
+    before,
+    'the progression moved under the pause card',
+  )
+  game.setPaused(false)
+  run(game, 6)
+  assert.ok(
+    audioModule.musicChordAt(game.animTime, game.seed).step > before.step,
+    'the progression did not resume',
+  )
+})
 
+check('the world hands the music its own clock, and the LATCHED finale flag', () => {
+  // The only claims about the music that live in `world.js` rather than `audio.js`,
+  // so they are read off the source rather than inferred from behaviour.
+  const source = readFileSync(new URL('./src/game/world.js', import.meta.url), 'utf8')
+  const at = source.indexOf('  _audioFrame() {')
+  const end = source.indexOf('\n  }', at)
+  const body = source.slice(at, end < 0 ? source.length : end)
+  assert.match(body, /time: this\.animTime/, "the music is not on the world's clock")
+  assert.match(body, /finaleEnraged: this\.state\.finale === true/, 'the music is not on the latched flag')
+  assert.equal(
+    /finaleEnraged:[^,\n]*creature/i.test(body),
+    false,
+    "the music is reading the creature's posture rather than the flag",
+  )
+  // and §14.3's "completely": the pause returns before `animTime` moves, which is
+  // the reason the check above has a chord to freeze at all
+  const up = source.indexOf('  update(dt) {')
+  const paused = source.slice(up, up + 900)
+  assert.ok(
+    paused.indexOf('if (this.paused) {') >= 0 && paused.indexOf('this.animTime += dt') > paused.indexOf('return'),
+    '§14.3 does not freeze the clock before the audio is updated',
+  )
+})
+
+check('two worlds of one seed hear the same music, and two seeds do not', () => {
+  const read = (w) => {
+    w.restart()
+    w.start()
+    run(w, 2.5)
+    const frame = w._audioFrame()
+    const routed = audioModule.routeAudio(frame)
+    // `time` is the WORLD's lifetime clock and `restart()` deliberately does not
+    // rewind it, so it is not part of "the music" — the progression resumes where
+    // the clock is, which is what "a pure function of the world's clock" means.
+    // What must be identical is everything the music DECIDES from the frame, so
+    // `time` is the one field taken back out.
+    const { time, ...music } = routed.find((entry) => entry.id === 'music').params
+    assert.ok(Number.isFinite(time), 'the world handed the music no clock at all')
+    return JSON.stringify({
+      music,
+      motif: routed.find((entry) => entry.id === 'musicMotif').params,
+      // the chord is compared at a FIXED time, not at each world's own: `time` is the
+      // world's lifetime clock and the two worlds have been alive different lengths,
+      // so their chords are legitimately at different points in the loop. What has to
+      // agree is the KEY and the ROTATION — the same seed, read at the same instant.
+      chord: audioModule.musicChordAt(120, w.seed).degrees,
+    })
+  }
+  const first = read(game)
+  // A SECOND world on the same store, the way the blocks above build one, so the
+  // comparison is run-against-run rather than check-against-itself.
+  const second = new BellLoopGame(container, { store, audio, createRenderer: makeFakeRenderer })
+  const mirror = read(second)
+  second.dispose()
+  assert.equal(first, mirror, 'the same seed heard the same music twice')
+  // ...and the determinism is not the trivial kind, where every run sounds the same
+  assert.notEqual(
+    JSON.stringify(audioModule.ambienceStream('motif', 4242, 12)),
+    JSON.stringify(audioModule.ambienceStream('motif', 1337, 12)),
+    'two seeds heard the same notes at the same times',
+  )
+})
 
 let failed = 0
 for (const entry of checks) {
