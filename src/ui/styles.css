@@ -195,6 +195,23 @@
    same outline with nothing inside it, which is §14.3's colour-blind
    commitment as geometry rather than as a colour swap. */
 
+/* The gate this row is written against (`verify.mjs`, "every sigil state is
+   legible in greyscale") measures each ink against `--bg`, and since PASS 1
+   brightened the sky that has been a colour nothing was painting behind these
+   marks. Measured off the committed gallery, the band this row occupies runs
+   from #2a251d on the title card to #564d37 in the street view, and on the
+   brightest of those the two dark inks — #1d6a66 and #6b5b40 — fall to 1.32:1
+   and 1.27:1 against a 3:1 floor. A gate that measures a backdrop the HUD does
+   not paint cannot fail, and here it was passing a claim that was false.
+
+   So the row paints the backdrop the gate assumes: opaque `--bg` under the
+   marks, and a wide shadow in the same colour to take the plate's own hard edge
+   off. A scrim, not a lid — the sky, the wires and the lamp still show around
+   it, and nothing here is as opaque as the 0.66 title veil that pass 10 had to
+   back off. It is also the one change that leaves the inks alone, which is the
+   point: #1d6a66 is the lifted member of §12.2's family and the greyscale
+   separation the next assertions measure is a property of the pair, not of the
+   sky behind them. */
 .hud__sigils {
   position: absolute;
   top: calc(3.2vh + 46px);
@@ -203,6 +220,9 @@
   display: flex;
   align-items: flex-end;
   gap: 11px;
+  padding: 6px 16px;
+  background: var(--bg);
+  box-shadow: 0 0 22px 10px var(--bg);
 }
 
 /* the gap between the world's three objectives and the player's one instrument */

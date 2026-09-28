@@ -594,6 +594,47 @@ test('the slice 03 constants match the design', () => {
   assert.equal(hood.SPAWN.cz, 0)
   assert.equal(hood.chunkAtWorld(hood.SPAWN.position.x, hood.SPAWN.position.z).cx, 0)
   assert.equal(hood.districtOf(hood.SPAWN.cx, hood.SPAWN.cz), 0)
+
+  // ...and the two halves of "fixed" are not the same half. `node` is what every
+  // §3.4 distance is measured in. PASS 18 tried to move `position` 26.5 m up
+  // block (0,0)'s frontage, to give the opening frame a lit lamp 19.6 m out
+  // instead of a wall 15.4 m away. It was reverted: `position` and `SPAWN_YAW`
+  // are simulation inputs, not presentation. `world.js`'s `_firstSightingPoint`
+  // builds the Act I sight cone from `{SPAWN.position, SPAWN_YAW}`, so moving
+  // the body moves *which node the first apparition appears at*, and the
+  // scripted policies in `verify-world.mjs` all start from the body. Measured
+  // against a rebuilt HEAD baseline: 112/112 world checks at HEAD, 110/112 with
+  // the position moved, 110/112 with only the yaw, 108/112 with both. So the
+  // framing win is real and the gate is the reason it is not banked.
+  //
+  // What that leaves behind is the invariant the move would have had to respect,
+  // and which is worth holding whether or not anyone moves it again: the body
+  // must stay on its own node, or every objective on every seed moves with it
+  // and the maps stop being comparable between runs. (`creature.js` has a
+  // `nearestIntersection`, but it is private and this gate is pure, so the
+  // nearest node is derived from the public map here.)
+  let nearest = Infinity
+  let nearestId = -1
+  for (let ax = 0; ax < hood.GRID; ax += 1) {
+    for (let az = 0; az < hood.GRID; az += 1) {
+      const w = hood.streetNodeToWorld(hood.streetNodeId(ax, az))
+      const d = Math.hypot(w.x - hood.SPAWN.position.x, w.z - hood.SPAWN.position.z)
+      if (d < nearest) { nearest = d; nearestId = hood.streetNodeId(ax, az) }
+    }
+  }
+  assert.equal(nearestId, hood.SPAWN.node, 'the spawn has drifted off the node its distances are read from')
+  // and the metre is still on the block's own frontage pavement, not in a garden:
+  // the strip is `STREET_HALF_WIDTH` wide and runs the whole length of the block
+  assert.ok(nearest <= hood.BLOCK / 2, `the spawn is ${nearest.toFixed(1)} m from its own corner intersection`)
+  const inset = (value, base) => Math.min(value - base, base + hood.BLOCK - value)
+  const toEdge = Math.min(
+    inset(hood.SPAWN.position.x, hood.roadAxisToWorld(hood.SPAWN.cx)),
+    inset(hood.SPAWN.position.z, hood.roadAxisToWorld(hood.SPAWN.cz)),
+  )
+  assert.ok(
+    toEdge >= 0 && toEdge <= hood.STREET_HALF_WIDTH,
+    `the spawn is ${toEdge.toFixed(1)} m from the block edge, off the ${hood.STREET_HALF_WIDTH} m pavement`,
+  )
 })
 
 test('every district hosts exactly one objective, and identity is welded to it', () => {
@@ -7532,6 +7573,21 @@ test('every sigil state is legible in greyscale, on the shell background', () =>
       `${ink} is invisible on the HUD backdrop (${hud.contrastRatio(ink, hud.HUD_BACKDROP).toFixed(2)}:1)`,
     )
   }
+  // ...and the backdrop those four numbers are measured against is one the HUD
+  // actually paints. PASS 1 brightened the sky out from under this row: the band
+  // the marks sit in measures #564d37 in the street view, where #1d6a66 is
+  // 1.32:1 and #6b5b40 is 1.27:1. So `.hud__sigils` carries its own plate, and
+  // this is what keeps it. Take `background: var(--bg)` off that rule and the
+  // loop above goes back to passing a claim about a colour nothing is drawn
+  // with — a contrast gate that cannot fail is worse than no gate.
+  assert.ok(
+    /\.hud__sigils \{[^}]*background: var\(--bg\)/.test(STYLES_SOURCE),
+    'the sigil row paints no backdrop, so the contrast above is measured against a colour that is not behind it',
+  )
+  // and the plate is the gate's backdrop only while it is opaque: a translucent
+  // scrim over the sky is a different colour, and these numbers would drift
+  // again the moment the sky got any brighter
+  assert.match(hud.HUD_BACKDROP, /^#[\da-f]{6}$/, 'the HUD backdrop is not opaque, so the scrim is not a backdrop')
   // the greyscale channel: with hue removed, lit and extinguished still separate
   assert.ok(hud.luminanceRatio(hud.PORTAL_SIGIL_LIT, hud.PORTAL_SIGIL_DARK) >= hud.SIGIL_MIN_LUMINANCE_RATIO)
   assert.ok(hud.luminanceRatio(hud.HAMMER_SIGIL_LIT, hud.HAMMER_SIGIL_DARK) >= hud.SIGIL_MIN_LUMINANCE_RATIO)
