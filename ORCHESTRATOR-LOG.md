@@ -1185,3 +1185,8 @@ and had to be re-run — recorded as `bbd36c4`, not hidden.
   a **54 px lit-window blob 650 px from the head** — scenery wearing the
   creature's name.
 
+
+
+## Deploy record (orchestrator, close-out)
+
+Deployed 2026-09-28: `vercel link --project space-bunny-v2` + `vercel deploy --prod --yes` from `18a4bd9` (pass-20 close-out). Production alias https://space-bunny-v2.vercel.app returns 200, title `THE BELL LOOP`. SSO protection disabled via PATCH /v9/projects/prj_tGYeXKnkbDCW93fP3lP6ScZFkqR5 (team `team_sUAq4o88vsli9vtPLZAek7U6`). `bell-loop.vercel.app` (main v1) and `space-bunny.vercel.app` (grok v1) untouched.
