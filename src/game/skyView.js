@@ -417,9 +417,13 @@ const ASH_RENDER_ORDER = -95
  * The reason it is 0.6 and not more is unchanged and is worth keeping: at 232 m
  * under 72° of FOV the ring is seen from every bearing, so depth is only ever
  * read as the silhouette's own width, and a deeper box costs triangles for
- * nothing. It is also the one number that proves the unit-box substitution is
- * exact — see `_buildHorizon`'s header, where the old `BoxGeometry(qw, qh, 0.6)`
- * and the new `scale.set(w, h, HORIZON_DEPTH)` are shown to be the same box.
+ * nothing. It is also the one number the unit-box substitution turns on — see
+ * `_buildHorizon`'s header, where the old `BoxGeometry(qw, qh, 0.6)` and the new
+ * `scale.set(w, h, HORIZON_DEPTH)` are shown to be the same box to within
+ * float32 quantisation, which is the strength of claim the arithmetic supports.
+ * The pass-17 review measured that it is 0.6 of a PART that is held to: change
+ * it and the ring's depth changes with it, which is why `verify.mjs` pins the
+ * literal and not the name.
  */
 const HORIZON_DEPTH = 0.6
 
@@ -669,12 +673,38 @@ export class SkyView {
    * WHY IT IS THE SAME PICTURE, and this is the part that matters. The old code
    * built `BoxGeometry(qw, qh, HORIZON_DEPTH)` from the 2 m-quantised cache and
    * then scaled the MESH by `(w / qw, h / qh, 1)`. A box of full width `qw` scaled
-   * by `w / qw` has full width `qw * w/qw = w`. So the mesh's world-space box was
-   * ALREADY exactly `w x h x HORIZON_DEPTH` and the quantisation cancelled itself
-   * out in the product — it was nothing but a device for sharing buffers. A unit
-   * box scaled by `(w, h, HORIZON_DEPTH)` is therefore the same box to the last
-   * bit, and `compose` applies T·R·S in both versions with the same rotation, so
-   * the two are the same matrix written a different way round.
+   * by `w / qw` has full width `qw * w/qw`, which is `w` in real arithmetic — so
+   * the mesh's world-space box was ALREADY `w x h x HORIZON_DEPTH` and the
+   * quantisation cancelled itself out in the product. It was nothing but a device
+   * for sharing buffers. A unit box scaled by `(w, h, HORIZON_DEPTH)` is
+   * therefore the same box, and `compose` applies T·R·S in both versions with the
+   * same rotation, so the two are the same matrix written a different way round.
+   *
+   * AND THE HONEST LIMIT OF "THE SAME", which pass 17's first version of this
+   * comment did not have and which the pass-17 review measured. The two are the
+   * same box to about one part in 10^8, NOT "to the last bit", and the word was
+   * wrong in a way that mattered because this file's whole convention is that a
+   * number in a comment is a number somebody checked. Two independent sources of
+   * the last bit, both measured over the built ring's own 42 parts at seed 1337:
+   *
+   *  - `qw * (w / qw) === w` is FALSE for 5 of the 84 part axes. IEEE-754
+   *    division then multiplication is not the identity; the residual is one ULP.
+   *  - The GPU never saw float64 anyway. `InstancedMesh.instanceMatrix` is a
+   *    `Float32Array`, so the new path's scale is float32-quantised on the way
+   *    in, while the old path's scale rode a float64 `Matrix4`. Comparing the
+   *    world half-extents the vertex shader actually computes, 1 part in `x` and
+   *    4 parts in `y` differ, worst relative error 9.2e-8 (a quarter of a float32
+   *    ULP). The depth is identical in all 42, because `0.6 * 0.5` and
+   *    `0.3 * 1` happen to agree after the round trip.
+   *
+   * At 232 m under 72° of FOV across 1280 px, one pixel is about 0.26 m, so
+   * 9.2e-8 of a 14 m part is roughly 5 nanometres — five millionths of a pixel.
+   * It cannot be seen, and the triangle count is identical because the unit box
+   * and the cached box are both 12 triangles: 504 either way, and the sky is 542
+   * at both trees (`node tools/perf-census.mjs` against `e476ee9^`, which is the
+   * number to re-run rather than the number to believe). The claim is
+   * "unchanged to within float32 quantisation", and that is the strongest one
+   * the instrument can support.
    *
    * The material is a `MeshBasicMaterial` with a colour, no map and no
    * `vertexColors`, so the UVs the unit box carries differently are read by
@@ -883,9 +913,10 @@ export class SkyView {
    *    coarse grid and the MESH carried the remainder.
    *  - And then the quantisation turned out to be unnecessary, because the mesh
    *    scale cancelled it: `BoxGeometry(qw, qh, d)` scaled by `(w/qw, h/qh, 1)`
-   *    IS a `w x h x d` box. Twenty lines of cache were buying a sharing that one
-   *    `InstancedMesh` over a unit box buys outright, and were paying 42 draw
-   *    calls for it.
+   *    IS a `w x h x d` box, to within the float32 rounding the instanced path
+   *    adds and the cached one did not. Twenty lines of cache were buying a
+   *    sharing that one `InstancedMesh` over a unit box buys outright, and were
+   *    paying 42 draw calls for it.
    *
    * The method is gone rather than left uncalled, because an uncalled method with
    * a fifteen-line justification of itself is precisely the thing this pass's own

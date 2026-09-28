@@ -3370,15 +3370,6 @@ function makeWireMaterial(resolutionX, resolutionY) {
 // ---------------------------------------------------------------------------
 
 /**
- * One `InstancedMesh` over a unit primitive, written in canonical coordinates and
- * flushed on `commit()`.
- *
- * `frustumCulled` is off deliberately. With three wrapped copies the geometry
- * spans 1,344 m and the camera is essentially always inside it, so per-frame
- * culling work buys nothing, and a stale instance bounding sphere after a fixture
- * rebuild would be a real (if invisible) failure mode.
- */
-/**
  * `byDistance` — the one comparator `lampsNear` sorts with, at module scope.
  *
  * PASS 17. It was an inline arrow inside the method, so it was a fresh closure on
@@ -3395,6 +3386,14 @@ function makeWireMaterial(resolutionX, resolutionY) {
  * there, because a light pool that swaps which of two equally-distant lamps it
  * aims at would be a visible flicker.
  *
+ * It sits ABOVE `InstancePool` and not beside `lampsNear` for a reason that is
+ * about this file rather than about the function: `lampsNear` is a method eight
+ * hundred lines below, and the one thing a reader of this section needs is the
+ * comparator's tie rule, which is the tie rule of the sort. (Pass 17's first
+ * version of this comment was inserted directly beneath `InstancePool`'s own
+ * docblock, which orphaned that block from its class — two docblocks, one
+ * declaration, and the class silently undocumented.)
+ *
  * @param {{distance: number}} a
  * @param {{distance: number}} b
  * @returns {number}
@@ -3403,6 +3402,15 @@ function byDistance(a, b) {
   return a.distance - b.distance
 }
 
+/**
+ * One `InstancedMesh` over a unit primitive, written in canonical coordinates and
+ * flushed on `commit()`.
+ *
+ * `frustumCulled` is off deliberately. With three wrapped copies the geometry
+ * spans 1,344 m and the camera is essentially always inside it, so per-frame
+ * culling work buys nothing, and a stale instance bounding sphere after a fixture
+ * rebuild would be a real (if invisible) failure mode.
+ */
 class InstancePool {
   constructor(geometry, material, capacity, name) {
     this.capacity = capacity
@@ -7314,8 +7322,11 @@ export class StreetView {
    * caller's early-out on all but the frames where the aim actually moved.
    *
    * AFTER: the same 49 folds, with no object per fold. The distance test is
-   * squared — no `Math.hypot` for a lamp that is going to be rejected, and no
-   * allocation for one that is going to be kept.
+   * still `Math.hypot` and is NOT squared — the squared form was written,
+   * measured and dropped, and the twenty lines inside the loop below say why at
+   * the length the reasoning deserves. What actually went is the ALLOCATION, not
+   * the arithmetic: the fold is two additions against `this.origin` instead of a
+   * `worldOf` call that handed back a fresh `{x, z}` to read two numbers off.
    *
    * THE `into` ARGUMENT, and it is the part that makes this safe. `world.js` keeps
    * the returned list in `this._lampAimed` and reads it every frame from

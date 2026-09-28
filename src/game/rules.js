@@ -652,13 +652,6 @@ export function portalDebrisRing(seed, index) {
  * factor rather than a second clock, so a rock is never tidily aligned with its
  * own orbit and never quite still.
  *
- * @param {{radius: number, rate: number, phase: number, size: number}} rock
- * @param {number} time seconds on the view's own clock
- * @returns {{x: number, y: number, angle: number, size: number}}
- */
-/**
- * portalDebrisPose — one flake's position and spin at `time`, in the ring's plane.
- *
  * PASS 17. The `into` argument is new and optional, and it exists for the same
  * reason `ashDrift`'s is: this is called fourteen times a frame per live portal
  * (forty-two a frame in a full Act I) and a function that can only return a value
@@ -667,8 +660,8 @@ export function portalDebrisRing(seed, index) {
  * caller that wants a value rather than a destination is unaffected, because the
  * fresh-object path is still there when `into` is omitted.
  *
- * @param {object} rock one flake's own `{phase, rate, radius, size}`
- * @param {number} time seconds on the view's clock; negative clamps to zero
+ * @param {{radius: number, rate: number, phase: number, size: number}} rock
+ * @param {number} time seconds on the view's own clock; negative clamps to zero
  * @param {{x: number, y: number, angle: number, size: number}} [into] written
  *   instead of allocating a fresh object
  * @returns {{x: number, y: number, angle: number, size: number}}

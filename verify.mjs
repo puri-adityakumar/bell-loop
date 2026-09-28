@@ -17338,6 +17338,28 @@ test('the budget harness measures a live frame, and cannot be mistaken for a vie
   //    doing the work, and a small one means the graph IS the frame.
   assert.ok(/if \(object\.frustumCulled === false\) unculled \+= 1/.test(page), 'the census does not count the culling exemptions, so a draw-call gap cannot be read')
   assert.ok(/isInstancedMesh \? object\.count : 1/.test(page), 'the census counts one triangle per instanced mesh rather than one per instance')
+  // 8b. AND THE STANDALONE CENSUS IS COUNTED THE SAME WAY, which this review
+  //     added. `tools/perf-census.mjs` is a SECOND copy of the census the page
+  //     runs — its own `geometries` set, its own `triangles +=` — and the pass
+  //     quoted its output in `AESTHETIC-NOTES.md` §10 (184 objects at
+  //     `e476ee9^`, the 5.8x triangle and 4x instance ratios, the share of
+  //     triangles by object) WITHOUT ANY GATE ON IT AT ALL. The mutation run
+  //     found this the honest way: M4 (`geometry.uuid` -> `geometry.type`, so
+  //     the census counts geometry KINDS rather than distinct geometries) and M5
+  //     (`triangles += per * count` -> `triangles += per`, one triangle per mesh
+  //     rather than per instance) both left the suite at 306/306 GREEN. The page's
+  //     census is checked by clause 8 and the tool's is not checked by anything,
+  //     and the two are the same arithmetic written twice.
+  //
+  //     Both mutations are the exact defects the notes' numbers would have hidden.
+  //     M5 in particular is not a rounding error: it reports the 294 140/400 000
+  //     figure as roughly its 62-mesh value, which is a number four times too
+  //     small, and §10's "three-quarters spent" conclusion rests on it.
+  const census = stripProse(readFileSync(new URL('./tools/perf-census.mjs', import.meta.url), 'utf8'))
+  assert.ok(/geometries\.add\(geometry\.uuid\)/.test(census), 'the standalone census counts geometry KINDS rather than distinct geometries, so its geometry column undercounts')
+  assert.ok(/^ {4}triangles \+= per \* count$/m.test(census), 'the standalone census sums one triangle per MESH rather than per instance, so its triangle total is a fraction of the frame')
+  assert.ok(/^ {4}row\.triangles \+= per \* count$/m.test(census), 'the standalone census attributes triangles per MESH in its breakdown, so "where the triangles are" names the wrong objects')
+  assert.ok(/const count = object\.isInstancedMesh \? object\.count : 1/.test(census), 'the standalone census does not expand an InstancedMesh to its instances')
 })
 test('the instanced horizon is one draw call over one geometry, and its arithmetic is checkable', () => {
   // PASS 17's only structural change to the scene, held here rather than only in
@@ -17366,11 +17388,16 @@ test('the instanced horizon is one draw call over one geometry, and its arithmet
     'the ring does not flag its instance matrix for upload, so it renders every box at the first one',
   )
   // 2. THE UNIT BOX, and the scale that makes the substitution exact. The old code
-  //    built `BoxGeometry(qw, qh, 0.6)` and scaled the MESH by `(w/qw, h/qh, 1)`;
-  //    since `qw * w/qw === w`, that box was already `w x h x 0.6`, so a unit box
-  //    scaled by `(w, h, HORIZON_DEPTH)` is the same box. The gate holds both halves:
-  //    the unit geometry, and a scale written in the part's OWN metres rather than as
-  //    a ratio against a cache that no longer exists.
+  //    built `BoxGeometry(qw, qh, 0.6)` and scaled the MESH by `(w/qw, h/qh, 1)`,
+  //    which in real arithmetic is the same `w x h x 0.6` box, so a unit box scaled
+  //    by `(w, h, HORIZON_DEPTH)` is the same box to within the float32 rounding the
+  //    instanced path adds. The gate holds both halves: the unit geometry, and a
+  //    scale written in the part's OWN metres rather than as a ratio against a cache
+  //    that no longer exists.
+  //    (This comment said `qw * w/qq === w` outright until the pass-17 review
+  //    measured it and found it false for 5 of the ring's 84 part axes. The gate was
+  //    never wrong about the CODE; only its prose was, which is the same class of
+  //    defect as the header it is asserting the meaning of.)
   assert.ok(/const geometry = new THREE\.BoxGeometry\(1, 1, 1\)/.test(sky), 'the ring is not one unit box')
   assert.ok(
     /scale3\.set\(part\.w, part\.h, HORIZON_DEPTH\)/.test(sky),
@@ -17408,6 +17435,118 @@ test('the instanced horizon is one draw call over one geometry, and its arithmet
     'the ring does not hand its collected parts to the instanced writer',
   )
 })
+test('the unit-box substitution is the same box to within float32, and the comments say so', () => {
+  // ADDED BY THE PASS-17 REVIEW, and it is here because of a claim this pass made
+  // and could not support rather than because of a bug in the ring.
+  //
+  // Pass 17's `_buildHorizon` header, `AESTHETIC-NOTES.md` §10 and the checklist
+  // all said the substitution was "bit-identical" and "the same box to the last
+  // bit", resting it on `qw * (w/qw) === w`. That identity is FALSE in IEEE-754
+  // for part of the ring's input domain, and the instanced path adds a rounding
+  // the cached one did not have, because `InstancedMesh.instanceMatrix` is a
+  // `Float32Array` and the old `mesh.scale` rode a float64 `Matrix4`.
+  //
+  // The picture does not move — the residual is a fraction of a float32 ULP,
+  // five millionths of a pixel at 232 m — so there is nothing to fix in
+  // `skyView.js`. What needed fixing was the sentence, and a sentence that
+  // overstates the evidence it cites is the exact failure this repository's gate
+  // culture exists to prevent. So this is the check, and it is a MEASUREMENT
+  // wherever a measurement is possible.
+  //
+  // 1. THE ARITHMETIC, recomputed here over the shape tables the file ships. The
+  //    old path evaluated `f32(quantised/2) * f32(w/quantised)`; the new one
+  //    evaluates `f32(0.5) * f32(w)`, because the unit box's vertices are ±0.5
+  //    and its instance matrix is float32. Those are the world half-extents the
+  //    vertex shader works from, and they are what "the same box" has to mean.
+  const horizon = {}
+  for (const match of SKY_VIEW_SOURCE.matchAll(/^\s{2}(\w+): Object\.freeze\(\{([^}]*)\}\)/gm)) {
+    const row = {}
+    for (const field of match[2].matchAll(/(\w+): ([\d.]+)/g)) row[field[1]] = Number(field[2])
+    horizon[match[1]] = row
+  }
+  assert.ok(
+    Object.keys(horizon).length >= 3,
+    `the harness read ${Object.keys(horizon).length} horizon shape tables out of skyView.js, so it cannot measure the substitution it is here to measure`,
+  )
+  const STEP = 2
+  const f32 = Math.fround
+  let axes = 0
+  let identityFailures = 0
+  let halfExtentFailures = 0
+  let worstRelative = 0
+  for (const kind of Object.keys(horizon)) {
+    for (const base of Object.values(horizon[kind])) {
+      for (let step = 0; step < 16; step += 1) {
+        for (let jitter = 0; jitter < 8; jitter += 1) {
+          const s = (0.82 + (step / 15) * 0.5) * (0.9 + (jitter / 7) * 0.2)
+          for (const derived of [base, base * 0.55, base * 0.16, base * 2.6, base * 0.8, base * 0.34]) {
+            const w = derived * s
+            const qw = Math.max(STEP, Math.round(w / STEP) * STEP)
+            axes += 1
+            if (qw * (w / qw) !== w) identityFailures += 1
+            const oldHalf = f32(f32(qw / 2) * f32(w / qw))
+            const newHalf = f32(0.5 * f32(w))
+            if (oldHalf !== newHalf) {
+              halfExtentFailures += 1
+              worstRelative = Math.max(worstRelative, Math.abs(oldHalf - newHalf) / newHalf)
+            }
+          }
+        }
+      }
+    }
+  }
+  // 2. AND WHAT IT MEANS. The identity is genuinely false, so a comment asserting
+  //    it cannot be trusted; the residual is genuinely tiny, so the picture
+  //    genuinely has not moved. Both are asserted, because a pass that corrected
+  //    the number in one direction could over-correct in the other and start
+  //    calling a substitution that is exact to 8 significant figures "approximate".
+  assert.ok(identityFailures > 0, '`qw * (w/qw) === w` now holds for every axis, so the comments are RIGHT to call the substitution exact — say so instead of hedging')
+  assert.ok(halfExtentFailures > 0, 'no half-extent moved, so there is no rounding to report and the comments are describing a change that is not there')
+  assert.ok(
+    worstRelative < 1e-6,
+    `the unit-box substitution moves a part by ${worstRelative.toExponential(2)}, which is more than a float32 ULP's worth of rounding and needs a paragraph rather than a ceiling`,
+  )
+  // 3. AND THE COMMENTS SAY THE TRUE THING. Prose, deliberately: the whole defect
+  //    was prose, and a numeric predicate cannot see prose. This is a floor, not
+  //    a ban — a future pass that finds a genuinely exact formulation may write
+  //    it, but it has to delete these two lines to do so.
+  const notes = readFileSync(new URL('./AESTHETIC-NOTES.md', import.meta.url), 'utf8')
+  const checklist = readFileSync(new URL('./ITERATION-2-CHECKLIST.md', import.meta.url), 'utf8')
+  const prose = { 'src/game/skyView.js': SKY_VIEW_SOURCE, 'AESTHETIC-NOTES.md': notes, 'ITERATION-2-CHECKLIST.md': checklist }
+  for (const [name, text] of Object.entries(prose)) {
+    assert.ok(
+      !/same box to the last bit/.test(text),
+      `${name} claims the horizon substitution is "the same box to the last bit", which the arithmetic above contradicts`,
+    )
+    assert.ok(
+      !/bit-identical 542/.test(text),
+      `${name} calls the horizon triangles "bit-identical 542"; the COUNT is identical and the boxes are not, and they are different claims`,
+    )
+  }
+  // 4. AND THE PROOF IS WRITTEN DOWN WHERE THE CLAIM IS, so a reader who follows
+  //    the citation finds the number rather than a promise of one.
+  assert.ok(
+    /9\.2e-8/.test(SKY_VIEW_SOURCE) && /9\.2e-8/.test(notes),
+    'the measured worst-case relative error is not in both the header and §10, so the correction is a claim without its evidence',
+  )
+  // 5. AND THE COUNT, which is the part that IS exact, is gated as one. The unit
+  //    box and the cached box are both 12 triangles — six faces, two each, and a
+  //    `BoxGeometry` with the default one segment per side — so the ring is 504
+  //    either way. A future pass that changes the primitive moves the ring's
+  //    cost, and this is the assertion that notices. The count is read out of the
+  //    CONSTRUCTOR CALL rather than a live `BoxGeometry`, because `verify.mjs`
+  //    imports no renderer and no scene graph and this file's whole argument is
+  //    that the budget it holds is the budget the page is measured against.
+  assert.ok(
+    /const geometry = new THREE\.BoxGeometry\(1, 1, 1\)/.test(SKY_VIEW_SOURCE),
+    'the ring is not one unit box, so its per-box triangle count is not the 12 the budget and §10 quote',
+  )
+  const BOX_FACES = 6
+  const BOX_SEGMENTS_PER_FACE = 2
+  const perBox = BOX_FACES * BOX_SEGMENTS_PER_FACE
+  assert.equal(perBox * 42, 504, 'the ring is not 42 boxes of 12, so the 504 the budget and §10 both quote is wrong')
+  console.log(`\n  horizon substitution: the identity fails on ${identityFailures} of ${axes} axes (${halfExtentFailures} move a half-extent), the residual is ${worstRelative.toExponential(2)}, and the ring is ${perBox * 42} triangles either way`)
+})
 test('every budget claim can actually fail, and a mutation names the one it breaks', () => {
   // The mutations are edits to the REAL harness, the REAL page and the REAL sky, and
   // each has to turn one specific assertion red. They are the reason this section is
@@ -17418,8 +17557,13 @@ test('every budget claim can actually fail, and a mutation names the one it brea
   // tombstones quote the expressions they removed, and a predicate that cannot tell
   // a comment from a call is a predicate that has to be weakened to pass.
   const sky = stripProse(SKY_VIEW_SOURCE)
-  /** The three checks above, as one predicate over the three sources. */
-  const budgetHolds = (h, p, s) => {
+  // `census` is the standalone tool, for the reason clause 8b gives: it is a second
+  // copy of the same arithmetic, and for one pass it had no gate at all. Stripped
+  // for the same reason as `sky` — a predicate that cannot tell a comment from a
+  // call is a predicate that has to be weakened to pass.
+  const census = stripProse(readFileSync(new URL('./tools/perf-census.mjs', import.meta.url), 'utf8'))
+  /** The three checks above, as one predicate over the four sources. */
+  const budgetHolds = (h, p, s, c) => {
     // The code-shaped predicates run on the STRIPPED sources and the string-shaped
     // ones on the raw text, and the split is not tidiness. `__captureBudget`'s own
     // header explains at length that it reads `renderer.info.render.calls`, so a
@@ -17467,9 +17611,18 @@ test('every budget claim can actually fail, and a mutation names the one it brea
         > sc.indexOf('const parts = []')
       && sc.indexOf('this._buildHorizonInstances(parts)')
         > sc.indexOf('for (let index = 0; index < HORIZON_COUNT; index += 1) {')
+      // ...and the standalone census, which is already stripped by its reader, so
+      // `c` needs no second pass. These four are clause 8b's four, restated as a
+      // conjunction: the M4/M5 rows below are only caught if the predicate itself
+      // carries the clauses, and a clause asserted in one test and not in the
+      // mutation predicate is a clause the mutation table cannot see.
+      && /geometries\.add\(geometry\.uuid\)/.test(c)
+      && /^ {4}triangles \+= per \* count$/m.test(c)
+      && /^ {4}row\.triangles \+= per \* count$/m.test(c)
+      && /const count = object\.isInstancedMesh \? object\.count : 1/.test(c)
     )
   }
-  assert.ok(budgetHolds(harness, page, sky), 'the budget claims do not all hold on the real files, so this test proves nothing')
+  assert.ok(budgetHolds(harness, page, sky, census), 'the budget claims do not all hold on the real files, so this test proves nothing')
   // The table, as `[label, file, from, to, what it targets]`. The expected-hit
   // discipline pass 16 established is the reason `from` is a fragment that exists:
   // `replace` rewrites the FIRST match, so a fragment quoted in this file's own
@@ -17534,13 +17687,30 @@ test('every budget claim can actually fail, and a mutation names the one it brea
     ['the writer handed a list that is not the collected one', 'sky',
       'this._buildHorizonInstances(parts)', 'this._buildHorizonInstances([])',
       'the ring hands its collected parts to the instanced writer'],
+    // M4 AND M5. These two were run FIRST as external mutations, against the
+    // committed pass, and both SURVIVED — 306/306 green with the census's
+    // arithmetic broken. They are in the table because the fix for a surviving
+    // mutation is a clause, and a clause with no row in this table is a clause
+    // nobody has tested. `census` is the fourth source, read by clause 8b.
+    ['the standalone census counts geometry KINDS, not geometries', 'census',
+      'geometries.add(geometry.uuid)', 'geometries.add(geometry.type)',
+      'the standalone census distinct-geometry count'],
+    ['the standalone census sums one triangle per MESH', 'census',
+      'triangles += per * count', 'triangles += per',
+      'the standalone census triangle total'],
+    ['the standalone census attributes triangles per MESH in its breakdown', 'census',
+      'row.triangles += per * count', 'row.triangles += per',
+      'the standalone census breakdown'],
+    ['the standalone census stops expanding an InstancedMesh', 'census',
+      'const count = object.isInstancedMesh ? object.count : 1', 'const count = 1',
+      'the standalone census instance expansion'],
   ]
   for (const [label, file, from, to, names] of mutations) {
-    const sources = { page, harness, sky }
+    const sources = { page, harness, sky, census }
     assert.ok(sources[file].includes(from), `the mutation "${label}" no longer matches ${file}, so it is not testing anything`)
     const mutated = { ...sources, [file]: sources[file].replace(from, to) }
     assert.notEqual(mutated[file], sources[file], `the mutation "${label}" was a no-op`)
-    assert.ok(!budgetHolds(mutated.harness, mutated.page, mutated.sky), `the mutation "${label}" left the budget claims green — it targets ${names}`)
+    assert.ok(!budgetHolds(mutated.harness, mutated.page, mutated.sky, mutated.census), `the mutation "${label}" left the budget claims green — it targets ${names}`)
   }
   console.log(`\n  budget claims: 3 checks, ${mutations.length} mutations, every one caught`)
 })

@@ -120,10 +120,12 @@ Hard rules for every pass:
   19/48; `update()` 0.1 ms/4 ms p50.** Against the slice-16 baseline the fidelity
   passes 5.8x'd triangles and 4x'd instances for +73 objects. The one thing that
   was actually wrong was `skyView`'s forty-two-mesh silhouette ring, now one
-  `InstancedMesh` over a unit box at **bit-identical 542 triangles** (calls
-  111→70). ~460 per-frame allocations removed from `lampsNear`, `_writeDebris`, the
-  ash loop and the creature's haze/trail. Budget, breakdown, the things left alone
-  and the things the instrument could not measure: `AESTHETIC-NOTES.md` §10.
+  `InstancedMesh` over a unit box at an **unchanged 542 triangles** (calls
+  111→70) and boxes equal to within float32 quantisation. 415 per-frame
+  allocations removed from `lampsNear`, `_writeDebris`, the ash loop and the
+  creature's haze/trail, plus 90 redundant buffer writes. Budget, breakdown, the
+  things left alone and the things the instrument could not measure:
+  `AESTHETIC-NOTES.md` §10.
 - [x] `PASS 18: Game feel sweep.` Spawn framing, first-30-seconds pacing, sigil
   + HUD contrast against the brighter world, reduced-motion still respected.
 - [x] `PASS 19: Debt sweep.` Fix top items from REVIEW-pass-*.md NOT-DONE

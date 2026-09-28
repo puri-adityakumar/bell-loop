@@ -696,10 +696,14 @@ PNG. The worst case of the four is the worst case in the game.
 | `street-portal` (§16.5.5) | **99** / 256 | 292 360 | 16 | 134 | 0.0 ms |
 | `street-creature` (stalker at 17 m) | **90** / 256 | 290 780 | 19 / 48 | 134 | 0.1 ms |
 
-**The whole scene is inside the draw-call budget by 2.6x, and inside the simulation
-budget by 40x.** Nine lights, no shadow pass (`world.js` sets
-`shadowMap.enabled = false` and nothing in `src/` sets `castShadow`), 63 instanced
-meshes carrying 16 529 instances — an average of 262 instances per draw call.
+**The whole scene is inside the draw-call budget by 3.7x at its cheapest pose and
+2.6x at its dearest, and inside the simulation budget by 40x.** Nine lights, no
+shadow pass (`world.js` sets `shadowMap.enabled = false` and nothing in `src/`
+sets `castShadow`), 63 instanced meshes carrying 16 529 instances — **262
+instances per instanced mesh**. (Pass 17's first version of this line said "262
+instances per draw call", which is 16 529 over 70 = 236 and not 262; 262 is the
+figure per instanced pool, which is the number the instancing argument is
+actually about. Corrected by the pass-17 review.)
 
 ### What the fidelity passes cost, measured against the slice-16 baseline
 
@@ -737,24 +741,47 @@ Draw calls were never the problem. The sky's silhouette ring was.
 
 `skyView._buildHorizon` built **forty-two plain `THREE.Mesh` objects** — fourteen
 three-part silhouettes — from a `BoxGeometry` cache keyed on a 2 m grid. That is
-**23% of the world's draw calls to draw 542 triangles**, 47 of the scene's 113
-culling-exempt objects, and the largest single concentration of draw calls in the
-project for a pure backdrop.
+**23% of the scene's objects and 37% of the avenue pose's draw calls** to draw 542
+triangles, 47 of the scene's 113 culling-exempt objects, and the largest single
+concentration of draw calls in the project for a pure backdrop. (Pass 17's first
+version of this sentence said "23% of the world's draw calls". 23% is 42 over the
+184 objects `perf-census.mjs` counted at `e476ee9^` — it is an OBJECT share, and
+the tool that produced it warns in its own header that a graph census overstates
+draw calls. The draw-call share is the measured 41 of 111 at the avenue, 36.9%.
+Both numbers are now named for what they are.)
 
 **BEFORE:** 47 objects in `skyView.root` (0 instanced, 46 mesh, 1 points).
 **AFTER:** 6 objects (1 instanced, 4 mesh, 1 points) — a moon, three haze bands, a
 point cloud, and **one `InstancedMesh` over a unit box holding all 42 silhouettes**.
 
-**Triangles: 542 before, 542 after. Bit-identical.** That equality is the proof,
-and it is arithmetic rather than luck: the old code built `BoxGeometry(qw, qh, 0.6)`
-from the quantised cache and then scaled the *mesh* by `(w / qw, h / qh, 1)`. Since
-`qw × (w/qw) = w`, the box was **already** exactly `w × h × 0.6` — the quantisation
-cancelled itself out in the product and had existed only to share buffers. A unit
-box scaled by `(w, h, 0.6)` is the same box. The material is a `MeshBasicMaterial`
-with a colour, no map and no `vertexColors`, so the UVs the unit box carries
-differently are read by nothing, and it does not light, so the normals are read by
-nothing either. Both are load-bearing, and it is why the same trick could not have
-been applied to a `MeshStandardMaterial` part.
+**Triangles: 542 before, 542 after. The COUNT is bit-identical; the boxes are not
+bit-identical, and the distinction is the honest form of this claim.** The count
+matches because the unit box and the cached box are both 12 triangles, 42 of them,
+and the sky's other three meshes and one point cloud are untouched — 542 at both
+trees, which is the number to re-run (`node tools/perf-census.mjs` at `e476ee9^`
+and at `e476ee9`).
+
+The boxes themselves: the old code built `BoxGeometry(qw, qh, 0.6)` from the
+quantised cache and then scaled the *mesh* by `(w / qw, h / qh, 1)`, so in real
+arithmetic the box was already `w × h × 0.6` — the quantisation cancelled itself
+in the product and had existed only to share buffers. But `qw × (w/qw) = w` is
+**false in IEEE-754** for 5 of the ring's 84 part axes, and the new path adds a
+second rounding the old one did not have, because `InstancedMesh.instanceMatrix`
+is a `Float32Array` while the old scale rode a float64 `Matrix4`. Measured over
+the built ring's 42 parts, the world half-extents the vertex shader actually
+computes differ on 1 part in `x` and 4 in `y`, worst relative error **9.2e-8** —
+about a quarter of a float32 ULP, or five millionths of a pixel at 232 m. The
+depth matches in all 42. The claim the evidence supports is *"the same box to
+within float32 quantisation"*, and pass 17's first version of this section called
+the triangles bit-identical and the boxes equal to the last bit, which is
+stronger than the arithmetic is. (Corrected by the pass-17 review, which is also
+the check that holds the correction: `verify.mjs` recomputes the residual and
+fails if either phrase comes back.)
+
+The material is a `MeshBasicMaterial` with a colour, no map and no `vertexColors`,
+so the UVs the unit box carries differently are read by nothing, and it does not
+light, so the normals are read by nothing either. Both are load-bearing, and it is
+why the same trick could not have been applied to a `MeshStandardMaterial` part.
 
 Measured effect: **draw calls 111 → 70** at the avenue, **140 → 99** at the portal;
 **geometries 151 → 134**; culling-exempt objects 113 → 72. The pixel cost is zero —
@@ -798,21 +825,25 @@ compare *runs* before concluding anything about the picture.
 
 ### Per-frame allocations, and what was left alone
 
-Steady state (phase PLAYING, three live portals) allocated **≈290 objects and arrays
-per frame** before this pass. Removed:
+The per-frame garbage this pass removed, counted site by site off the two trees'
+own source. The rows are additions of **allocations** only, and the one row that is
+not an allocation is marked as such rather than quietly folded in:
 
-| site | was | now |
-|---|---|---|
-| `streetView.lampsNear` | 49 × `{x, z}` from `worldOf`, + 1 array, + 2 closures | 1 array; the fold is inlined |
-| `streetView.update` → `_writeDebris` | 42 × `portalDebrisPose` return objects | 42 writes into `this._debrisPose` |
-| `skyView.update` (the ash) | 90 × `{x, y, z}`, + **90 redundant `needsUpdate` writes** | 90 writes into `this._ashAt`, one upload flag |
-| `creatureView._presentHaze` | 144 array literals (24 band-sides × 2) | 0; `HAZE_RAMP` is a frozen module constant |
-| `creatureView._presentTrail` | 80 array literals (16 marks × 5) | 0; two `i` comparisons |
-| `creatureView._presentHaze` (the stash) | 6 objects + array + closure | 6 records refilled in place |
+| site | was | now | removed |
+|---|---|---|---|
+| `streetView.lampsNear` | 49 × `{x, z}` from `worldOf`, + 1 array, + 1 sort closure | 1 array; the fold is inlined | 51 |
+| `streetView.update` → `_writeDebris` | 42 × `portalDebrisPose` return objects | 42 writes into `this._debrisPose` | 42 |
+| `skyView.update` (the ash) | 90 × `{x, y, z}` | 90 writes into `this._ashAt` | 90 |
+| `skyView.update` (the ash) | **90 redundant `needsUpdate` writes** — *not allocations* | one upload flag | 0 |
+| `creatureView._presentHaze` (corners + alpha) | 144 array literals (24 band-sides × 6: four 2-element corners, the array holding them, and the ramp) | 0; `HAZE_RAMP` is a frozen module constant | 144 |
+| `creatureView._presentTrail` | 80 array literals (16 marks × 5) | 0; two `i` comparisons | 80 |
+| `creatureView._presentHaze` (the stash) | 6 objects + 1 array + 1 closure | 6 records refilled in place | 8 |
+| | | **total** | **415** |
 
-**~460 allocations a frame removed, none of them visible.** Two were worse than
-garbage: the haze's `corners`/`alpha` arrays were rebuilt inside the innermost loop
-24 times a frame, and the ash's `needsUpdate = true` sat *inside* its 90-iteration
+**415 allocations a frame removed, none of them visible, and 90 redundant buffer
+writes besides.** Two were worse than garbage: the haze's `corners`/`alpha` arrays
+were rebuilt inside the innermost loop 24 times a frame, and the ash's
+`needsUpdate = true` sat *inside* its 90-iteration
 loop, so the upload flag was written ninety times to set one thing.
 
 **LEFT ALONE, deliberately — and this is the honest half of the answer:**
