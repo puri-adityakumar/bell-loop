@@ -597,15 +597,38 @@ test('the slice 03 constants match the design', () => {
 
   // ...and the two halves of "fixed" are not the same half. `node` is what every
   // §3.4 distance is measured in. PASS 18 tried to move `position` 26.5 m up
-  // block (0,0)'s frontage, to give the opening frame a lit lamp 19.6 m out
-  // instead of a wall 15.4 m away. It was reverted: `position` and `SPAWN_YAW`
-  // are simulation inputs, not presentation. `world.js`'s `_firstSightingPoint`
+  // block (0,0)'s frontage. It was reverted: `position` and `SPAWN_YAW` are
+  // simulation inputs, not presentation. `world.js`'s `_firstSightingPoint`
   // builds the Act I sight cone from `{SPAWN.position, SPAWN_YAW}`, so moving
   // the body moves *which node the first apparition appears at*, and the
   // scripted policies in `verify-world.mjs` all start from the body. Measured
   // against a rebuilt HEAD baseline: 112/112 world checks at HEAD, 110/112 with
-  // the position moved, 110/112 with only the yaw, 108/112 with both. So the
-  // framing win is real and the gate is the reason it is not banked.
+  // the position moved, 110/112 with only the yaw, 108/112 with both. That
+  // regression is the reason it is not banked, and it is the ONLY reason — see
+  // the `toEdge` assertion below, which the move passes.
+  //
+  // The framing numbers the pass was sold on do not survive re-measurement, and
+  // the difference matters more than the numbers, so it is written down rather
+  // than quietly replaced. Re-probed this pass, folded around each candidate:
+  //
+  //   - "a lit lamp 19.6 m out instead of 60.5 m" compares two DIFFERENT metrics
+  //     and the label is wrong. 60.5 m is the nearest lamp INSIDE the camera's
+  //     52.3 deg half-FOV at the shipped 45 deg yaw. The nearest lamp to the
+  //     spawn full stop is 5.09 m away, at 180 deg off-axis — directly behind
+  //     the camera. 19.6 m is candidate A's nearest lamp in ANY direction, and
+  //     it is also its nearest in frame, which is why the two numbers looked
+  //     like they were the same kind of thing. Only 19.6 m is a distance.
+  //   - "a wall 15.4 m away" is not a wall. 15.4 m is the first hit against
+  //     `colliders()`, which is a list of 2-D FOOTPRINTS — `cx, cz, hx, hz`, no
+  //     height and no kind. The rect at that range is 0.22 x 0.22 m, which is
+  //     `POLE_DIAMETER` exactly, sitting 7.0 m off the far centreline, which is
+  //     `POLE_STANDOFF` exactly: a lamp post, which the player sees straight
+  //     past. The same ray against `occluders()` — the kinded sightline list —
+  //     returns OPEN at both the spawn and the candidate. So the shipped opening
+  //     is not a view closed off by a wall; it is a view with no lamp in it.
+  //     The real defect the move would have fixed is the second half, and it is
+  //     a weaker claim than the pass made: the first 37 m of the opening frame
+  //     has no light source in it at all.
   //
   // What that leaves behind is the invariant the move would have had to respect,
   // and which is worth holding whether or not anyone moves it again: the body
@@ -623,9 +646,23 @@ test('the slice 03 constants match the design', () => {
     }
   }
   assert.equal(nearestId, hood.SPAWN.node, 'the spawn has drifted off the node its distances are read from')
-  // and the metre is still on the block's own frontage pavement, not in a garden:
-  // the strip is `STREET_HALF_WIDTH` wide and runs the whole length of the block
   assert.ok(nearest <= hood.BLOCK / 2, `the spawn is ${nearest.toFixed(1)} m from its own corner intersection`)
+  // And the metre is still in the CARRIAGEWAY of block (0,0)'s own frontage — not
+  // on the pavement, and this comment used to say it was, which was wrong twice:
+  // `STREET_HALF_WIDTH` is metres of road either side of a centreline and the
+  // kerb and the walk sit OUTSIDE it (`streetView.js`, on the constant itself).
+  // The kerb face is at 6.4 and the walk runs to 9.4. The spawn sits 4.0 m off
+  // the centreline, so it is in the road, 2.4 m short of the kerb, and the strip
+  // this really constrains is 12 m of carriageway rather than a 3 m walk.
+  //
+  // It is also a much weaker gate than the sentence above it implied, and the
+  // docblock said the opposite: this assertion is the one the reverted move
+  // PASSES. Candidate A measures `toEdge` 2.50 m and sits inside 0..6, because
+  // `toEdge` takes the MINIMUM over the two axes and the move slid 26.5 m ALONG
+  // the frontage, leaving the across-the-road inset untouched. So this holds the
+  // spawn off the far kerb and out of the gardens; it says nothing about where
+  // along the frontage the body stands. The thing that actually stopped the move
+  // is the 110/112 world regression recorded above, and this check is not it.
   const inset = (value, base) => Math.min(value - base, base + hood.BLOCK - value)
   const toEdge = Math.min(
     inset(hood.SPAWN.position.x, hood.roadAxisToWorld(hood.SPAWN.cx)),
@@ -633,7 +670,7 @@ test('the slice 03 constants match the design', () => {
   )
   assert.ok(
     toEdge >= 0 && toEdge <= hood.STREET_HALF_WIDTH,
-    `the spawn is ${toEdge.toFixed(1)} m from the block edge, off the ${hood.STREET_HALF_WIDTH} m pavement`,
+    `the spawn is ${toEdge.toFixed(1)} m off the centreline, outside the ${hood.STREET_HALF_WIDTH * 2} m carriageway`,
   )
 })
 
@@ -7422,6 +7459,166 @@ const HUD_JSX_SOURCE = readFileSync(new URL('./src/ui/Hud.jsx', import.meta.url)
 const PAUSE_JSX_SOURCE = readFileSync(new URL('./src/ui/PauseOverlay.jsx', import.meta.url), 'utf8')
 const STYLES_SOURCE = readFileSync(new URL('./src/ui/styles.css', import.meta.url), 'utf8')
 
+// ---------------------------------------------------------------------------
+// A CSS reader, for the source-contract checks below.
+//
+// This is not a CSS parser and does not try to be. It is the smallest thing
+// that can answer the one question those checks actually ask — "which
+// `background` does the cascade paint for this class?" — while being
+// undefeatable by the four moves that beat the regex PASS 18 shipped:
+//
+//   1. renaming the class in the JSX, which leaves the rule orphaned
+//   2. moving the declaration into a comment, which the old text matched
+//   3. wrapping the rule in an at-rule, which the old `[^}]*` could not see
+//   4. adding a later rule that overrides the background to nothing
+//
+// It was also wrong the other way, and that half mattered as much: the regex
+// demanded `\.hud__sigils \{` and one space after `background:`, so reformatting
+// a correct stylesheet — brace on its own line, an extra space — turned the
+// check red. A source contract that cries wolf on whitespace trains people to
+// paste without reading. `REVIEW-pass-18.md` has the measured table.
+// ---------------------------------------------------------------------------
+
+/** Strip block comments, so a comment can never satisfy a check about a rule. */
+function stripCssComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, ' ')
+}
+
+/**
+ * Index of the `}` closing the `{` at `open`, skipping quoted strings so a
+ * brace inside a `content:` value does not unbalance the sheet.
+ *
+ * @param {string} css
+ * @param {number} open index of the opening brace
+ * @returns {number} index of the matching close, or -1 if the sheet is truncated
+ */
+function cssBlockEnd(css, open) {
+  let depth = 0
+  for (let i = open; i < css.length; i += 1) {
+    const ch = css[i]
+    if (ch === '"' || ch === "'") {
+      i += 1
+      while (i < css.length && css[i] !== ch) i += css[i] === '\\' ? 2 : 1
+      continue
+    }
+    if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/**
+ * Every style rule in the sheet, as `{ selector, body, conditional }`.
+ *
+ * `conditional` is true when the rule sits inside an at-rule — a media query, a
+ * `@supports` — so a check can insist a declaration is painted under every
+ * condition rather than only under the one the author happened to test with.
+ * At-rules without a block (`@charset`, `@import`) have no `{` and so are
+ * simply not seen, which is correct: they paint nothing.
+ *
+ * @param {string} css
+ * @returns {{selector: string, body: string, conditional: boolean}[]}
+ */
+function cssRules(css) {
+  const found = []
+  const walk = (text, conditional) => {
+    let start = 0
+    let i = 0
+    while (i < text.length) {
+      if (text[i] !== '{') { i += 1; continue }
+      const selector = text.slice(start, i).trim()
+      const end = cssBlockEnd(text, i)
+      if (end < 0) return
+      if (selector.startsWith('@')) walk(text.slice(i + 1, end), true)
+      else found.push({ selector, body: text.slice(i + 1, end), conditional })
+      i = end + 1
+      start = i
+    }
+  }
+  walk(css, false)
+  return found
+}
+
+/**
+ * The declarations in a rule body, as `{ prop, value }` with both trimmed.
+ * Splits on top-level semicolons only, so `rgba(0, 0, 0, 0.18)` stays one value.
+ *
+ * @param {string} body
+ * @returns {{prop: string, value: string}[]}
+ */
+function cssDeclarations(body) {
+  const out = []
+  let depth = 0
+  let start = 0
+  const push = (chunk) => {
+    const text = chunk.trim()
+    if (!text) return
+    const colon = text.indexOf(':')
+    if (colon < 0) return
+    out.push({ prop: text.slice(0, colon).trim().toLowerCase(), value: text.slice(colon + 1).trim() })
+  }
+  for (let i = 0; i <= body.length; i += 1) {
+    const ch = body[i]
+    if (ch === '"' || ch === "'") {
+      i += 1
+      while (i < body.length && body[i] !== ch) i += body[i] === '\\' ? 2 : 1
+      continue
+    }
+    if (ch === '(') { depth += 1; continue }
+    if (ch === ')') { depth -= 1; continue }
+    if (ch === ';' && depth === 0) { push(body.slice(start, i)); start = i + 1 }
+  }
+  push(body.slice(start))
+  return out
+}
+
+/**
+ * True when any compound in this selector list has `.className` as its subject.
+ * Reads the SUBJECT, so `.hud--still .hud__sigils` targets the class and
+ * `.hud__sigils-label` does not.
+ *
+ * @param {string} selectorList
+ * @param {string} className
+ * @returns {boolean}
+ */
+function selectorTargets(selectorList, className) {
+  const wanted = `.${className}`
+  return selectorList.split(',').some((part) => {
+    const subject = part.trim().split(/[\s>+~]+/).pop() ?? ''
+    const bare = subject.replace(/::?[a-z-]+(\([^)]*\))?$/i, '').replace(/\[[^\]]*\]$/, '')
+    return bare === wanted
+  })
+}
+
+/**
+ * Every `background` the cascade could paint for `className`, with the rule it
+ * came from and whether that rule is conditional.
+ *
+ * ALL of them, not the winning one. "Is the plate painted?" is only sound if an
+ * OVERRIDE also fails it, and picking a winner means restating a cascade rule
+ * in a test — which is how the regex version came to be wrong in the first
+ * place. Let the checks below assert the stronger property instead: every
+ * background that can reach this element is the backdrop, or the check fails.
+ *
+ * @param {string} className
+ * @param {string} [source] defaults to the real stylesheet
+ * @returns {{prop: string, value: string, selector: string, conditional: boolean}[]}
+ */
+function backgroundsFor(className, source = STYLES_SOURCE) {
+  const out = []
+  for (const rule of cssRules(stripCssComments(source))) {
+    if (!selectorTargets(rule.selector, className)) continue
+    for (const d of cssDeclarations(rule.body)) {
+      if (d.prop !== 'background' && d.prop !== 'background-color') continue
+      out.push({ ...d, selector: rule.selector, conditional: rule.conditional })
+    }
+  }
+  return out
+}
+
 /** A state object shaped like the one the world writes, for the projection. */
 function hudState(patch = {}) {
   return {
@@ -7577,12 +7774,58 @@ test('every sigil state is legible in greyscale, on the shell background', () =>
   // actually paints. PASS 1 brightened the sky out from under this row: the band
   // the marks sit in measures #564d37 in the street view, where #1d6a66 is
   // 1.32:1 and #6b5b40 is 1.27:1. So `.hud__sigils` carries its own plate, and
-  // this is what keeps it. Take `background: var(--bg)` off that rule and the
-  // loop above goes back to passing a claim about a colour nothing is drawn
-  // with — a contrast gate that cannot fail is worse than no gate.
+  // this is what keeps it.
+  //
+  // PASS 18 shipped this as a regex over the stylesheet text, and it did not keep
+  // it. Four mutations came back green (rename the class in the JSX; delete the
+  // declaration and leave the words in a comment; wrap the rule in an at-rule;
+  // override the background from a later, higher-specificity rule), and two
+  // reformats of a CORRECT sheet turned it red. A contract that holds in neither
+  // direction is worse than none, because it is trusted either way. So this reads
+  // the rules instead of the text, and holds four separate claims:
+  const plate = backgroundsFor('hud__sigils')
   assert.ok(
-    /\.hud__sigils \{[^}]*background: var\(--bg\)/.test(STYLES_SOURCE),
+    plate.length > 0,
     'the sigil row paints no backdrop, so the contrast above is measured against a colour that is not behind it',
+  )
+  for (const p of plate) {
+    // (a) unconditional: a plate inside a media query is not painted for the
+    // player whose OS asked for reduced motion
+    assert.equal(
+      p.conditional,
+      false,
+      `the sigil plate is declared inside an at-rule (\`${p.selector}\`), so it is not painted under every condition`,
+    )
+    // (b) and it IS the backdrop, from every rule that can reach the element.
+    // An override fails this just as loudly as a deletion does.
+    assert.equal(
+      p.value,
+      'var(--bg)',
+      `the sigil row is painted \`${p.value}\` by \`${p.selector}\`, so the contrast above is measured against a colour that is not behind it`,
+    )
+  }
+  // (c) something actually renders with the class. A rule for a class no element
+  // carries is a plate on nothing, and no amount of reading CSS can see it. The
+  // boundaries are the point and they are not decoration: `hud__sigils` is a
+  // PREFIX of `hud__sigils-row`, so a plain `.*hud__sigils` passes the renamed
+  // class — which is the first thing this gate was mutated with, and the first
+  // thing the first version of this fix also got wrong. `-` is a non-word
+  // character, so `\b` does not separate them and is not the answer here.
+  assert.match(
+    HUD_JSX_SOURCE,
+    /className=[{`"][^\n]*(?<![\w-])hud__sigils(?![\w-])/,
+    'nothing renders with the sigil plate class, so the rule is orphaned',
+  )
+  // (d) and `--bg` is the colour the loop above measured against. The gate scores
+  // each ink against `HUD_BACKDROP` while the sheet paints `var(--bg)`: two
+  // separate facts that have to be the same fact, and were not held to be.
+  const root = cssRules(stripCssComments(STYLES_SOURCE)).find((r) => r.selector === ':root')
+  const bgVariable = cssDeclarations(root?.body ?? '').find((d) => d.prop === '--bg')
+  assert.ok(bgVariable, 'the stylesheet does not define --bg, so the plate paints nothing')
+  assert.equal(
+    bgVariable.value.toLowerCase(),
+    hud.HUD_BACKDROP.toLowerCase(),
+    `the plate paints --bg: ${bgVariable.value}, but the contrast above is measured against HUD_BACKDROP ${hud.HUD_BACKDROP}`,
   )
   // and the plate is the gate's backdrop only while it is opaque: a translucent
   // scrim over the sky is a different colour, and these numbers would drift
