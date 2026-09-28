@@ -1,7 +1,20 @@
-# AESTHETIC-NOTES — pass 4: aesthetic study of the sakuragaoka reference
+# AESTHETIC-NOTES — the iteration-2 aesthetic record
 
-**Status:** research and writing only. No game code is changed by this pass, and
-`npm run check` is unaffected. The single file added is this one.
+**Status: FINAL for iteration 2.** This file is the **aesthetic authority for
+iteration 2**, alongside `GAMEDESIGN.md` (which is the *design* authority) and
+`ITERATION-2-CHECKLIST.md` (which is the *plan*). It was opened by pass 4 as a
+research document against the `sakuragaoka-station` reference; passes 5-12 built
+on it, pass 14 added the music rules as §8, pass 17 added the measured budget as
+§10, and **pass 20 (the close-out) finalized it**: the status line below, this
+header, the two deviations recorded honestly in §11, and the structural fix
+named in §12. No game code was changed by the close-out and `npm run check` is
+unaffected by any of it.
+
+**How to read this file.** §0-§7 are the reference study and are addressed to
+whoever works on the world next. §8 is the music contract. §10 is the
+performance measurement, and it is the only part of this file that is a
+*measurement* rather than a technique - read it first if you are reviewing.
+§11 and §12 are the close-out.
 
 **Source.** `https://github.com/Kenton-GMI/sakuragaoka-station`, read at commit
 `4112f57` ("Sakuragaoka Station: walkable anime cel-shaded sakura station town in
@@ -70,6 +83,25 @@ exposure curve, or the four point lights that passes 1–2 tuned.
    `house.js` is a recessed interior quad (dark room / curtain / blind / louver /
    shoji) *plus* a glass pane *plus* a proud frame. The interior is picked from a
    weighted table (`INTERIORS`, `int_lace` twice, `int_blind` twice) and — this is
+   the detail worth stealing — a *warm-lit* interior appears with probability
+   **0.04**. The lit windows are rare enough to be events.
+5. **Placement by reservation, not by rejection sampling.** `house.js` gives every
+   volume four faces, and each face keeps a `res` list of `[floor, u0, u1]` spans
+   it has already given away. The entrance reserves its span first, the balcony
+   second, then windows are placed into what is left, via `free()` / `reserve()`.
+   Volumes that touch auto-occlude each other's faces, and a wing roof marks its
+   own span `'low'` so no window is placed on the roof line. This is why nothing
+   ever intersects and nothing ever looks randomly placed.
+6. **The ground is a designed surface, not a plane.** Gutters, drainage channels
+   with grates and lids, manhole covers, repair patches, trenches, seals, oil
+   stains, worn tyre paths, centre dashes, stop lines, crossings, tactile paving.
+   All of it is decals and a few millimetres of geometry on a base plane.
+7. **Distance is layered, not fogged.** Three ridge rings at 745 / 900 / 1120 m,
+   each with its own height band, crown noise, haze colour, haze floor, and a
+   `fogMul` of 0.36 / 0.30 / 0.26. The far ring is *deliberately pulled back out
+   of the fog* so it does not dissolve. The sky dome's below-horizon region fades
+   to exactly the fog colour, so the sky, the terrain and the far geometry all
+   agree at the seam.
 
 ## 2. Techniques we can port, procedurally
 
@@ -644,26 +676,6 @@ swell is audible as a change rather than as a pump. Those are listening
 questions, and they are the reason this pass's checks claim the *properties* and
 not the *taste*.
 
-   the detail worth stealing — a *warm-lit* interior appears with probability
-   **0.04**. The lit windows are rare enough to be events.
-5. **Placement by reservation, not by rejection sampling.** `house.js` gives every
-   volume four faces, and each face keeps a `res` list of `[floor, u0, u1]` spans
-   it has already given away. The entrance reserves its span first, the balcony
-   second, then windows are placed into what is left, via `free()` / `reserve()`.
-   Volumes that touch auto-occlude each other's faces, and a wing roof marks its
-   own span `'low'` so no window is placed on the roof line. This is why nothing
-   ever intersects and nothing ever looks randomly placed.
-6. **The ground is a designed surface, not a plane.** Gutters, drainage channels
-   with grates and lids, manhole covers, repair patches, trenches, seals, oil
-   stains, worn tyre paths, centre dashes, stop lines, crossings, tactile paving.
-   All of it is decals and a few millimetres of geometry on a base plane.
-7. **Distance is layered, not fogged.** Three ridge rings at 745 / 900 / 1120 m,
-   each with its own height band, crown noise, haze colour, haze floor, and a
-   `fogMul` of 0.36 / 0.30 / 0.26. The far ring is *deliberately pulled back out
-   of the fog* so it does not dissolve. The sky dome's below-horizon region fades
-   to exactly the fog colour, so the sky, the terrain and the far geometry all
-   agree at the seam.
-
 ---
 
 ## 10. Pass 17: the budget, measured
@@ -915,4 +927,136 @@ catenary segment, and the whole span is a `frustumCulled = false` mesh because t
 shader needs the screen-space width `streetView.js`'s own header explains. Halving
 `CATENARY_SEGMENTS` would halve it, and it would also thin the wire, which is a
 design decision and not a performance one.
+
+---
+
+## 11. Iteration 2 close-out: the two deviations, stated honestly
+
+Every pass in this run was allowed to say "this is what I would have done with
+more time." The close-out's job is to say which of those were *not* done, and
+why, without dressing them up. There are exactly two, and both are real
+shortfalls against this file's own claims.
+
+### 11.1 The spawn-framing win is unshippable, and it is architectural
+
+**What was promised.** Pass 18's brief was a game-feel sweep including "spawn
+framing." The pass found a candidate: a spawn 26.5 m along the road from the
+shipped one, which put a sodium lamp at 19.6 m in the opening shot where the
+shipped spawn has none in the first 37 m, and it sold the move on a sightline
+argument.
+
+**What happened.** It was reverted. The world's own suite went **112 → 110 → 108
+of 112** across the two candidate positions tried. The reason is that
+`neighborhood.js`'s `SPAWN.position` and `world.js`'s `SPAWN_YAW` are a *body
+pose*, and `_firstSightingPoint` reads both of them to place §6.1's opening
+apparition. Moving the player two metres down the road does not change what the
+player sees; it changes **which node the Act I sighting is drawn on**, and
+therefore when the sighting ends and when the awakening can happen. The spawn
+looks like a framing knob and is a simulation constant in fact.
+
+**What stopped it was not where people expect.** The spawn-inside-the-street
+assertion in `verify.mjs` — the one that reads as the strong invariant — is the
+*weaker* of the two. `STREET_HALF_WIDTH` is 6 m and is the **carriageway** (the
+kerb face is at 6.4, the walk runs to 9.4), so its `0..6` band holds the spawn
+off the far kerb and says nothing about *where along the frontage* the body
+stands. The candidate slid 26.5 m and scored **2.50 m, inside 0..6 — it
+passes.** What stopped the move was the 110/112 world regression, which is a
+different and much stronger claim.
+
+**Two retracted numbers, because a retracted number left in a notes file is a
+lie with a footnote.** The pass was sold on "the nearest lamp goes from 60.5 m
+to 19.6 m and the sightline opens past a 15.4 m wall." Only 19.6 m is a plain
+distance. The nearest lamp to the shipped spawn **full stop is 5.09 m, directly
+behind the camera at 180° off-axis**; 60.5 m is the nearest lamp *inside the
+52.3° half-FOV*. And there is no wall at 15.4 m — that is a `colliders()`
+footprint, a 0.22 m square which is exactly `POLE_DIAMETER` sitting 7.0 m off
+the far centreline, and the kinded `occluders()` ray at the same range returns
+**OPEN**. The honest residual is smaller and is the one worth keeping: **the
+shipped opening has no lamp in the first 37 m.**
+
+**Why it is not being decoupled here.** The refactor is real and it is large: the
+opening beats would have to read a `runElapsed` the run already owns rather than
+re-deriving "am I still in Act I" from the creature's node, which is what the
+spawn feeds. That is a §6/§7 pacing change wearing a refactor's clothes, and it
+belongs to whoever makes that pacing decision — see `GAMEDESIGN.md` §16.3 and
+§16.6.1, which carries the full record with every number above.
+
+**What this costs the gate, and it is not nothing.** Because the coupling is
+real, a *duration* gate on the first 30 seconds would encode a number that is a
+function of where the body stands. So the gate pass 19 added asserts the **order**
+of the opening beats — control and the sighting together on the first frame of
+PLAYING, the dissolve lifting on or after that frame — and **no durations at
+all**. An order is a property of the world; a duration is a property of a design
+the design has not written down. The gate is weaker than the brief asked for, on
+purpose, and this paragraph is why.
+
+### 11.2 The gallery is not byte-reproducible, and cannot be
+
+**What was promised.** §6.5's "a set of steps is worth the same picture twice."
+Pass 16's job was to make that true and measure it.
+
+**What is true.** The capture clock is anchored. `capture/main.jsx`'s
+`anchorClock` sets `game.animTime = 0` and stubs `clock.getDelta` to 0, so the
+world's own render loop cannot move the world and every frame in a photograph is
+a `CAPTURE_SIM_DT` step through `stepWorld`. Measured over two runs of the same
+step list in a real browser: **every `clock`, `pose`, `where`, `lamp`,
+`furniture`, `hold`, `awareness`, `creature` and `portals` field is bit-identical
+between the two runs**, to the last digit. Only rasterised luma moves, by
+**0.13–1.18 points**. §6.5's *world* claim holds in its strongest checkable form.
+
+**What does not hold.** The *pixels* are not reproducible. The residual is the
+rasteriser's, and it is a property of the machine: SwiftShader under a different
+load produces a different shade of the same scene. A committed PNG therefore
+**cannot be regenerated byte-for-byte** on another machine, and the pass-17
+review measured the byte churn directly — the re-shot gallery is a different set
+of bytes for a world that is provably the same world. An earlier "bit-identical"
+claim in this file's own §10 was about *geometry*, not pixels, and was retracted
+on its own terms (375 of 10 752 axes fail `qw * (w/qw) === w` in IEEE-754); this
+is a *different* bit-identity claim, and it also does not hold, for a different
+and honest reason.
+
+**What was done about it, and what was not.** The gate asserts the world is
+reproducible and measures the luma residual rather than pretending it is zero.
+The ±0.3 claim is gone from the tree. The floors in §16.5 are justified against
+the numbers actually shipped. What was **not** done is the obvious thing: pin
+the rasteriser. That would mean a fixed GPU or a fixed driver, and a gallery
+that can only be re-shot on one machine is a worse record than one whose
+provenance is honest about being SwiftShader.
+
+---
+
+## 12. What this file is for, now that it is final
+
+**It is not a tutorial and it is not a wish list.** §0–§7 are a study of someone
+else's method with the reasons attached; §8 is a set of constraints the music
+had to satisfy before it was written; §10 is the only measurement and is the
+section to argue with. §11 is the honest accounting of what iteration 2 did not
+do.
+
+**The three sentences worth remembering, if the rest is forgotten:**
+
+1. The reference reads as a place because of a **density of small,
+   silhouette-changing interruptions**, not because of modelling quality — which
+   is why the fidelity passes bought the most with the least geometry per line.
+2. Darkness is not the point and a *legible* dark is: every pass that made the
+   street brighter had to re-check that the creature still read against it, and
+   twice it stopped reading.
+3. **A gate that is not connected to the thing it claims to measure is a comment
+   with an exit code.** Nine of the nineteen reviews in this iteration found
+   one. The features are the cheap half of this run; the evidence is the half
+   worth copying.
+
+**A structural note for whoever reopens this file.** Until the close-out, §1's
+seven mechanisms were interrupted after item 4: the tail of item 4 and items
+5–7 sat orphaned after §8's M8, where a reader arriving at the music addendum
+found three unexplained list items. `REVIEW-pass-14.md` Finding 5 recorded it
+and correctly declined to fix a file it was reviewing; it is **fixed here**, in
+the close-out, because a record being finalized is the one moment its structure
+is allowed to be repaired. No prose was changed — the orphaned text was moved to
+where it was always meant to be, and §1 now reads as the seven mechanisms its
+heading has always claimed.
+
+**Status of the file at close-out:** final. Changes made by pass 20 are the
+header and status line at the top, §11, this §12, and the §1 orphan repair. No
+game code was touched, no gate count moved, and no capture was re-run.
 

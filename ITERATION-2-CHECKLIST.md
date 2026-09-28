@@ -187,9 +187,24 @@ Hard rules for every pass:
   weakened, retuned or deleted).
 
 ## P6 — CLOSE
-- [x] `PASS 20: Iteration 2 close-out.` ORCHESTRATOR-LOG iteration-2 section,
+- [DONE] `PASS 20: Iteration 2 close-out.` ORCHESTRATOR-LOG iteration-2 section,
   result README updated (gallery, notes), AESTHETIC-NOTES finalized, deploy
   checklist for the orchestrator (space-bunny-v2 project). No new features.
+  **Documentation and records only: four `.md` files, no `src/`, no `capture/`,
+  no capture re-run, no pixel moved.** Written: the log's iteration-2 close-out
+  (20 passes, the 43-commit chain `1a444f8`→`c32d294`, the gate ladder
+  **203+47 → 306+113**, the nine reviewer findings, $0.00 on Space Bunny Alpha);
+  the README rewritten to the iteration-2 state (feature list, controls, run
+  instructions, `space-bunny-v2` deploy placeholder); `AESTHETIC-NOTES.md`
+  finalized as the iteration-2 authority record with the two deviations recorded
+  honestly (§11.1 spawn framing unshippable, cross-referenced to `GAMEDESIGN.md`
+  §16.6.1; §11.2 the gallery is not byte-reproducible) and the §1 orphan repaired;
+  and the exact Vercel recipe appended to the log for the orchestrator
+  (`vercel link --project space-bunny-v2` → `vercel deploy --prod --yes` → SSO
+  disable `PATCH` → Hobby author note). **Pass 20 did not deploy**; the recipe is
+  for the orchestrator, which holds the credentials. Gate unchanged at
+  **306 pure + 113 world**, `vite build` clean — as it must be for a pass that
+  changed no code. **Iteration 2 is complete: 20/20.**
 
 ## Orchestrator notes
 - Loop supervisor: `tools/iteration2-loop.sh` (halts on gate fail or repeated

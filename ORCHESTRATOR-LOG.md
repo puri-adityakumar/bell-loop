@@ -869,3 +869,319 @@ and the honest fix was to stop claiming it.
 - Deployed to Vercel production from `cline/space-bunny-alpha` via CLI (team project-by-aditya): https://bell-loop.vercel.app — verified HTTP 200 serving the app.
 - README result card updated: status draft→deployed, deployment URL filled, known-debt deployment entry resolved.
 - All 16/16 slices complete. FREE MODELS ONLY throughout (Space Bunny Alpha, $0.00).
+
+---
+
+# ITERATION 2 — CLOSE-OUT ("The Long Quiet", second pass)
+
+Written by pass 20, the loop's last pass. **No new features, no behaviour
+changes, no capture re-run** — this section, the result README, the finalized
+notes and the deploy recipe below are the whole of the pass. `git diff` on this
+pass is `.md` files only, and no pixel moved: §16.5's luma gate has nothing new
+to re-justify, and re-shooting fourteen frames to re-justify a paragraph is
+exactly the failure mode the debt sweep exists to prevent.
+
+## The shape of the run
+
+- **20 passes**, each IMPROVE → REVIEW → GATE → PUSH, on `cline/space-bunny-alpha`.
+- **43 commits** from `1a444f8` (pass 1) to `c32d294` (pass 19 review), listed in
+  full under "The commit chain" below.
+- **Starting point.** `1a444f8`'s parent is `70ed555` ("docs(iter2): iteration 2
+  checklist — 20-pass plan"), whose parent is `0a55e7e` ("docs: result deployed
+  to https://bell-loop.vercel.app") and whose grandparent is `bede4ed`
+  (`feat(v2): slice 16`). `bede4ed` is the checkpoint every iteration-2
+  measurement in `AESTHETIC-NOTES.md` §10 is taken against.
+- **`4569900`** ("cline checkpoint session=1790452897763_8yvy5 run=1") is a
+  **Cline editor auto-checkpoint, not an ancestor of this branch** —
+  `git merge-base --is-ancestor 4569900 HEAD` answers **no**. It merges
+  `79048f0` (pass 5's review fixes) with an index commit and an untracked-files
+  commit, taken mid-pass-5 when the capture run was interrupted by auth expiry
+  (`bbd36c4` is the `wip(iter2)` commit that interruption produced). It is named
+  here because a reader will meet it in `git log --all`; it is **not** on the
+  linear chain.
+- **Gate ladder: 203 + 47 → 306 + 113.** **+103 pure checks and +66 world checks
+  in twenty passes**, and the number that actually matters is the one that did
+  not move: **no gate was weakened, retuned, deleted or re-thresholded to get
+  there.** Every rung is a new claim, or a strictly stronger reading of an old
+  one. `npm run check` at close-out: **306/306 pure, 113/113 world, `vite build`
+  clean, exit 0**, lint unchanged at its five pre-existing warnings.
+
+| pass | pure | world |
+| ---: | ---: | ---: |
+| 3 (review) | 203 | 47 |
+| 5 | 214 | 55 |
+| 6 | 218 | 62 |
+| 7 | 222 | 70 |
+| 8 | 225 | 77 |
+| 9 | 234 | 84 |
+| 10 | 244 | 89 |
+| 11 | 252 | 94 |
+| 12 | 261 | 99 |
+| 13 | 274 | 103 |
+| 14 | 285 | 111 |
+| 15 | 296 | 111 |
+| 16 | 301 | 111 |
+| 17 | 306 | 112 |
+| 18 | 306 | 112 |
+| **20 (close-out)** | **306** | **113** |
+
+## What the reviewers actually found
+
+The single most important fact about this iteration is that **the reviewer was
+not confirming the pass.** Across passes 10–19 the reviews found real defects in
+the game's own code, in the *gates that were supposed to catch them*, and in the
+passes' own claims about themselves. Nine findings worth naming at close-out,
+because each is a different kind of failure and the pattern is the lesson:
+
+- **p10r — the trail was in no frame, and no gate could see that.**
+  `DRIP_STRIDE_METRES` 0.9 m at tier-0 speed 2.2 m/s needs 1.48 s to lay one
+  mark; `creature-chasing` staged the creature for **0.3 s**. The frame *named for
+  the chase* was the one frame in the set where the feature was arithmetically
+  impossible. Fixed by staging to 1.2 s, then gated in two halves — the data
+  question in `verify.mjs` (reading `rampAt(0).speed` rather than a literal) and
+  the picture question in `verify-world.mjs`, which **projects**, because that
+  is the only place in the repository with a camera.
+- **p11r — the lamp record was raw where the gate wanted folded.**
+  `game.lampDread.distance` published `Infinity` on every frame of §9.3 and
+  §10.4, which the pure module reads as "standing directly under the lamp". The
+  position the *record* is measured from is now the creature's canonical
+  position folded through the same `worldOf` every other drawn position comes
+  from; the position the *light* is driven from is still `drawn`. Gated in five
+  claims, ordered by how far each can distinguish a measurement from a sentinel.
+- **p13r — `applyDrone` threw a `TypeError` on every frame.** `startAmbient`
+  assigned `bus.gain` (an `AudioParam`) where a `GainNode` was expected, and
+- **p16r — the clock anchoring held, and the gate had a hole the same shape as
+  the defect it was written for.** Reproducibility was measured four ways and
+  holds: **every world-time field bit-identical between repeat runs**, only
+  rasterised luma moving, by 0.13–1.18 points. But the op-cost model could not
+  see four of the ways the page spends a frame, and it stayed green because
+  **the report was captured from the same page** — a model that under-counts and
+  a report that under-counts agree perfectly. Separately, a `wait` after a
+  `pause` **hung `npm run check` with no output and no failing check**, because
+  `worldCost` spins forever on a world the pause has already frozen.
+- **p17r — the "bit-identical" claim was false.** The instanced-horizon
+  substitution rested on `qw * (w/qw) === w`, which is false in IEEE-754:
+  measured over the shipped shape tables it **fails on 375 of 10 752 axes**
+  (3.5%), and 847 of those move a world half-extent. Retracted and corrected at
+  all three sites; the picture did not move. The more consequential finding was
+  that `tools/perf-census.mjs` — the instrument whose numbers §10 quotes —
+  **had no gate on it whatsoever**, and two mutations aimed at it both came back
+  green.
+- **p18r — the source contract survived its own mutants.** Pass 18 added exactly
+  one line of gating for the sigil backdrop, and re-introducing the defect left
+  it green: the contract asserted a thing the source could satisfy while the
+  property it named was false.
+- **p19r — the ordering assertion was inert.** Pass 19's headline artefact
+  collected the three opening beats into a `seen` array and `deepEqual`'d it,
+  which on a world where **all three beats read true on the same frame**
+  (measured: frame 0, all three) returns the order the harness's own `if`
+  statements are written in. The mutant proved the literal was compared and
+  nothing about the world. It is now a relation between **frames**
+  (`at.control === at.sighting`, `at.dissolve >= at.control`) — strictly
+  tighter, and a sequence a same-frame world cannot fake. The check's own
+  *name* asserted the exact reverse of its contract, and is corrected too.
+
+**The pattern, stated once:** a gate that is not connected to the thing it
+claims to measure is a comment with an exit code. Nine of the nineteen reviews
+found one, and three of the nine (p15r, p17r, p19r) are gates that *looked*
+load-bearing and were respectively unreachable, ungated, or would not have failed
+on the world they were written about. That is the honest headline of iteration 2,
+and it is worth more than any of the twenty features.
+
+## Spend and models
+
+**$0.00. Every session ran on Space Bunny Alpha** (Cline provider, free tier) —
+implementer and reviewer alike, across all twenty passes, under the same
+constraint iteration 1 ran under. That is also why the log carries no token
+ledger: a free tier's session accounting is not a meter this run can read, so
+`README.md`'s token, cost, wall-time and active-time fields stay `0` meaning
+**unrecorded**, never zero. What *is* recorded, from iteration 1 and still true
+
+## The commit chain
+
+`git log --reverse 1a444f8~1..c32d294`, unabridged. Every line is on
+`cline/space-bunny-alpha`; the `docs(iter2)` rows are the per-pass checklist
+ticks and the `wip(iter2)` row is the auth-expiry casualty named above.
+
+| commit | subject |
+| --- | --- |
+| `1a444f8` | iter2(1): yellow-tinted cinematic dusk - sky, fog, hemisphere, exposure |
+| `05597ac` | iter2(1) review: fixes |
+| `1fc393a` | docs(iter2): pass 1 reviewed and approved |
+| `e779417` | iter2(2): cinematic sodium pools, warm bounce, fog as depth cue + creature-separation gate |
+| `0e22889` | iter2(2) review: localized creature-contrast gate, stalk framing fix, gallery refresh |
+| `199803e` | docs(iter2): pass 2 reviewed |
+| `fc1ab19` | iter2(3): portal rebuilt - black core disc, hot rim, slow swirl. |
+| `f90b8fd` | iter2(3) review: swirl contrast + gallery refresh |
+| `a1e1e6e` | docs(iter2): pass 3 reviewed |
+| `21713fb` | iter2(4): aesthetic study of the sakuragaoka reference |
+| `cfb2109` | docs(iter2): pass 4 done |
+| `bbd36c4` | wip(iter2): pass 5 - building depth (capture interrupted at 12/14 by auth expiry) |
+| `6e5ebee` | iter2(5): building depth - per-instance color fix, windows, doors, rooflines, entry lamps |
+| `cedc0ef` | docs(iter2): pass 5 done |
+| `79048f0` | iter2(5) review: fixes |
+| `2fa9fe4` | iter2(6): street furniture I - poles, wires, signs, hydrants, grates |
+| `aef4aba` | iter2(6) review: gate the wire ribbon's pairing and index base |
+| `2f65555` | iter2(7): street furniture II - dumpsters, bikes, vending machines, shelters, posters |
+| `98f591e` | iter2(7) review: a sightline gate, and the bug in the gate that replaced it |
+| `344d38f` | iter2(8): water & reflections - lamp-streak puddles, drainage canal, wet-road darkening |
+| `dd29112` | iter2(8) review: fix canal shimmer axis and tile seams |
+| `e45037b` | iter2(9): sky & atmosphere II - haze bands, pale moon, horizon silhouettes, ash motes |
+| `50ac436` | iter2(9) review: gate the sky's geometry, not just its brightness |
+| `abbd0a7` | iter2(10): creature fidelity I - idle micro-motion, limb swing, viscous trail, eye flare telegraph |
+| `1fdbb90` | iter2(10) review: the trail was in no frame, and no gate could see that |
+| `6664c9d` | iter2(10) review: regenerate gallery with the trail staging fix (14/14) |
+| `a5ab4fe` | iter2(11): creature fidelity II - heat haze, lamp flicker, glow pulse, dust puffs |
+| `fb5ea0b` | iter2(11) review: the lamp record was not a measurement on the two quiet phases |
+| `aa61850` | iter2(12): portal II - swirl rotation, debris ring, shutdown collapse, lensing hint |
+| `7530d62` | iter2(12) review: 3 self-caught fixes re-verified as caught; one previous claim of mine corrected |
+| `052704c` | iter2(13): sound I - room-tone drone, distant facility sounds, wind layer, portal hum |
+| `5b13663` | iter2(13) review: fix a real applyDrone crash and close the seam that hid it |
+| `b088576` | iter2(14): sound II - Backrooms ambient music bed, duck ladder, finale silence |
+| `82509dd` | iter2(14) review: two real gate gaps, both of them properties the pass states about itself |
+| `f7d11cc` | iter2(15): creature in the new light - per-state presentation retune |
+| `97edb8a` | iter2(15) review: the row gate was dead code, and three docblocks were wrong about their own finding |
+| `23d65cc` | iter2(16): full capture refresh - gallery on the new look, floors re-justified |
+| `082a60a` | iter2(16) review: the clock gate could not see four ways the page spends a frame |
+| `e476ee9` | iter2(17): performance + draw calls - budget check, merging where cheap |
+| `b793de6` | iter2(17) review: the bit-identical claim was false, and three docblocks lied about the code |
+| `bd4573f` | PASS 18: paint the sigil backdrop the contrast gate assumes; revert the spawn move |
+| `01b1a04` | iter2(18) review: the source contract survived its own mutants |
+
+## Deploy recipe — FOR THE ORCHESTRATOR (not run by pass 20)
+
+**Pass 20 did not deploy and did not attempt to deploy.** The `vercel` CLI is
+present (60.1.3) but unauthenticated in this container, and a deploy is the one
+irreversible thing in this run. This is the exact recipe, written to be followed
+by the orchestrator that holds the credentials.
+
+**Target: the `space-bunny-v2` project, NOT `bell-loop`.** The v1 deployment at
+https://bell-loop.vercel.app is live and serving iteration 1. Iteration 2 gets
+its own project so the two results stay independently addressable and neither
+deployment is overwritten.
+
+```bash
+# 0. preflight — the gate is the precondition for a deploy, not a follow-up.
+#    Do not skip this: the gate is the only thing standing between a broken
+#    build and production.
+cd /work/bell-loop
+git rev-parse HEAD                 # expect the pass-20 close-out commit
+npm run check                      # expect 306 pure + 113 world + build, exit 0
+
+# 1. authenticate. Requires VERCEL_TOKEN in the environment (BLOCKED-VERCEL.md
+#    records that no token is available *to the agent*; the orchestrator has one).
+export VERCEL_TOKEN=...            # never commit this, never echo it
+
+# 2. link the working directory to the NEW project. `vercel link --project`
+#    writes .vercel/project.json; .vercel/ is gitignored and must stay so.
+#    NOTE: .vercel/project.json currently names projectName "bell-loop" — this
+#    command is what moves it to "space-bunny-v2". Verify after linking.
+vercel link --project space-bunny-v2 --yes
+cat .vercel/project.json           # expect projectName "space-bunny-v2"
+
+# 3. production deploy. `--yes` is required headlessly (it skips the interactive
+#    "set up and deploy?" prompt); `--prod` publishes to the production alias.
+vercel deploy --prod --yes
+# -> https://space-bunny-v2.vercel.app
+
+# 4. verify before declaring success.
+curl -sI https://space-bunny-v2.vercel.app | head -1     # expect HTTP/2 200
+curl -s  https://space-bunny-v2.vercel.app | grep -c 'id="root"'   # expect 1
+```
+
+**SSO protection must be disabled, or the deployment 302s to a login page** and
+every unauthenticated visitor — including the screenshot harness and anyone
+following the benchmark catalog row — sees nothing. This is the one step people
+forget, and it fails *silently*: the deploy reports success and the URL resolves
+to a login screen rather than a game.
+
+```bash
+# Disable SSO / Deployment Protection on the project. PATCH, not PUT: this
+# changes exactly one field and leaves the rest of the project alone.
+curl -sS -X PATCH \
+  "https://api.vercel.com/v9/projects/$SPACE_BUNNY_V2_PROJECT_ID" \
+  -H "Authorization: Bearer $VERCEL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"ssoProtection":null}'
+# projectId is in .vercel/project.json as "projectId" (prj_...) — or read it
+# back from: vercel project ls | grep space-bunny-v2
+
+# Then re-verify, because a protection setting can take a moment to apply:
+curl -sI https://space-bunny-v2.vercel.app | head -1     # expect 200, not 302
+```
+
+**Hobby-plan note for the orchestrator, and it is a real constraint, not a
+formality:**
+
+1. The account is on Vercel's **Hobby** tier. Hobby allows **one** production
+   deployment per commit, which this recipe satisfies (one deploy, one commit).
+   It does **not** allow a second concurrent production alias for the same
+   project, which is one more reason iteration 2 gets its own project rather
+   than an alias on `bell-loop`.
+2. Hobby is for **personal (non-commercial) use**. If the benchmark is ever
+   monetised or operated commercially, Hobby's terms do not cover it and the
+   project must move to a Pro account *before* serving real traffic. Flagged now
+   so it is a decision, not a ToS surprise.
+3. Hobby has **no SSO Protection to speak of** on personal accounts — the
+   `ssoProtection` PATCH above is the correct defensive step and should be run
+   regardless, but on a Hobby/personal account the expected response is either
+   success or a permissions error naming the field. **A permissions error here is
+   not a failed deploy**: check the URL with `curl` and only escalate if it
+   302s to a login page.
+4. `vercel link` writes `.vercel/`, which is **gitignored** and must not be
+   committed — it carries the project and org IDs. The deploy URL and the date
+   go in `README.md`'s known-debt block instead.
+5. **Do not deploy `main`.** Only `cline/space-bunny-alpha` is a model result.
+   Deploying the checkpoint would overwrite the catalog's shared capture state
+   with a non-result build.
+
+**After a successful deploy**, the orchestrator updates two places and nothing
+else: `README.md`'s deployment row (`https://space-bunny-v2.vercel.app`) and
+this log's close-out section. The `main` catalog gains a new row with the
+representative screenshot and the deployed link — and never an invented URL, so
+until step 3 above actually returns a URL, the row is written as clearly-marked
+**pending**.
+
+## What pass 20 changed, and what it did not
+
+**Changed (four `.md` files, no code):** this log; `README.md` rewritten to the
+iteration-2 state; `AESTHETIC-NOTES.md` finalized as the iteration-2 authority
+record; `ITERATION-2-CHECKLIST.md` pass 20 marked done.
+
+**Not changed, deliberately:** `src/`, `capture/`, `verify.mjs`,
+`verify-world.mjs`, `benchmark/` and every PNG. `npm run check` is 306 pure +
+113 world and `vite build` is clean *before and after* this pass — a
+documentation pass that moved a gate count would be a lie about being one. The
+gallery is the record of pass 16's look and nothing in iteration 2 after that
+altered a pixel, so §16.5's floors stand as measured.
+
+| `97c67f5` | iter2(19): debt sweep - review NOT-DONEs, dead code, docblocks match reality |
+| `c32d294` | iter2(19) review: the ordering assertion could not see an order |
+
+here: resumed sessions balloon past 340K input tokens of pure cache reads, and
+**fresh sessions per pass cost less and drift less**, because
+`GAMEDESIGN.md` and `ITERATION-2-CHECKLIST.md` on disk carry the design better
+than a context window does. One pass (5) was lost to auth expiry mid-capture
+and had to be re-run — recorded as `bbd36c4`, not hidden.
+
+  the extra `.gain` read `undefined`. The gate could not see it because
+  **nothing in the repository ever constructed a WebAudio graph**; 1 215 lines
+  of pass-13 code, and a line that throws in a real browser was invisible until
+  a review built one. Fixed, and the seam that hid it closed.
+- **p14r — 60 mutants through the repository's own gate, two real evidence
+  gaps.** The finale's *order* was a table claim and nothing else: replacing the
+  call site's `MUSIC_FINALE.tone.rise` with `MUSIC_FINALE.cut` left the
+  repository **285/285 green**, so the low tone would have arrived in 0.12 s
+  with the music leaving it — precisely the "a cut and not a cut" the docblock
+  argued for. And of the pass's two self-caught bugs, one had no gate at all:
+  re-introducing "the pad constructed at nominal rather than silent" also
+  passed 285/285. Both are **gaps in evidence, not defects in behaviour** —
+  `audio.js` and `world.js` were unchanged by that review.
+- **p15r — the row gate was dead code.** The probe's own row table was gated on
+  `report.failed === 0`, and the shimmer floor fails 12/12, so `report.probe`
+  was **never produced in any run a person can make**. A gate that cannot
+  execute is not a gate. The review also *proved* the mechanism behind the
+  pass's central claim rather than asserting it: the old `banish.png` "eye" was
+  a **54 px lit-window blob 650 px from the head** — scenery wearing the
+  creature's name.
+
