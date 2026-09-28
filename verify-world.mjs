@@ -825,6 +825,156 @@ check('the Act I sighting ends when the player looks back (§6.1)', () => {
   assert.equal(game.state.hammerHeld, false, 'and the pickup never happened')
 })
 
+check('the opening beats arrive in §6.1\'s order: dissolve, control, then the sighting', () => {
+  // ITERATION 2, PASS 19 — the first-30s pacing gate, in the form the pass-18
+  // review said was the only honest one available without a design decision.
+  //
+  // WHAT THE REVIEW ASKED FOR, AND WHAT THIS IS INSTEAD
+  // -----------------------------------------------------
+  // REVIEW-pass-18's NOT-DONE section wanted "the gap between consecutive
+  // fire-and-forget presentation beats must stay under the §6 number", and said
+  // plainly why it had not written it: the number encodes an answer to a pacing
+  // question this pass is not entitled to answer. It measured the standing-still
+  // case at a 1.40 s longest silence and the walking-forward case at 15.93 s, and
+  // then declined to pick between "a deliberate silence" and "a defect".
+  //
+  // So this gate asserts the ORDER and no durations at all. An order is a
+  // property of the world; a duration is a property of a design the design has
+  // not written down. The three beats below are the ones §6.1 and §9.3 already
+  // name, and the claim is only that they happen in this order on the way in:
+  //
+  //   1. THE DISSOLVE. `start()` puts `fade` back to 1 and the phase to PLAYING
+  //      on the same call, so the hand-off from the title card is a fade-out
+  //      rather than a cut, and it is LIFTING on the first frame of PLAYING.
+  //   2. THE CONTROL. The player is enabled by the same call, so the world is
+  //      taking input while it is still black — the input is not gated behind
+  //      the dissolve finishing.
+  //   3. THE SIGHTING. The creature is `telegraph` and on screen, and it is on
+  //      screen on the FIRST frame the player could act, not after a scripted
+  //      wait. This is the beat the review measured at 0.02 s.
+  //
+  // The order the world actually runs is CONTROL -> SIGHTING -> DISSOLVE, and
+  // that is the assertion: the player can act and there is something to act
+  // about on the same frame, and the picture finishes afterwards. The reviewer's
+  // instinct that a fade which has to complete before the world speaks is a cut
+  // wearing a fade as a disguise is the whole of the claim.
+  //
+  // Every one of those three is checkable without a threshold, which is the
+  // whole reason this gate can exist. What it deliberately does NOT say is how
+  // long the silence after beat 3 may be; that number is still unmade, and the
+  // measured 15.93 s walking-forward stretch is still debt.
+  //
+  // MUTATIONS, because a gate nobody has tried to fool is a gate nobody knows.
+  // Three were run against this check, each applied and reverted, each on the
+  // real harness:
+  //   M1  hold the control until after the first update      -> RED, the dissolve assert
+  //   M2  a scripted delay between "you can act" and the sighting
+  //                                                          -> RED, by name
+  //   M3  swap ONLY the expected order, world untouched     -> RED, and the
+  //       failure message prints the order it actually saw. M3 is the one that
+  //       matters: the three facts above are also each asserted on their own, so
+  //       a gate that only had them would have gone green on a world that
+  //       satisfied every one of them and none of them in sequence.
+  //
+  // WHY IT IS NOT IN verify.mjs: this is a property of the BUILT world — it
+  // reads `game.fade`, `game.player.enabled` and the creature view's own `pose`,
+  // none of which the pure harness can import (§15.1's seam). It is the same
+  // reason §6.1's sighting and §8.2's phase-out are here and not in the other
+  // file.
+  //
+  // AND WHY IT BUILDS ITS OWN WORLDS. The preconditions below are about the TITLE
+  // card — the player frozen, nothing on screen — and `restart()` cannot produce
+  // them: §10.4's BEGIN AGAIN is a new *begun* run, so it leaves the player
+  // enabled and puts the sighting back. Reaching for `restart()` here would have
+  // asserted the preconditions against a run that had already started, which is
+  // the same class of mistake the pass-18 review found in the "gone when you look
+  // back" check before it. A throwaway mount is the honest way to ask what the
+  // world looks like before anyone presses BEGIN.
+  const opening = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  assert.equal(opening.player.enabled, false, 'the player is not frozen behind the start overlay, so the control claim below is vacuous')
+  assert.equal(opening.creature.state, 'telegraph', 'Act I did not open as a sighting, so the sighting claim below is vacuous')
+  assert.equal(opening.creatureView.root.visible, false, 'and the sighting is already on the title card, so the order below is not an order')
+
+  opening.start()
+  // 1. the dissolve is standing AND lifting: not a cut, and not a black screen
+  //    left standing while the run is already playable
+  assert.equal(opening.fade, 1, 'the hand-off from the title card is a cut, not a dissolve')
+  assert.equal(opening.player.enabled, true, 'and BEGIN did not hand over control')
+  opening.update(DT)
+  assert.ok(
+    opening.fade > 0 && opening.fade < 1,
+    `the fade is ${opening.fade} on the first frame of PLAYING; it is either a cut (0) or a lid nobody is lifting (1)`,
+  )
+  // 2. the control is live *while* the dissolve is still running, which is the
+  //    ordering claim: input is not gated behind the picture being finished
+  assert.equal(opening.player.enabled, true, 'the player is frozen until the dissolve finishes')
+  // 3. the sighting is on screen on the same first frame — no scripted delay
+  //    between "you can act" and "there is something to act about"
+  assert.equal(opening.creature.state, 'telegraph', 'Act I does not open as a sighting')
+  assert.equal(opening.creatureView.root.visible, true, 'and the first frame the player can act on has nothing on screen')
+  const pose = opening.creatureView.pose
+  assert.equal(pose.present, true, 'so the creature view is not presenting a figure either')
+  assert.ok(pose.presence > 0, `and it is drawn at presence ${pose.presence} — present but invisible is not a beat`)
+
+  // ...and the ORDER, read as an order rather than as three separate truths. A
+  // world that satisfied each of the three above on some frame of the first
+  // second, in a different order, would pass none of this. The order is the
+  // claim; the three facts are how it is stated.
+  //
+  // It is a SECOND world rather than a rewind of the first, because the first
+  // has already been stepped and "when did control arrive" is not a question a
+  // world can answer twice.
+  const ordered = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  ordered.start()
+  const seen = []
+  for (let i = 0; i < 90; i += 1) {
+    ordered.update(DT)
+    if (ordered.player.enabled && !seen.includes('control')) seen.push('control')
+    if (ordered.creatureView.root.visible && !seen.includes('sighting')) seen.push('sighting')
+    if (ordered.fade < 1 && !seen.includes('dissolve')) seen.push('dissolve')
+    if (seen.length === 3) break
+  }
+  assert.deepEqual(
+    seen,
+    ['control', 'sighting', 'dissolve'],
+    'the opening beats arrived in the order ' + seen.join(' -> ') +
+      '; the contract is that control and the sighting are live on the FIRST frame of PLAYING and the dissolve lifts after them, because a fade that has to finish before the world speaks is a cut wearing a fade as a disguise',
+  )
+  // The review's measured figures, re-measured here so the debt this gate does
+  // NOT close stays attached to a number rather than to a review nobody re-reads.
+  // Standing still, the sighting never ends — §6.1's "gone when you look back"
+  // is a claim about the player's action, and the check above performs it. So the
+  // 30 s the review measured is spent, and it is quiet for all of it, and that is
+  // the design's answer rather than this gate's.
+  run(ordered, 30)
+  assert.equal(
+    ordered.creature.state,
+    'telegraph',
+    'a standing player lost the sighting in 30 s; §6.1 ends it on looking back, not on a clock, and this gate has just started inventing one',
+  )
+  // ...and the walking-forward case the review measured at a 15.93 s silent
+  // stretch, reproduced so the number in the review is a number somebody can
+  // re-derive. It is NOT asserted against — the threshold is the design decision
+  // this gate declines to make — but it is printed, because a debt nobody can
+  // re-measure is a debt that quietly stops being true.
+  const walker = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  walker.start()
+  walker.player.pressKey('KeyW')
+  let leftAt = null
+  for (let i = 0; i < Math.ceil(30 / DT); i += 1) {
+    walker.update(DT)
+    if (leftAt === null && walker.creature.state !== 'telegraph') leftAt = walker.animTime
+  }
+  walker.player.releaseKey('KeyW')
+  console.log(
+    `\n  opening order: ${seen.join(' -> ')}; the dissolve clears at ${(1 / 0.7).toFixed(2)} s, and a player who walks forward from the spawn loses the sighting at ` +
+      `${leftAt === null ? 'never within 30 s' : `${leftAt.toFixed(2)} s`} — the unmade pacing number, measured, not gated`,
+  )
+  opening.dispose()
+  ordered.dispose()
+  walker.dispose()
+})
+
 check('the awakening toll moves TELEGRAPH -> STALK on pickup and not before', () => {
   // §7.2. The pickup is the only door into Act II, and it is a one-shot.
   //

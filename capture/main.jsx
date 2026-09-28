@@ -301,14 +301,15 @@ function frame() {
 /**
  * stepWorld — the ONE door through which world time enters this page. PASS 16.
  *
- * `game.update` is called from three places in this file (a wait, a rendered
- * frame, and the baseline) and every one of them comes through here, so the sum
- * of the `dt` this page has handed the world is a number rather than a claim.
- * `run` reports it as `clock.budget`, and `verify.mjs` asserts the world's own
- * `animTime` at the shutter is equal to it. Anything that moves the world by
- * another route — `world.js`'s own render loop, a future second `update` call —
- * shows up as a frame whose clock is ahead of its steps, which fails the gate on
- * the next capture run instead of quietly making every frame unrepeatable.
+ * `game.update` is called from five places in this file (a rendered frame, a
+ * wait, the `begin` hand-off, the baseline, and the three budget loops) and every
+ * one of them comes through here, so the sum of the `dt` this page has handed the
+ * world is a number rather than a claim. `run` reports it as `clock.budget`, and
+ * `verify.mjs` asserts the world's own `animTime` at the shutter is equal to it.
+ * Anything that moves the world by another route — `world.js`'s own render loop, a
+ * future second `update` call — shows up as a frame whose clock is ahead of its
+ * steps, which fails the gate on the next capture run instead of quietly making
+ * every frame unrepeatable.
  */
 let clockBudget = 0
 let clockCalls = 0
@@ -440,10 +441,12 @@ function releaseLoop() {
  * anything about how the page draws: the loop still runs, still renders, still
  * animates the DOM. It just cannot move the world.
  *
- * What is left as a clock is `stepWorld`, and its only caller outside this
- * function is a `wait` or a `frames` — so the world time in a photograph is the
- * sum of the steps in `src/game/capture.js` and nothing else. `run` reports that
- * sum and `verify.mjs` checks the world's own number against it.
+ * What is left as a clock is `stepWorld`, and its only callers are the five
+ * places this page steps the world deliberately — a rendered frame, a `wait`, the
+ * `begin` hand-off, the baseline, and the budget loops — so the world time in a
+ * photograph is the sum of the steps in `src/game/capture.js` and nothing else.
+ * `run` reports that sum and `verify.mjs` checks the world's own number against
+ * it.
  *
  * The FPS counter stops counting, which is the one visible consequence and the
  * right one: `showFps` is never set on this page, and a frame-rate window

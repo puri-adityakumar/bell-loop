@@ -907,7 +907,7 @@ deliberate and should be documented rather than blurred:
 ### 15.4 Definition of done
 
 - `npm run check` exits 0, including the world harness
-- the twelve captures in §16.4 exist
+- the twelve captures in §16.5 exist
 - `V2-PLAN.md` slices all closed
 - v1's `maze.js` and `loop.js` deleted only in the final slice, after the gate is
   green
@@ -949,7 +949,7 @@ These were raised during design and **not** settled. None blocks the build.
 | Is `BLOCK = 64 m` correct? | Tune first. It is one constant and the cheapest thing to change. |
 | Should the finale banish re-emergence be 1.5 s or longer? | Tune against §11.3. |
 
-### 16.4 Deferred scope
+### 16.5 Deferred scope
 
 Explicitly **not** in v2, listed so they are not silently lost:
 
@@ -983,6 +983,83 @@ Responsive and pause states are captured in addition to these twelve, not
 instead of them.
 
 ---
+
+### 16.6 Known architectural constraints (not open questions)
+
+These are properties of the build that a reader is entitled to know about and
+that no pass has fixed. They are here because each one has already cost a pass,
+and a constraint nobody wrote down is a constraint the next pass rediscovers at
+its own expense.
+
+#### 16.6.1 Presentation and simulation are coupled through `SPAWN.position`
+
+**The constraint.** `neighborhood.js`'s `SPAWN.position` and `world.js`'s
+`SPAWN_YAW` are a *body pose* — where the player is standing and which way they
+are facing. But `_firstSightingPoint` reads both of them to place §6.1's opening
+apparition, which is a *presentation* decision: the cone is tested from the spawn
+facing, and the distance floor is measured from the spawn point. So moving the
+player two metres down the road changes not only what the player sees, but which
+node the Act I sighting is drawn on, and therefore when the sighting ends and
+when the awakening can happen.
+
+**What it cost, measured.** Iteration 2 pass 18 tried to reframe the spawn
+(a candidate at `-189.5, -165.5` instead of the shipped `{roadAxisToWorld(0) + 4,
+roadAxisToWorld(0) + 4}`) and **reverted it**: the world's own suite went
+**112 → 110 → 108 of 112** across the two candidate positions tried. The spawn
+was a legitimate tuning knob in appearance and turned out to be a simulation
+constant in fact.
+
+**What stopped it was not where people expect.** The spawn-inside-the-street
+assertion in `verify.mjs` — which reads as the strong invariant — is the *weaker*
+of the two. `STREET_HALF_WIDTH` is 6 m and is the **carriageway** (the kerb face
+is at 6.4, the walk runs to 9.4), so the assertion's `0..6` band holds the spawn
+off the far kerb and out of the gardens. It says nothing about *where along the
+frontage* the body stands: the candidate slid 26.5 m along the road and scored
+**2.50 m, inside 0..6 — it passes.** What actually stopped the move was the
+110/112 world regression, which is a different and much stronger claim.
+
+**What the review also retracted.** The pass was sold on "the nearest lamp goes
+from 60.5 m to 19.6 m and the sightline opens past a 15.4 m wall". Only 19.6 m is
+a plain distance. The nearest lamp to the shipped spawn **full stop is 5.09 m,
+directly behind the camera at 180° off-axis**; 60.5 m is the nearest lamp inside
+the 52.3° half-FOV. And there is no wall at 15.4 m — that is a `colliders()`
+**footprint**, a 0.22 m square which is exactly `POLE_DIAMETER` sitting 7.0 m off
+the far centreline, and the kinded `occluders()` ray at the same range returns
+**OPEN**. The honest residual is smaller and is the one worth recording: **the
+shipped opening has no lamp in the first 37 m.**
+
+**Why it is not being decoupled.** The refactor is real and it is large: the
+opening beats would have to read a `runElapsed` the run already owns rather than
+re-deriving "am I still in Act I" from the creature's node, which is what the
+spawn feeds. That is a §6/§7 pacing change wearing a refactor's clothes, and it
+belongs to whoever makes that pacing decision — see §16.3 and the pass-19 note in
+`ITERATION-2-CHECKLIST.md`. Until then, **`SPAWN.position` must be treated as a
+simulation constant, not a framing knob.** The honest first-30 s gate added in
+pass 19 asserts the *order* of the opening beats and no durations for exactly
+this reason: a duration gate would have to be a number chosen by a pass, and the
+coupling above means the number would be a function of where the body stands.
+
+#### 16.6.2 The capture clock is a sum of steps, not a wall clock
+
+`capture/main.jsx`'s `anchorClock` sets `game.animTime = 0` and stubs
+`game.clock.getDelta` to 0, so the world's own render loop cannot move the world
+and every frame in a photograph is a `CAPTURE_SIM_DT` step through `stepWorld`.
+This is what §6.5's "a set of steps is worth the same picture twice" rests on, and
+it is enforced rather than promised: `run` publishes `clock.budget` and
+`verify.mjs` asserts the world's own `animTime` matches it at the shutter. The
+consequence worth knowing: **any future change that calls `game.update` outside
+`stepWorld` breaks reproducibility, and the gate catches it on the next capture
+run rather than at the next review.**
+
+#### 16.6.3 The pursuit-speed floor is 4.5% from red
+
+`verify-world.mjs` gates the last third of a run at
+`pursuit[2] >= SPEED_CEILING * 0.85` = 4.42 m/s, against a measured last-third
+mean of **4.62 m/s** — a **+0.20 m/s, 4.5% margin.** The gate is coupled to §11.3's
+trend gate through one constant, so a future pass that tunes `RAMP_TABLE`,
+`aggressionAt` or the pathing will turn this red for reasons unrelated to the
+trend it is actually checking. **Whoever tunes those should expect to re-justify
+0.85 rather than lower the measurement.**
 
 ## Appendix — decision ledger
 

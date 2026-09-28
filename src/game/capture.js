@@ -897,11 +897,6 @@ export function probeView(id) {
   return CREATURE_PROBE_VIEWS.find((view) => view.id === id) ?? null
 }
 
-/** Every step of every probe view, tagged — what the pass-15 contract check walks. */
-export function allProbeSteps() {
-  return CREATURE_PROBE_VIEWS.flatMap((view) => view.steps.map((step) => ({ view: view.id, step })))
-}
-
 /**
  * PROBE_MIN_LIT — the probe's own lit floor, and it is the street's.
  *

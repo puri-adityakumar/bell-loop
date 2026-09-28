@@ -55,11 +55,13 @@
  *     still breathed, and nothing in the repository could assert a schedule it
  *     could not name. It is now one cursor per stream, advanced by the frame's
  *     own `dt`, and `AMBIENCE_SPECS` is the table those cursors read.
- *   - **Three new rows, all priced at 0.** `roomTone`, `hazeWind`, `facility`
+ *   - **Four new rows, all priced at 0.** `roomTone`, `hazeWind`, `facility`
  *     and `drip` are the world talking to itself, and a sound the creature could
  *     be drawn to would hand it the player's position for free. That is why
  *     every one of them carries `kind: null` and why the gate holds the radius
- *     at zero rather than leaving it to the table.
+ *     at zero rather than leaving it to the table. The fifth pass-13 stream,
+ *     `gust`, is deliberately NOT one of these rows: it is scheduled in
+ *     `AMBIENCE_SPECS` and has no entry in this table at all.
  *
  * What pass 13 is NOT is the music. There is no pad, no progression and no
  * melody in this file, and the ambient music the brief asked for is the second

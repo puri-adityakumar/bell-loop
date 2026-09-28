@@ -102,12 +102,13 @@ export const HAMMER_SIGIL_INK = HAMMER_SIGIL_DARK
  *
  * "Sit on" is now literal, and it is load-bearing. This colour was the *assumed*
  * backdrop while the HUD sat on black; PASS 1 moved the marks onto a live sky,
- * and the row grew `background: var(--bg)` to put the assumption back. Measured
- * against what the sky actually paints behind the row (#564d37 in the street
- * view) the two dark inks are 1.32:1 and 1.27:1 — invisible — so the plate is
- * the reason the numbers below are true, and `verify.mjs` fails if it is
- * removed. The inks themselves are untouched: this is the backdrop being made
- * honest, not the palette being re-tuned.
+ * and PASS 18 — not pass 1 — is what grew `background: var(--bg)` onto the row to
+ * put the assumption back, once the pass-18 review measured that the sky behind it
+ * made both dark inks unreadable. Measured against what the sky actually paints
+ * behind the row (#564d37 in the street view) the two dark inks are 1.32:1 and
+ * 1.27:1 — invisible — so the plate is the reason the numbers below are true, and
+ * `verify.mjs` fails if it is removed. The inks themselves are untouched: this is
+ * the backdrop being made honest, not the palette being re-tuned.
  */
 export const HUD_BACKDROP = '#030407'
 

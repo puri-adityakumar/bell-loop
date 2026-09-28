@@ -128,8 +128,49 @@ Hard rules for every pass:
   `AESTHETIC-NOTES.md` §10.
 - [x] `PASS 18: Game feel sweep.` Spawn framing, first-30-seconds pacing, sigil
   + HUD contrast against the brighter world, reduced-motion still respected.
-- [x] `PASS 19: Debt sweep.` Fix top items from REVIEW-pass-*.md NOT-DONE
+- [DONE] `PASS 19: Debt sweep.` Fix top items from REVIEW-pass-*.md NOT-DONE
   notes, remove dead code from replaced systems, doc comments match reality.
+  **Closed, and the honest accounting of what each item cost is in the commit.**
+  The five from the ledger: (1) pass-15's probe reproducibility was fully
+  addressed by pass 16's `anchorClock` and re-measured four ways — every
+  world-time field bit-identical between repeat runs, only rasterised luma
+  moving, by 0.13-1.18 points; the ±0.3 claim is gone from the tree and the
+  residual is a property of the rasteriser, not of the harness. (2) pass-17's
+  "bit-identical" triangle claim is corrected at all three sites and **held** by
+  the pass-17 review's own check, which recomputes the residual and fails if
+  either phrase returns. (3) the first-30s pacing gate, in the form the pass-18
+  review said was the only one available without a design decision: **the ORDER
+  of title-dissolve → spawn-control → first telegraph, and no durations at
+  all** — an order is a property of the world, a duration is a property of a
+  design the design has not written down. It builds its own world rather than
+  using `restart()`, because §10.4's BEGIN AGAIN is a new *begun* run and cannot
+  produce the title-card preconditions. The review's 15.93 s walking-forward
+  stretch is **re-measured and printed** on every run rather than asserted
+  against, because a debt nobody can re-measure quietly stops being true. (4)
+  the presentation-vs-simulation coupling is **documented, not decoupled**, with
+  the candidate-A numbers, in `GAMEDESIGN.md` §16.6.1: `SPAWN.position` is a
+  simulation constant and not a framing knob, pass 18's move cost 112→110→108 of
+  112, the 2.50 m `toEdge` that let the candidate through is named as the weaker
+  invariant, and the retracted framing numbers (5.09 m nearest lamp behind the
+  camera, the 15.4 m "wall" that is a `POLE_DIAMETER` footprint with
+  `occluders()` OPEN) are recorded. (5) dead code: a full sweep of every export
+  and every top-level binding in `src/`, `capture/`, `tools/` and `benchmark/`,
+  cross-read against both harnesses, found **one** provably dead item —
+  `capture.js`'s `allProbeSteps`, whose docblock claimed the pass-15 contract
+  check walked it and which nothing walks. Deleted. The sweep is *documented
+  below* because a "nothing is dead" claim is a claim, and the sweep that
+  supports it is not re-derivable from a reader's seat. (6) doc comments
+  match reality: **six false or stale docblocks corrected, no code reformatted.**
+  `skyView.js`'s header still argued "WHY NO INSTANCING" three lines above a
+  42-mesh→1-`InstancedMesh` rewrite; `hud.js` credited the sigil plate to PASS 1
+  when PASS 18 painted it; `audio.js`'s header said "Three new rows" over four
+  (and the fifth pass-13 stream, `gust`, has no routed row at all);
+  `capture/main.jsx` claimed `stepWorld`'s "only caller" was `wait` or `frames`
+  when there are five. **No pixels changed, so the gallery was not re-shot** —
+  §16.5's luma gate has nothing new to re-justify, and re-shooting 14 frames to
+  re-justify a comment edit is the failure mode this pass exists to prevent.
+  Gate: 306 pure + 113 world (the pacing gate is the one addition; nothing was
+  weakened, retuned or deleted).
 
 ## P6 — CLOSE
 - [x] `PASS 20: Iteration 2 close-out.` ORCHESTRATOR-LOG iteration-2 section,

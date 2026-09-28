@@ -36,14 +36,24 @@
  * `verify-world.mjs` measures the ring's radius off the built matrices rather
  * than trusting this comment.
  *
- * WHY NO INSTANCING AND NO POOL
- * -----------------------------
- * The horizon is fourteen objects at a constant radius and the ash is a single
- * `Points`. There is nothing repeated at scale: the world's instancing exists
- * because 588 lots are drawn three times over, and fourteen silhouettes once is
- * not that. A pool would add a capacity to get wrong and a `commit()` to forget
- * to save zero draw calls — three here against about ninety in the street.
+ * WHY NO POOL
+ * -----------
+ * The horizon is fourteen silhouettes at a constant radius and the ash is a single
+ * `Points`. A pool would add a capacity to get wrong and a `commit()` to forget.
+ * The world's instancing exists because 588 lots are drawn three times over, and
+ * fourteen silhouettes once is not that.
  * `verify-world.mjs` asserts the counts directly instead.
+ *
+ * ITERATION 2, PASS 17 REVERSED THE INSTANCING HALF OF THIS PARAGRAPH, and it is
+ * worth saying what changed and what did not. The paragraph used to read "WHY NO
+ * INSTANCING AND NO POOL" and argued from "fourteen silhouettes once is not that"
+ * — an argument that was right about the POOL and wrong about the INSTANCING, and
+ * wrong in the direction that costs the most. The fourteen silhouettes are
+ * forty-two boxes, and forty-two `Mesh` objects with forty-two cached geometries
+ * were 23% of the scene's objects to draw a 542-triangle backdrop. They are now
+ * one `InstancedMesh` over a unit box. The pool half of the sentence above is
+ * still true and is why; the instancing half was not, and `_buildHorizon` carries
+ * the arithmetic of what replaced it.
  *
  * DETERMINISM
  * -----------
