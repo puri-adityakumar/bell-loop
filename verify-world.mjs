@@ -825,7 +825,7 @@ check('the Act I sighting ends when the player looks back (§6.1)', () => {
   assert.equal(game.state.hammerHeld, false, 'and the pickup never happened')
 })
 
-check('the opening beats arrive in §6.1\'s order: dissolve, control, then the sighting', () => {
+check('the opening beats arrive in one order: control and sighting first, the dissolve after', () => {
   // ITERATION 2, PASS 19 — the first-30s pacing gate, in the form the pass-18
   // review said was the only honest one available without a design decision.
   //
@@ -853,11 +853,18 @@ check('the opening beats arrive in §6.1\'s order: dissolve, control, then the s
   //      screen on the FIRST frame the player could act, not after a scripted
   //      wait. This is the beat the review measured at 0.02 s.
   //
+  // Those are numbered as the three things being checked, NOT as a sequence —
+  // the sequence is the next paragraph, and the numbering is the exact thing
+  // that misled this check's own name before (see the M3 note below).
+  //
   // The order the world actually runs is CONTROL -> SIGHTING -> DISSOLVE, and
   // that is the assertion: the player can act and there is something to act
-  // about on the same frame, and the picture finishes afterwards. The reviewer's
-  // instinct that a fade which has to complete before the world speaks is a cut
-  // wearing a fade as a disguise is the whole of the claim.
+  // about on the same frame, and the picture finishes afterwards. Measured, all
+  // three first read true on the SAME frame, so what "order" means here is
+  // stated as a relation between frames further down rather than as a sequence
+  // of three events. The reviewer's instinct that a fade which has to complete
+  // before the world speaks is a cut wearing a fade as a disguise is the whole of
+  // the claim.
   //
   // Every one of those three is checkable without a threshold, which is the
   // whole reason this gate can exist. What it deliberately does NOT say is how
@@ -871,10 +878,22 @@ check('the opening beats arrive in §6.1\'s order: dissolve, control, then the s
   //   M2  a scripted delay between "you can act" and the sighting
   //                                                          -> RED, by name
   //   M3  swap ONLY the expected order, world untouched     -> RED, and the
-  //       failure message prints the order it actually saw. M3 is the one that
-  //       matters: the three facts above are also each asserted on their own, so
-  //       a gate that only had them would have gone green on a world that
-  //       satisfied every one of them and none of them in sequence.
+  //       failure message prints the order it actually saw.
+  //
+  // M3 WAS SUPPOSED TO BE THE ONE THAT MATTERS — "the three facts above are also
+  // each asserted on their own, so a gate that only had them would have gone green
+  // on a world that satisfied every one of them and none of them in sequence."
+  // IT IS NOT, AND THE PASS-19 REVIEW RE-RAN IT AND MEASURED WHY. M3 goes red
+  // because the array literal changed, which proves the comparison is wired up
+  // and nothing else. The order it compared was not the world's: all three beats
+  // are true on the SAME frame (measured — control, sighting and dissolve all
+  // first read true at frame 0), so the loop broke on its first iteration and
+  // `seen` was the order this file's three `if` statements are written in. The
+  // ordering assertion has been rewritten as a frame relation below, which is the
+  // version of M3 that would mean something: mutate the world to delay the
+  // sighting and the gate goes red on the ORDER, not only on the three facts.
+  // The M3 record is kept rather than deleted, because "M3 caught it" is exactly
+  // the sentence a future pass would otherwise have taken at face value.
   //
   // WHY IT IS NOT IN verify.mjs: this is a property of the BUILT world — it
   // reads `game.fade`, `game.player.enabled` and the creature view's own `pose`,
@@ -924,21 +943,58 @@ check('the opening beats arrive in §6.1\'s order: dissolve, control, then the s
   // It is a SECOND world rather than a rewind of the first, because the first
   // has already been stepped and "when did control arrive" is not a question a
   // world can answer twice.
+  //
+  // PASS 19 REVIEW: this used to collect the beats into a `seen` array and
+  // `deepEqual` it against `['control', 'sighting', 'dissolve']`, which is the
+  // shape the pass's own M3 mutation proved only that the literal was compared.
+  // It cannot see an order, and here is why: the three beats are ALL true on the
+  // first frame of PLAYING (measured: control, sighting and dissolve all first
+  // read true at frame 0), so the loop breaks on its first iteration and `seen`
+  // is simply the order the three `if` statements happen to be written in — a
+  // property of this file, not of the world. On top of that the array form
+  // tolerates a world that hands the player control ten frames BEFORE there is
+  // anything to act about, because that world still pushes 'control' first.
+  //
+  // So the order is recorded as the FRAME each beat first reads true, and
+  // asserted as a relation between frames. Frame indices are the one reading a
+  // same-frame world cannot fake by reordering statements, and the two relations
+  // below are strictly tighter than the array they replace: equality on the
+  // first, and a lower bound on the second.
+  //
+  // `cleared` rides in the same loop on purpose: the dissolve's own duration is
+  // then a MEASUREMENT off the world rather than a second copy of
+  // `FADE_LIFT_PER_SECOND`, which the pass's print used to hardcode as `(1 / 0.7)`.
+  // A print whose whole job is to keep a debt re-measurable cannot be the thing
+  // that goes stale when the constant it copied is retuned. The 1.50 s window is
+  // reported as itself if the fade ever outlasts it.
   const ordered = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
   ordered.start()
-  const seen = []
+  const at = { control: null, sighting: null, dissolve: null, cleared: null }
   for (let i = 0; i < 90; i += 1) {
     ordered.update(DT)
-    if (ordered.player.enabled && !seen.includes('control')) seen.push('control')
-    if (ordered.creatureView.root.visible && !seen.includes('sighting')) seen.push('sighting')
-    if (ordered.fade < 1 && !seen.includes('dissolve')) seen.push('dissolve')
-    if (seen.length === 3) break
+    if (at.control === null && ordered.player.enabled) at.control = i
+    if (at.sighting === null && ordered.creatureView.root.visible) at.sighting = i
+    if (at.dissolve === null && ordered.fade < 1) at.dissolve = i
+    if (at.cleared === null && ordered.fade === 0) at.cleared = i
   }
-  assert.deepEqual(
-    seen,
-    ['control', 'sighting', 'dissolve'],
-    'the opening beats arrived in the order ' + seen.join(' -> ') +
-      '; the contract is that control and the sighting are live on the FIRST frame of PLAYING and the dissolve lifts after them, because a fade that has to finish before the world speaks is a cut wearing a fade as a disguise',
+  const frame = (k) => (at[k] === null ? 'never' : `frame ${at[k]} (${(at[k] * DT).toFixed(3)} s)`)
+  assert.ok(
+    at.control !== null && at.sighting !== null && at.dissolve !== null,
+    `the opening never produced all three beats inside the first ${(90 * DT).toFixed(2)} s — control at ${frame('control')}, sighting at ${frame('sighting')}, dissolve at ${frame('dissolve')}`,
+  )
+  // THE ORDER, as two relations between frames.
+  //   1. control and the sighting arrive TOGETHER: there is no frame in which the
+  //      player can act and there is nothing to act about.
+  //   2. the dissolve is lifting on that frame or later, never before: input is
+  //      not gated behind the picture being finished.
+  assert.equal(
+    at.control,
+    at.sighting,
+    `the player had control from ${frame('control')} and the sighting from ${frame('sighting')}; the contract is that they arrive on the same frame — the first frame of PLAYING — because a delay between "you can act" and "there is something to act about" is a scripted wait wearing an order as a disguise`,
+  )
+  assert.ok(
+    at.dissolve >= at.control,
+    `the dissolve started lifting at ${frame('dissolve')} but the player had control from ${frame('control')}; the picture being finished before the world takes input is a cut wearing a fade as a disguise`,
   )
   // The review's measured figures, re-measured here so the debt this gate does
   // NOT close stays attached to a number rather than to a review nobody re-reads.
@@ -966,8 +1022,11 @@ check('the opening beats arrive in §6.1\'s order: dissolve, control, then the s
     if (leftAt === null && walker.creature.state !== 'telegraph') leftAt = walker.animTime
   }
   walker.player.releaseKey('KeyW')
+  const order = ['control', 'sighting', 'dissolve'].sort((a, b) => at[a] - at[b])
   console.log(
-    `\n  opening order: ${seen.join(' -> ')}; the dissolve clears at ${(1 / 0.7).toFixed(2)} s, and a player who walks forward from the spawn loses the sighting at ` +
+    `\n  opening beats, by the frame each first reads true: ${order.map((k) => `${k} @ ${frame(k)}`).join(', ')}` +
+      ` — the review measured them at 0.02 / 0.02 / 1.42 s, and the frame the player can act on is the frame the picture is still lifting;` +
+      ` the dissolve clears at frame ${at.cleared} (${at.cleared === null ? 'not within the 1.50 s window' : `${(at.cleared * DT).toFixed(2)} s`}), and a player who walks forward from the spawn loses the sighting at ` +
       `${leftAt === null ? 'never within 30 s' : `${leftAt.toFixed(2)} s`} — the unmade pacing number, measured, not gated`,
   )
   opening.dispose()

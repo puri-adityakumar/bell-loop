@@ -140,11 +140,25 @@ Hard rules for every pass:
   the pass-17 review's own check, which recomputes the residual and fails if
   either phrase returns. (3) the first-30s pacing gate, in the form the pass-18
   review said was the only one available without a design decision: **the ORDER
-  of title-dissolve → spawn-control → first telegraph, and no durations at
+  of the opening beats — control and the sighting together on the first frame of
+  PLAYING, the dissolve lifting on or after that frame — and no durations at
   all** — an order is a property of the world, a duration is a property of a
-  design the design has not written down. It builds its own world rather than
+  design the design has not written down. (The pass first wrote this line as
+  "title-dissolve → spawn-control → first telegraph", which is the reverse of the
+  contract the gate asserts; see `REVIEW-pass-19.md` Finding 2. The gate asserts
+  the order as a relation between FRAMES, after the pass-19 review measured all
+  three beats first reading true on the same frame.) It builds its own world rather than
   using `restart()`, because §10.4's BEGIN AGAIN is a new *begun* run and cannot
-  produce the title-card preconditions. The review's 15.93 s walking-forward
+  produce the title-card preconditions. **Pass-19 review:** the ordering
+  assertion was rewritten — the pass collected the beats into a `seen` array and
+  `deepEqual`'d it, which on a world where all three beats read true on the SAME
+  frame (measured: frame 0, all three) returns the order the harness's own `if`
+  statements are written in, so M3's RED proved the literal was compared and
+  nothing about the world. It is now a relation between FRAMES
+  (`at.control === at.sighting`, `at.dissolve >= at.control`) — strictly tighter
+  than the array, and a sequence a same-frame world cannot fake. The check's own
+  name, which asserted the exact reverse of its contract, is corrected too; see
+  `REVIEW-pass-19.md` Findings 1-2. The review's 15.93 s walking-forward
   stretch is **re-measured and printed** on every run rather than asserted
   against, because a debt nobody can re-measure quietly stops being true. (4)
   the presentation-vs-simulation coupling is **documented, not decoupled**, with

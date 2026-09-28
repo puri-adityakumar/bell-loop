@@ -949,7 +949,7 @@ These were raised during design and **not** settled. None blocks the build.
 | Is `BLOCK = 64 m` correct? | Tune first. It is one constant and the cheapest thing to change. |
 | Should the finale banish re-emergence be 1.5 s or longer? | Tune against §11.3. |
 
-### 16.5 Deferred scope
+### 16.4 Deferred scope
 
 Explicitly **not** in v2, listed so they are not silently lost:
 
