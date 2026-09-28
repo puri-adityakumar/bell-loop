@@ -31,3 +31,8 @@ node_modules/.cache/
 
 # Pass 15's per-state light probe frames and report (tools/capture.mjs --probe)
 .probe/
+
+# Pass 17's draw-call / triangle / allocation budget report
+# (tools/capture.mjs --budget). Numbers quoted in AESTHETIC-NOTES.md §10; the
+# machine-specific run that produced them is local, like .probe/.
+.perf/

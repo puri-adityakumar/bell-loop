@@ -1120,13 +1120,233 @@ export const PROBE_FLICKER_ROWS = Object.freeze(
 )
 
 /**
- * `viewById` — the gallery first, then the probe. What the page asks for.
+ * ============================================================================
+ * PASS 17 — THE BUDGET, as data
+ * ============================================================================
  *
- * Two lists and one lookup, rather than one list, because the two sets have
- * different owners: the gallery is §16.5's deliverable and `verify.mjs` pins its
- * fourteen ids, and the probe is this pass's instrument. Merging them would let
- * a probe view be photographed into the gallery and counted in it.
+ * WHY THIS SECTION IS HERE AND WHY IT IS NOT A FIFTEENTH VIEW
+ * -----------------------------------------------------------
+ * Passes 5-12 were fidelity: windows and door recesses on the houses, poles and
+ * catenary wires over the street, kerb joints and crosswalks under it, parked
+ * cars, and then a sky with a forty-two-part silhouette ring and ninety ash
+ * motes. Every one of those is *real geometry*, and real geometry is the exact
+ * thing a draw-call budget is spent on. This section is the bill.
+ *
+ * It is data rather than a view list because the budget is not a picture. The
+ * gallery's fourteen ids are a deliverable §16.5 pins, and pass 15's probe
+ * established the rule that governs a new set of views: a harness that could
+ * quietly add a fifteenth would be a harness whose gallery claim has drifted.
+ * A budget has no PNG in it, so it cannot be a view — it is a MEASUREMENT of the
+ * same live world the fourteen are photographed from, taken at poses the gallery
+ * already uses, and `verify.mjs` holds these ids to the same standard it holds
+ * `CAPTURE_IDS` to.
+ *
+ * WHY THE POSES ARE NAMED AFTER VIEWS RATHER THAN INVENTED
+ * ---------------------------------------------------------
+ * A budget read at a pose nobody can picture is a number nobody can argue with.
+ * Every pose below is a stand-off the gallery already stands at, so each row of
+ * the report can be read next to a committed PNG: the same street, the same
+ * lamps, the same frame — only with the cost on it. `street` is §16.5.2's
+ * avenue, `lamp` is that view's own 11 m stand-off, `portal` is §16.5.5's
+ * shut-doorway framing.
+ *
+ * WHY FOUR, AND WHAT EACH ONE IS FOR
+ * ----------------------------------
+ * The four are the four *worst cases*, not four samples of the same case:
+ *
+ *   street        the base frame: the whole frontage row, the deepest sightline
+ *                 in the map, and the most lamps of any pose. This is the number a
+ *                 reader should quote.
+ *   lamp          the brightest frame, so the most overdraw — the same draw-call
+ *                 count as `street` but the worst fragment load, which is the half
+ *                 of the budget a call count cannot see.
+ *   portal        where the transparent work is: the swirl layers, the ground
+ *                 apron, the lens and the gate are all alpha-blended and depth-write
+ *                 off, and passes 3 and 12 put them there. A frame that never
+ *                 looks at a portal cannot see what the portal costs.
+ *   creature      `street` again with a stalker at the probe's own 17 m stand-off,
+ *                 so the trail, the heat haze and the puff field are all live. The
+ *                 creature's buffers are per-frame rewritten and the haze is six
+ *                 bands of double-sided alpha, and it is the one part of the scene
+ *                 whose cost depends on where you are rather than on what exists.
+ *
+ * The creature is the only pose that writes simulation state, and it does it
+ * through the same `creature` step the probe uses, so it cannot drift from it.
  */
+export const BUDGET_POSES = Object.freeze([
+  Object.freeze({
+    id: 'street-avenue',
+    label: 'the §16.5.2 avenue stand-off — the longest sightline in the map, the whole frontage row',
+    target: 'node',
+    back: 0,
+    creature: null,
+  }),
+  Object.freeze({
+    id: 'street-lamp',
+    label: '§16.5.2 own stand-off, 11 m off the sodium lamp — the most overdraw of the four',
+    target: 'lamp',
+    back: 11,
+    creature: null,
+  }),
+  Object.freeze({
+    id: 'street-portal',
+    label: 'the §16.5.5 portal stand-off — swirl, apron, lens and gate all alpha-blended',
+    target: 'portal',
+    back: 6,
+    creature: null,
+  }),
+  Object.freeze({
+    id: 'street-creature',
+    label: 'the avenue with a stalker at the probe stand-off — trail, haze and puffs all live',
+    target: 'node',
+    back: 0,
+    creature: Object.freeze({ state: 'stalk', metres: 17, bearing: 6 }),
+  }),
+])
+
+/**
+ * `budgetPose` — one pose by id, or `null`. The budget's `viewById`.
+ *
+ * Separate from `viewById` for the reason the header gives: the gallery and the
+ * probe are photographs and this is not, and a lookup that could return a budget
+ * pose where a view was asked for is a lookup that can put a measurement in the
+ * gallery folder.
+ *
+ * @param {string} id
+ * @returns {object|null}
+ */
+export function budgetPose(id) {
+  return BUDGET_POSES.find((pose) => pose.id === id) ?? null
+}
+
+/**
+ * BUDGET_SETTLE_FRAMES — world frames stepped before anything is read.
+ *
+ * The measurement has to be of a world that has finished arriving. Pass 16 spent
+ * a whole pass establishing that a stepped clock is the only reproducible one
+ * here, and a budget read on the first frame after a teleport is a budget of
+ * half-built positions: the lamp pool has not re-aimed, the sky has not caught
+ * up with the camera, and the creature's trail is empty. Sixty frames is one
+ * second at the capture page's own `SIM_DT`, which is the same beat a capture
+ * view's `wait(1.0)` buys.
+ */
+export const BUDGET_SETTLE_FRAMES = 60
+
+/**
+ * BUDGET_UPDATE_FRAMES — frames over which `update()` is timed.
+ *
+ * 120 is two seconds, and two seconds is the shortest window in which a median
+ * over a real distribution of frames is worth quoting: the world's per-frame
+ * work is not uniform (a lamp re-aim, a wrap, a first sighting and a hold all
+ * cost more than a standing frame), and one of those is a 1-in-60 frame that
+ * would otherwise own a 60-frame average on its own.
+ */
+export const BUDGET_UPDATE_FRAMES = 120
+
+/**
+ * BUDGET_ALLOC_FRAMES — frames over which the heap delta is read.
+ *
+ * Longer than the timing window on purpose, and for the same reason: allocation
+ * is the number being asked about, and a 120-frame window on a number of this
+ * size is a number whose noise is a real fraction of it. 300 frames is five
+ * seconds of world time, and the measurement is a DELTA with no collection in
+ * the middle, so what it reads is everything those five seconds threw away.
+ */
+export const BUDGET_ALLOC_FRAMES = 300
+
+/**
+ * THE BUDGET, and the argument for each of the six.
+ *
+ * A number with no argument is a wish. These are written DOWN from what
+ * integrated graphics actually does rather than UP from what this project
+ * happens to measure — the measured column lives in `.perf/budget.json` and in
+ * `AESTHETIC-NOTES.md` §10, so a reader sees the headroom rather than inferring
+ * it.
+ *
+ * BUDGET_DRAW_CALLS = 256, the number that matters most and the one that is
+ *   machine-independent. This is a FORWARD renderer with 9 real-time lights and
+ *   no shadow pass (`world.js` sets `shadowMap.enabled = false`, and nothing in
+ *   `src/` sets `castShadow` or `receiveShadow` at all), so every light is a
+ *   uniform block in every fragment shader and the per-call CPU cost is the
+ *   dominant fixed one rather than a shadow-pass multiplier. Integrated GPUs of
+ *   the class this has to survive — Intel UHD 620 / Iris Xe, an M1 iGPU — sit
+ *   comfortably at a few hundred calls with a handful of lights and start to show
+ *   it in the low thousands, with the driver submission usually binding before
+ *   the GPU does. 256 leaves roughly 2x on the tightest machine in that class,
+ *   which is the headroom the pass is asked for.
+ *
+ * BUDGET_TRIANGLES = 400000. Integrated vertex throughput is the other half, and
+ *   at 1280x720x1.5 the buffer is 2764800 pixels, so this is a per-frame vertex
+ *   load the software vertex cache absorbs in well under a millisecond. 400k is
+ *   ~0.14 triangles per pixel at that buffer size.
+ *
+ *   PASS 17 CORRECTED ITS OWN ARGUMENT HERE, and the correction is the most useful
+ *   thing in this block. The first version of this comment said 400k was "orders of
+ *   magnitude above what this world submits". It was written before anything was
+ *   measured and it was wrong by a factor of seventy: the world submits **294 140**,
+ *   measured by `npm run capture -- --budget` at the avenue pose and by
+ *   `verify-world.mjs`'s census on every commit. 73.5% of the ceiling, not 2%.
+ *
+ *   So two numbers moved, and the second is the interesting one. The ceiling STAYS
+ *   at 400 000 because it was the right ceiling to begin with — it is 1.36x the
+ *   submission, which is a budget with headroom that can still catch a regression.
+ *   What changed is the claim about it, and the direction of the headroom: the
+ *   triangle budget is the ONE number in this table that is more than half spent,
+ *   where draw calls are at 39% and programs at 40%. That is the finding of the
+ *   pass rather than a problem with the budget, and it is documented in
+ *   `AESTHETIC-NOTES.md` §10 with the breakdown of where the triangles are.
+ *
+ *   `verify.mjs` now asserts both ends of that relationship — the ceiling is at
+ *   least the 294 140 the world submits and at most three times it — so the number
+ *   cannot be quietly retuned into either a budget that can never pass or one that
+ *   cannot fail.
+ *
+ * BUDGET_PROGRAMS = 48. `renderer.info.programs.length` is the linked-shader
+ *   count, and a program is real milliseconds to link and real VRAM to hold. The
+ *   scene's material count is the only thing that can move it, and this is the
+ *   gate that stops a per-lot material — the exact bug AESTHETIC-NOTES T1 records
+ *   and `InstancePool.setColorAt` exists to prevent — from being reintroduced.
+ *
+ * BUDGET_GEOMETRIES = 400. The CPU-side cost of the scene graph itself: one
+ *   buffer object per geometry, uploaded once. Shared geometry is the point, so
+ *   this counts what is RESIDENT rather than what is drawn.
+ *
+ * BUDGET_UPDATE_MS = 4. The pure-JS simulation cost, per frame, at p50. 16.67 ms
+ *   is a 60 Hz frame, and the simulation is only the part of it this project can
+ *   measure — the rest is the render, the browser's compositing and the machine.
+ *   4 ms is a quarter of the budget for the part that is pure JavaScript and has
+ *   no GPU involvement at all, which is the right way round: this is the
+ *   component that cannot be made faster by a better graphics card.
+ *
+ * BUDGET_ALLOC_BYTES = 2048. Bytes of garbage per steady-state frame, from the
+ *   heap-delta instrument. Deliberately the LOOSEST of the six, because that
+ *   instrument is approximate — see the page's own note — but a garbage rate
+ *   worth a young generation every second (2.4 MB/s at 60 FPS, against the ~16 MB
+ *   a major GC interval on V8) is not a number a 60 FPS game should sit near, and
+ *   the budget is set where the young generation stops being the frame-time
+ *   story. `verify.mjs`'s source contract is the exact gate; this is the one that
+ *   would notice a regression the source gate cannot see, such as a new library
+ *   landing on the frame path.
+ */
+export const BUDGET_DRAW_CALLS = 256
+export const BUDGET_TRIANGLES = 400000
+export const BUDGET_PROGRAMS = 48
+export const BUDGET_GEOMETRIES = 400
+export const BUDGET_UPDATE_MS = 4
+export const BUDGET_ALLOC_BYTES = 2048
+
+/**
+ * The budget as one frozen table, so the page, the report and the gate read the
+ * same six numbers from one place and a retune is one edit rather than seven.
+ */
+export const BUDGET = Object.freeze({
+  drawCalls: BUDGET_DRAW_CALLS,
+  triangles: BUDGET_TRIANGLES,
+  programs: BUDGET_PROGRAMS,
+  geometries: BUDGET_GEOMETRIES,
+  updateMs: BUDGET_UPDATE_MS,
+  allocBytes: BUDGET_ALLOC_BYTES,
+})
 export function viewById(id) {
   return captureView(id) ?? probeView(id)
 }

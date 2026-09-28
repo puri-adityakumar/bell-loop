@@ -12880,7 +12880,13 @@ function skyClaims(source) {
   // sky.
   claim(
     'the ash is held above the eye, so it cannot cross the portal gate ray',
-    /const ASH_MIN_Y = 2\.2/.test(code) && /y: ASH_MIN_Y \+ 1\.6/.test(code),
+    // PASS 17. The height is still `ASH_MIN_Y + 1.6`; what changed is that it is
+    // assigned to `at.y` rather than being a `y:` key in a returned literal,
+    // because `ashDrift` now writes through a destination. The gate follows the
+    // code to the new spelling and the claim is identical: the motes are still
+    // pinned 1.6 m above a floor of `ASH_MIN_Y`, and the mutation that would break
+    // it — moving the mote back below the eye line — still fails here.
+    /const ASH_MIN_Y = 2\.2/.test(code) && /at\.y = ASH_MIN_Y \+ 1\.6/.test(code),
     'the ash is no longer pinned above the eye, so a mote can drift into the §16.5.5 pupil stand-off and break the pass-3 luma gate',
   )
   // 5. THE HORIZON IS UNFOGGED, and for the one reason that is true of all three
@@ -12987,9 +12993,16 @@ test('the sky claims are the source contracts, and each one fails when its code 
     ['the ash at knee height', 'a mote drifts into the §16.5.5 pupil stand-off',
       'the ash is held above the eye, so it cannot cross the portal gate ray',
       'const ASH_MIN_Y = 2.2', 'const ASH_MIN_Y = 0.2'],
+    // PASS 17. The horizon's material is no longer built immediately above
+    // `this.horizonCount = 0` — that line moved into the collect loop, and the
+    // material is now followed by the parts collection and then
+    // `_buildHorizonInstances`. The mutation follows the code to where the fog
+    // flag now is anchored, and the claim it has to break is unchanged: three
+    // `fog: false` and one `fog: true` in the module, and fogging any one of the
+    // three unfogged materials is a different visible failure each time.
     ['a fogged horizon', 'the ring is a 0.0003%-opacity shape and reads as an empty sky',
       'the moon, the horizon and the ash are unfogged, and the bands are not',
-      '      fog: false,\n    })\n\n    this.horizonCount', '      fog: true,\n    })\n\n    this.horizonCount'],
+      '      fog: false,\n    })\n\n    // PASS 17. The parts are COLLECTED', '      fog: true,\n    })\n\n    // PASS 17. The parts are COLLECTED'],
     ['an unseeded mote', 'a capture of the ash is not reproducible',
       'the sky is seeded and clock-driven, so a capture of it is reproducible',
       'const mix = hash32(seed, index, 0x5f3a)', 'const mix = Math.random() * 0xffffffff'],
@@ -14564,9 +14577,20 @@ function creaturePresenceClaims(view, world, creature) {
   //    `creature-stalking.png` has 0.013 of headroom on that measurement.
   claim(
     'a band is an annulus, and its inner edge is a fraction of the outer',
-    /const alpha = \[0, 1, 1, 0\]/.test(presentHaze)
-      && /colours\[at4 \+ 3\] = layer\.alpha \* alpha\[i\]/.test(presentHaze)
+    // PASS 17. The ramp used to be a literal `const alpha = [0, 1, 1, 0]` inside
+    // the innermost loop, and the vertex write read `layer.alpha * alpha[i]`. It is
+    // a module constant `HAZE_RAMP` now, for the reason the constant's own comment
+    // gives (24 arrays a frame), and the vertex write reads `layer.alpha *
+    // HAZE_RAMP[i]`. The claim is UNCHANGED and the gate follows the code: what is
+    // being asserted is still "alpha 0 on the inner edge, 1 on the outer", and a
+    // `[0, 1, 1, 0]` that lives at module scope says exactly as much as one that
+    // lives in the loop. What would break this claim is a ramp with a non-zero
+    // first or last entry, and neither spelling of it can get past the next two
+    // lines.
+    /const HAZE_RAMP = Object\.freeze\(\[0, 1, 1, 0\]\)/.test(code)
+      && /colours\[at4 \+ 3\] = layer\.alpha \* HAZE_RAMP\[i\]/.test(presentHaze)
       && /const inner = outer \* HAZE_INNER_FRACTION/.test(presentHaze)
+      && /const radial = i === 0 \|\| i === 3 \? inner : outer/.test(presentHaze)
       && /const HAZE_INNER_FRACTION = (0\.[1-9])/.test(code),
     'a band with alpha across its middle is a curtain painted over the creature, and the one measurement in the repository that cannot afford it is a body against its own local surround',
   )
@@ -14731,9 +14755,13 @@ test('every presence claim can actually fail, and a mutation names the one it br
     ['the eye put back in the depth sort', 'the pass-6 claim is about the eye and pass 11 must not undo it',
       'the shimmer is additive and unfogged, and the eye keeps its lift',
       'const EYE_RENDER_ORDER = 1', 'const EYE_RENDER_ORDER = 0'],
+    // PASS 17. The ramp moved to a module constant, so the mutation moves with it.
+    // It is still the same mutation — a band with alpha across its middle is a
+    // curtain over the creature — and it is still a one-token change that has to
+    // turn the claim red.
     ['alpha across the middle of the band', 'the curtain is painted over the creature, and creature-stalking has 0.013 of headroom',
       'a band is an annulus, and its inner edge is a fraction of the outer',
-      'const alpha = [0, 1, 1, 0]', 'const alpha = [1, 1, 1, 1]'],
+      'const HAZE_RAMP = Object.freeze([0, 1, 1, 0])', 'const HAZE_RAMP = Object.freeze([1, 1, 1, 1])'],
     ['the inner edge promoted to its own number', 'a second number for the hole is a second number to retune, and the gate reads the fraction',
       'a band is an annulus, and its inner edge is a fraction of the outer',
       'const inner = outer * HAZE_INNER_FRACTION', 'const inner = outer * 0.98'],
@@ -15466,12 +15494,22 @@ function portalDescentClaims(view, world, rulesSource = RULES_SOURCE) {
   //    one direction and false in another.
   claim(
     'a rock is posed by the pure module, unrotated to face the camera, from one shared scratch object',
-    /const pose = rules\.portalDebrisPose\(portal\.rocks\[i\], t\)/.test(writeDebris)
+    // PASS 17. The call is now `portalDebrisPose(rocks[i], t, pose)` — the same
+    // pure function, handed a destination. That is the only difference and it is
+    // the whole point: forty-two fresh pose objects a frame became forty-two
+    // writes into one, which is why the new line is a STATEMENT (`const pose =`)
+    // outside the loop rather than a binding inside it. A `const pose = ...` back
+    // inside the loop is the mutation that undoes this pass, and it is listed in
+    // the mutation table below.
+    /const pose = this\._debrisPose/.test(writeDebris)
+      && /rules\.portalDebrisPose\(portal\.rocks\[i\], t, pose\)/.test(writeDebris)
+      && !/const pose = rules\.portalDebrisPose/.test(writeDebris)
       && /dummy\.position\.set\(pose\.x, pose\.y, 0\)/.test(writeDebris)
       && /dummy\.rotation\.set\(0, 0, pose\.angle\)/.test(writeDebris)
       && /dummy\.scale\.setScalar\(pose\.size\)/.test(writeDebris)
       && /if \(!portal\.debris\.visible\) return/.test(writeDebris)
       && /this\._debrisMatrix = new THREE\.Object3D\(\)/.test(code)
+      && /this\._debrisPose = \{ x: 0, y: 0, angle: 0, size: 0 \}/.test(code)
       && !/new THREE\.Object3D\(\)/.test(writeDebris)
       && !/applyQuaternion|camera\.quaternion/.test(writeDebris),
     'a pose written in the view is a second definition of an orbit the pure harness tests, a billboard is a flake whose shape changes with the bearing, a per-rock `new THREE.Object3D()` is 42 allocations a frame, and composing matrices for a hidden mesh is 42 matrix composes a frame for the rest of the run',
@@ -16386,7 +16424,25 @@ test('the shimmer boxes are the shimmer, and the reference is clear of it', () =
   assert.equal(capture.PROBE_BAND_INNER, undefined, 'a band fraction is back, so the boxes are a guess again')
   assert.equal(capture.PROBE_BAND_OUTER, undefined, 'a band fraction is back, so the boxes are a guess again')
   const view = readFileSync(new URL('./src/game/creatureView.js', import.meta.url), 'utf8')
-  assert.ok(/this\.hazeLayers = layers\.map/.test(view), 'the view no longer keeps the bands it drew, so the probe has to re-derive them')
+  // PASS 17. The stash is the same six records and the same five fields; what
+  // changed is that they are refilled in place rather than rebuilt with a `map` on
+  // every frame the shimmer drew. The gate follows the code to the new spelling
+  // and ADDS the thing that matters about the new spelling: the records have to be
+  // allocated once in `_buildHaze` and not inside `_presentHaze`, because a stash
+  // rebuilt per frame is a stash the probe would read at the right values and the
+  // frame path would pay for eight allocations to do it.
+  assert.ok(
+    /this\.hazeLayers = stash/.test(view) && /const stash = this\._hazeStash/.test(view),
+    'the view no longer keeps the bands it drew, so the probe has to re-derive them',
+  )
+  assert.ok(
+    /this\._hazeStash = Array\.from/.test(view),
+    'the shimmer stash is allocated somewhere other than _buildHaze, so it is per-frame again',
+  )
+  assert.ok(
+    !/this\.hazeLayers = layers\.map/.test(view),
+    'the shimmer stash is a `map` again, which is the 8 allocations a frame pass 17 removed',
+  )
 })
 
 test('the page projects the head the probe is measured against, and the two agree on the module', () => {
@@ -17099,6 +17155,395 @@ test('every op a view names is one the clock gate knows the cost of', () => {
 
 // PASS12_SECTION
 
+// ---------------------------------------------------------------------------
+// iteration 2, pass 17 — performance + draw calls
+//
+// WHAT THIS SECTION CLAIMS, AND WHY IT IS MOSTLY SOURCE
+// ----------------------------------------------------
+// Pass 17 has one live measurement and a set of structural claims, and the split is
+// the point:
+//
+//  1. THE LIVE HALF is `tools/capture.mjs --budget`: a real WebGL context, a real
+//     `LongQuietGame`, `renderer.info.render.calls` read off a frame a driver
+//     actually drew, at four poses from `capture.BUDGET_POSES`. That is the only
+//     honest draw-call number in the project and it cannot be run here — it needs
+//     Chrome — so it is a MODE and not a check, and `verify.mjs` holds the budget it
+//     is measured against rather than the numbers it produces.
+//  2. THE STRUCTURAL HALF is here, over the source, and it exists because the live
+//     half is not run on every commit. A budget nobody re-measures stops being true
+//     silently, so the properties that would have to break for the live number to
+//     move are held statically, and the mutations below prove they can fail.
+//
+// WHAT IT DELIBERATELY DOES NOT CLAIM
+// ----------------------------------
+// That the world is fast. This harness has no GPU, and a frame time measured on
+// SwiftShader is a claim about a software rasteriser wearing the renderer's name.
+// The budget's only timing ceiling is `update()` — the pure-JS simulation, which
+// means the same thing on any machine — and the page's own header says at length
+// why `renderMs` is reported and not judged.
+// ---------------------------------------------------------------------------
+
+section('Performance budget (iteration 2, pass 17)')
+
+test('the budget is six ceilings, they are numbers, and the poses are the gallery own', () => {
+  // 1. THE SIX CEILINGS, and the shape they have to have. Each is a finite
+  // positive number, each is in `BUDGET`, and `BUDGET` is frozen — because a
+  // budget that can be edited at the point of use is a budget with no ceiling.
+  const keys = ['drawCalls', 'triangles', 'programs', 'geometries', 'updateMs', 'allocBytes']
+  assert.deepEqual(Object.keys(capture.BUDGET).sort(), [...keys].sort(), 'the budget is not the six ceilings this pass defined')
+  for (const key of keys) {
+    const value = capture.BUDGET[key]
+    assert.ok(Number.isFinite(value) && value > 0, `the ${key} ceiling is ${value}, so it is not a ceiling`)
+  }
+  assert.ok(Object.isFrozen(capture.BUDGET), 'the budget table is not frozen, so a check could edit the number it is measured against')
+  // 2. THE DRAW-CALL CEILING has to be a draw-call ceiling and not an object count,
+  // because `tools/perf-census.mjs` counts objects and an `InstancedMesh` is one
+  // object for any number of instances. 256 is documented in `capture.js` against
+  // integrated-GPU-class hardware; what is asserted here is that the number the gate
+  // compares against is the one the design argues for and not a value someone typed
+  // over it — 256 sits between 128 (a quarter of the way to the low thousands where
+  // an iGPU starts to hurt) and 512 (a quarter of a budget that would not catch a
+  // regression).
+  assert.ok(
+    capture.BUDGET.drawCalls >= 128 && capture.BUDGET.drawCalls <= 512,
+    `the draw-call ceiling is ${capture.BUDGET.drawCalls}, outside the band the argument in capture.js defends`,
+  )
+  // 3. THE TRIANGLE CEILING, and this one CORRECTS a claim rather than adding one.
+  //    The constant block said 400k was "orders of magnitude above what this world
+  //    submits" — written before anything was measured, and wrong by a factor of
+  //    seventy: the world submits 294 140. The claim now is that the ceiling is a
+  //    real multiple of the submission, so the budget has headroom and is not
+  //    vacuous, and the multiplier is asserted rather than left to taste.
+  assert.ok(
+    capture.BUDGET.triangles >= 294140,
+    `the triangle ceiling is ${capture.BUDGET.triangles}, under the 294140 the world submits, so the budget could never pass`,
+  )
+  assert.ok(
+    capture.BUDGET.triangles <= 294140 * 3,
+    `the triangle ceiling is ${capture.BUDGET.triangles}, more than 3x the 294140 the world submits, so it cannot catch a regression`,
+  )
+  // 4. THE POSES. Four, each resolvable, each with a label a reader can find a
+  //    picture for, and each aiming at a target `capture/main.jsx`'s `anchorFor`
+  //    actually knows — a pose naming a target the page cannot resolve fails at run
+  //    time with `unknown capture target`, which is worse than a gate.
+  const targets = ['node', 'lamp', 'portal', 'spawn', 'hammer', 'exit', 'avenue']
+  assert.equal(capture.BUDGET_POSES.length, 4, `the budget has ${capture.BUDGET_POSES.length} poses, not the four this pass defined`)
+  assert.equal(new Set(capture.BUDGET_POSES.map((pose) => pose.id)).size, 4, 'two budget poses share an id')
+  for (const pose of capture.BUDGET_POSES) {
+    assert.ok(pose.label.length > 20, `the ${pose.id} pose has no label a reader can find a picture for`)
+    assert.ok(targets.includes(pose.target), `the ${pose.id} pose aims at "${pose.target}", which capture/main.jsx's anchorFor cannot resolve`)
+    assert.ok(Number.isFinite(pose.back) && pose.back >= 0, `the ${pose.id} pose has a stand-off of ${pose.back}`)
+    assert.ok(pose.creature === null || typeof pose.creature.state === 'string', `the ${pose.id} pose has a creature that is not a state`)
+    assert.ok(capture.budgetPose(pose.id), `budgetPose cannot resolve the ${pose.id} pose`)
+  }
+  // ...and the one pose that stages a creature uses the PROBE's own stand-off, so
+  // the budget's worst case for the creature's buffers is measured from a distance a
+  // committed screenshot was taken at rather than from one somebody chose because it
+  // flatters the number.
+  const staged = capture.BUDGET_POSES.filter((pose) => pose.creature)
+  assert.equal(staged.length, 1, `${staged.length} poses stage a creature, so "the creature's worst case" is not one pose`)
+  assert.equal(
+    staged[0].creature.metres,
+    capture.CREATURE_PROBE_STANDOFF.metres,
+    `the creature pose stands at ${staged[0].creature.metres} m, not the probe's own ${capture.CREATURE_PROBE_STANDOFF.metres} m`,
+  )
+  // 5. THE BUDGET IS NOT A VIEW, AND ITS IDS ARE NOT VIEW IDS. Two claims and the
+  //    second one was found by this very test: the poses were originally `street`,
+  //    `lamp`, `portal` and `creature`, and `street` IS a §16.5 gallery view, so
+  //    `viewById('street')` resolved a photograph and the gate that a pose cannot
+  //    be a view went red on the build that introduced it. The four are now
+  //    `street-avenue`, `street-lamp`, `street-portal` and `street-creature`, and
+  //    the id sets are asserted disjoint — a shared id is how a measurement ends up
+  //    filed under a screenshot.
+  const viewIds = new Set([...capture.CAPTURE_IDS, ...capture.CREATURE_PROBE_IDS])
+  for (const pose of capture.BUDGET_POSES) {
+    assert.equal(capture.viewById(pose.id), null, `the ${pose.id} budget pose resolves as a capture view`)
+    assert.ok(!viewIds.has(pose.id), `the ${pose.id} budget pose shares its id with a gallery or probe view`)
+  }
+  assert.equal(capture.CAPTURE_IDS.length, 14, '§16.5 is fourteen captures, and the budget has not changed that')
+  // 6. AND THE FRAMES. A budget read before the world has settled is a budget of
+  //    half-built positions, so the settle window is at least a second and the
+  //    other two are long enough to be a distribution rather than a moment.
+  assert.ok(capture.BUDGET_SETTLE_FRAMES * capture.CAPTURE_SIM_DT >= 0.9, 'the budget settles for less than a second of world time')
+  assert.ok(capture.BUDGET_UPDATE_FRAMES >= 60, 'the update timing window is under a second and its p50 is a coin')
+  assert.ok(capture.BUDGET_ALLOC_FRAMES >= capture.BUDGET_UPDATE_FRAMES, 'the allocation window is shorter than the timing window it follows')
+})
+test('the budget harness measures a live frame, and cannot be mistaken for a view run', () => {
+  // `tools/capture.mjs` drives a browser, so it is read as text for the same reason
+  // `capture/main.jsx` and `skyView.js` are: §15.1's seam, and node cannot run the
+  // part that matters.
+  const harness = readFileSync(new URL('./tools/capture.mjs', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+  // 1. THE LIVE NUMBERS COME FROM THE DRIVER. `renderer.info.render.calls` and
+  //    `.triangles`, not a count of `scene.children` — the whole argument for this
+  //    pass's instrument, and the one thing that would make the budget a comment.
+  assert.ok(/info\.render\.calls/.test(page), 'the page does not read renderer.info.render.calls, so the budget is counting something else')
+  assert.ok(/info\.render\.triangles/.test(page), 'the page does not read renderer.info.render.triangles')
+  assert.ok(/info\.programs \? info\.programs\.length/.test(page), 'the page does not read the linked-program count')
+  assert.ok(/info\.memory\.geometries/.test(page), 'the page does not read the resident-geometry count')
+  // 2. AND FROM A FRAME, NOT A RUN. `autoReset` is three.js's default, so the only
+  //    thing that makes the reading mean one frame is a render immediately before
+  //    the read and nothing else drawing in between. A page that took the reading
+  //    after several renders would be reporting a sum.
+  assert.ok(
+    /game\.renderer\.render\(game\.scene, game\.camera\)[\s\S]{0,80}const info = renderInfo\(\)/.test(page),
+    'the page does not render and then immediately read the counters, so the reading is not one frame',
+  )
+  // 3. THE UPDATE TIMING IS MEASURED WITH NO RENDER IN IT, or it is measuring the
+  //    renderer and calling it the simulation.
+  assert.ok(
+    /const t0 = performance\.now\(\)\s*\n\s*stepWorld\(SIM_DT\)\s*\n\s*samples\.push/.test(page),
+    'the page does not time `stepWorld` on its own, so `updateMs` is not the simulation cost',
+  )
+  // 4. THE RENDER TIME IS REPORTED AND NOT JUDGED. A gate comparing `renderMs` to
+  //    anything would be gating on SwiftShader, and the comment that says so has to
+  //    be in the file that would make the mistake.
+  assert.ok(/not budgeted/.test(harness), 'the harness prints a render time without saying it is not budgeted')
+  assert.ok(
+    /ceiling\('drawCalls'/.test(harness) && !/ceiling\('renderMs'/.test(harness),
+    "the harness budgets the software rasteriser's frame time",
+  )
+  // 5. A MISSING INSTRUMENT IS A FAILURE, NOT A SKIP. `alloc` is `null` without
+  //    `--expose-gc`, and the gate says so in words rather than reading `null` as
+  //    zero — which is the exact hole pass 16 spent a review finding in this file.
+  assert.ok(
+    /typeof window\.gc === 'function'/.test(page),
+    'the page reads the heap without checking that the browser was started with --expose-gc',
+  )
+  assert.ok(
+    /no pose reported an allocation reading/.test(harness),
+    'the harness has no sentence for the allocation instrument being absent',
+  )
+  assert.ok(
+    /'--js-flags=--expose-gc'/.test(harness),
+    'the harness does not ask the browser for `window.gc`, so the allocation row can never be measured',
+  )
+  // 6. THE MODE IS A MODE. `--budget` refuses the two flags that only make sense for
+  //    a set of pictures, and it writes to a local path rather than to `benchmark/`,
+  //    which is the published surface.
+  assert.ok(/--only is a view selector/.test(harness), '--budget accepts --only, so it can pretend to be a one-view run')
+  assert.ok(/--out is a frame directory/.test(harness), '--budget accepts --out, so it can be pointed at the gallery folder')
+  assert.ok(
+    /const BUDGET_REPORT = '\.perf\/budget\.json'/.test(harness),
+    'the budget report is not written to a local path, so a run leaves a file in the published surface',
+  )
+  // 7. AND THE REPORT IS THE EVIDENCE, printed and written, with the triangle
+  //    breakdown that sent this pass looking in the first place: the draw-call half
+  //    of the first measurement said the scene was cheap and the triangle half said
+  //    it was three-quarters spent, and an aggregate cannot say which.
+  assert.ok(/capture: where the triangles are/.test(harness), 'the harness does not print where the triangles are')
+  assert.ok(/heaviest/.test(page), 'the census does not break the triangles down by object, so a total cannot be acted on')
+  // 8. AND THE GRAPH CENSUS IS THERE BESIDE THE DRIVER'S COUNT, because the gap
+  //    between them is the diagnostic: a large gap means instancing or culling is
+  //    doing the work, and a small one means the graph IS the frame.
+  assert.ok(/if \(object\.frustumCulled === false\) unculled \+= 1/.test(page), 'the census does not count the culling exemptions, so a draw-call gap cannot be read')
+  assert.ok(/isInstancedMesh \? object\.count : 1/.test(page), 'the census counts one triangle per instanced mesh rather than one per instance')
+})
+test('the instanced horizon is one draw call over one geometry, and its arithmetic is checkable', () => {
+  // PASS 17's only structural change to the scene, held here rather than only in
+  // `verify-world.mjs` because the claim is about the SOURCE: forty-two plain
+  // `THREE.Mesh` objects became one `InstancedMesh` over a unit box, and the
+  // substitution is exact arithmetic rather than an appearance.
+  //
+  // The tombstone docblock for `_horizonGeometry` and the arithmetic in
+  // `_buildHorizon`'s header both quote the OLD expressions — `(w / qw, h / qh, 1)`
+  // and `_horizonGeometry(` — because explaining why they were removed is the point
+  // of those comments. The claims are about CODE, so the source is stripped of
+  // comments and strings first: pass 15 established `stripProse` for exactly this,
+  // and a gate that cannot tell a comment from a call is a gate that has to be
+  // weakened until it passes.
+  const sky = stripProse(SKY_VIEW_SOURCE)
+  // 1. ONE INSTANCED DRAW, and the count is the PICTURE's count, not the object's:
+  //    an `InstancedMesh` with a capacity of 42 and a count of 12 is still one call
+  //    but a ring with half its towers missing, so the two are asserted together.
+  assert.ok(
+    /this\.horizonMesh = new THREE\.InstancedMesh\(geometry, this\.horizonMaterial, parts\.length\)/.test(sky),
+    'the horizon is not one InstancedMesh sized to the parts it collected',
+  )
+  assert.ok(/this\.horizonCount = parts\.length/.test(sky), 'horizonCount is not the number of boxes on the ring')
+  assert.ok(
+    /this\.horizonMesh\.instanceMatrix\.needsUpdate = true/.test(sky),
+    'the ring does not flag its instance matrix for upload, so it renders every box at the first one',
+  )
+  // 2. THE UNIT BOX, and the scale that makes the substitution exact. The old code
+  //    built `BoxGeometry(qw, qh, 0.6)` and scaled the MESH by `(w/qw, h/qh, 1)`;
+  //    since `qw * w/qw === w`, that box was already `w x h x 0.6`, so a unit box
+  //    scaled by `(w, h, HORIZON_DEPTH)` is the same box. The gate holds both halves:
+  //    the unit geometry, and a scale written in the part's OWN metres rather than as
+  //    a ratio against a cache that no longer exists.
+  assert.ok(/const geometry = new THREE\.BoxGeometry\(1, 1, 1\)/.test(sky), 'the ring is not one unit box')
+  assert.ok(
+    /scale3\.set\(part\.w, part\.h, HORIZON_DEPTH\)/.test(sky),
+    'the ring does not scale the unit box by the part own metres, so the substitution is not the same box',
+  )
+  assert.ok(!/w \/ qw|h \/ qh/.test(sky), 'the cache-ratio scale is back, so the ring is scaling against a quantisation that has no geometry')
+  assert.ok(/const HORIZON_DEPTH = 0\.6/.test(sky), 'the depth is a bare literal again, so the one number the substitution depends on cannot be read')
+  // 3. THE DEAD CACHE IS GONE. An uncalled method with a fifteen-line justification
+  //    of itself is the thing this section exists to prevent, and a
+  //    `horizonGeometryKeys` Map that nothing reads is a leak waiting for a caller.
+  assert.ok(!/_horizonGeometry\(/.test(sky), '_horizonGeometry has a caller again, or it was never deleted')
+  assert.ok(!/horizonGeometryKeys/.test(sky), 'the horizon geometry cache is back, or it was never removed')
+  // 4. AND THE COLLECT-BEFORE-DRAW ORDER, which is the only reason the capacity is
+  //    known when the first matrix is written. A resize per part would be correct
+  //    and absurd; an `InstancedMesh` cannot be written at all before it exists.
+  //
+  //    This is asserted as an ORDERING and not as a character window, and the first
+  //    version of the clause was a `[\s\S]{0,400}` distance between `const parts = []`
+  //    and the `_horizonParts` call — which a docblock about the scale quantisation
+  //    was enough to break, because `stripProse` replaces comments with SPACES rather
+  //    than deleting them. A gate that a comment can fail is a gate about comments.
+  //
+  //    It is the CALL's position that is checked, not the `InstancedMesh`
+  //    constructor's: the constructor lives inside `_buildHorizonInstances`, which is
+  //    defined below `_buildHorizon` and is therefore always "after" the loop whether
+  //    or not the loop ran first. The claim is that the writer is handed a COMPLETE
+  //    list, and that is a statement about where the call sits.
+  const collectAt = sky.indexOf('const parts = []')
+  const loopAt = sky.indexOf('for (let index = 0; index < HORIZON_COUNT; index += 1) {')
+  const callAt = sky.indexOf('this._buildHorizonInstances(parts)')
+  assert.ok(loopAt > collectAt, 'the ring does not collect its parts before it draws them')
+  assert.ok(callAt > loopAt, 'the ring is handed to the instanced writer before its parts are collected')
+  assert.ok(
+    /this\._buildHorizonInstances\(parts\)/.test(sky),
+    'the ring does not hand its collected parts to the instanced writer',
+  )
+})
+test('every budget claim can actually fail, and a mutation names the one it breaks', () => {
+  // The mutations are edits to the REAL harness, the REAL page and the REAL sky, and
+  // each has to turn one specific assertion red. They are the reason this section is
+  // not a list of greps: a claim nobody has tried to fool is a claim nobody knows.
+  const harness = readFileSync(new URL('./tools/capture.mjs', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('./capture/main.jsx', import.meta.url), 'utf8')
+  // `sky` is the STRIPPED source, for the reason the instancing check gives: the
+  // tombstones quote the expressions they removed, and a predicate that cannot tell
+  // a comment from a call is a predicate that has to be weakened to pass.
+  const sky = stripProse(SKY_VIEW_SOURCE)
+  /** The three checks above, as one predicate over the three sources. */
+  const budgetHolds = (h, p, s) => {
+    // The code-shaped predicates run on the STRIPPED sources and the string-shaped
+    // ones on the raw text, and the split is not tidiness. `__captureBudget`'s own
+    // header explains at length that it reads `renderer.info.render.calls`, so a
+    // predicate on the raw page is satisfied by the page's PROSE about the reading
+    // rather than by the reading — which is how the first version of this mutation
+    // table reported a page that had stopped reading the draw calls as clean.
+    // `stripProse` is what tells the two apart; the two assertions that are about a
+    // literal (the `--expose-gc` flag, the missing-instrument sentence) stay raw,
+    // because `stripProse` rewrites strings to `""` and would delete them.
+    const pc = stripProse(p)
+    const sc = stripProse(s)
+    return (
+      /info\.render\.calls/.test(pc)
+      && /info\.render\.triangles/.test(pc)
+      && /info\.programs \? info\.programs\.length/.test(pc)
+      && /info\.memory\.geometries/.test(pc)
+      && /game\.renderer\.render\(game\.scene, game\.camera\)[\s\S]{0,80}const info = renderInfo\(\)/.test(pc)
+      && /const t0 = performance\.now\(\)\s*\n\s*stepWorld\(SIM_DT\)\s*\n\s*samples\.push/.test(pc)
+      // ...and this one is raw, for the second reason: `stripProse` rewrites every
+      // string literal to `""`, so a predicate that quotes the literal it is looking
+      // for cannot match the stripped source at all. It is the guard on the guard.
+      && /typeof window\.gc === 'function'/.test(p)
+      && /heaviest/.test(pc)
+      && /if \(object\.frustumCulled === false\) unculled \+= 1/.test(pc)
+      && /isInstancedMesh \? object\.count : 1/.test(pc)
+      && /not budgeted/.test(h)
+      && /ceiling\('drawCalls'/.test(h)
+      && !/ceiling\('renderMs'/.test(h)
+      && /no pose reported an allocation reading/.test(h)
+      && /'--js-flags=--expose-gc'/.test(h)
+      && /--only is a view selector/.test(h)
+      && /--out is a frame directory/.test(h)
+      && /const BUDGET_REPORT = '\.perf\/budget\.json'/.test(h)
+      && /capture: where the triangles are/.test(h)
+      && /new THREE\.InstancedMesh\(geometry, this\.horizonMaterial, parts\.length\)/.test(sc)
+      && /this\.horizonMesh\.instanceMatrix\.needsUpdate = true/.test(sc)
+      && /const geometry = new THREE\.BoxGeometry\(1, 1, 1\)/.test(sc)
+      && /scale3\.set\(part\.w, part\.h, HORIZON_DEPTH\)/.test(sc)
+      && !/w \/ qw|h \/ qh/.test(sc)
+      && /const HORIZON_DEPTH = 0\.6/.test(sc)
+      && !/_horizonGeometry\(/.test(sc)
+      && !/horizonGeometryKeys/.test(sc)
+      // the collect-before-draw ordering, in the same form the check above uses it
+      && sc.indexOf('for (let index = 0; index < HORIZON_COUNT; index += 1) {')
+        > sc.indexOf('const parts = []')
+      && sc.indexOf('this._buildHorizonInstances(parts)')
+        > sc.indexOf('for (let index = 0; index < HORIZON_COUNT; index += 1) {')
+    )
+  }
+  assert.ok(budgetHolds(harness, page, sky), 'the budget claims do not all hold on the real files, so this test proves nothing')
+  // The table, as `[label, file, from, to, what it targets]`. The expected-hit
+  // discipline pass 16 established is the reason `from` is a fragment that exists:
+  // `replace` rewrites the FIRST match, so a fragment quoted in this file's own
+  // comments would be a mutation that changes nothing and a claim that then
+  // reports a broken build as clean.
+  const mutations = [
+    ['the draw-call reading replaced by an object count', 'page', 'calls: info.render.calls,', 'calls: game.scene.children.length,',
+      'renderer.info.render.calls'],
+    ['the triangle reading removed', 'page', 'triangles: info.render.triangles,', 'triangles: 0,',
+      'renderer.info.render.triangles'],
+    ['the program count removed', 'page', 'programs: info.programs ? info.programs.length : null,', 'programs: 0,',
+      'the linked-program count'],
+    // The first version of this row read "the counters read BEFORE the render" and
+    // inserted a SECOND render after the read, which is a real defect and which the
+    // clause could not see: the page still had its original render-then-read pair
+    // further up, so `render(...)` within eighty characters of `const info` was
+    // still true and the mutation reported green. The row now MOVES the read above
+    // the render, which is the defect the clause is actually about — the counters
+    // would be read from the previous frame — and that one cannot be satisfied by a
+    // render that also happens to exist elsewhere in the method.
+    ['the counters read BEFORE the render', 'page',
+      'game.renderer.render(game.scene, game.camera)\n    const renderMs = performance.now() - renderStart\n    const info = renderInfo()',
+      'const info = renderInfo()\n    const renderMs = performance.now() - renderStart\n    game.renderer.render(game.scene, game.camera)',
+      'render and then immediately read'],
+    ['the simulation timed around a render as well', 'page', 'const t0 = performance.now()\n      stepWorld(SIM_DT)\n      samples.push(performance.now() - t0)',
+      'const t0 = performance.now()\n      stepWorld(SIM_DT)\n      game.renderer.render(game.scene, game.camera)\n      samples.push(performance.now() - t0)',
+      'times `stepWorld` on its own'],
+    ['the heap read with no gc guard', 'page', "if (typeof window.gc === 'function' && performance.memory) {", 'if (performance.memory) {',
+      'the browser was started with --expose-gc'],
+    ['the culling census removed', 'page', 'if (object.frustumCulled === false) unculled += 1', '// exemptions uncounted', 'the culling exemptions'],
+    ['instanced meshes counted as one triangle', 'page', 'isInstancedMesh ? object.count : 1', '1',
+      'one triangle per instance'],
+    ['the missing-instrument sentence removed', 'harness', 'no pose reported an allocation reading', 'nothing to report here',
+      'no pose reported an allocation reading'],
+    ['the gc flag dropped from the browser', 'harness', "'--js-flags=--expose-gc',", '', 'ask the browser for `window.gc`'],
+    ['the render time promoted to a gate', 'harness', "ceiling('updateMs', 'ms of update per frame', (pose) => pose.updateMs.p50)",
+      "ceiling('updateMs', 'ms of update per frame', (pose) => pose.updateMs.p50)\n  ceiling('renderMs', 'ms of render per frame', (pose) => pose.renderMs)",
+      "the software rasteriser's frame time"],
+    ['the breakdown removed', 'harness', 'capture: where the triangles are', 'capture: triangles',
+      'where the triangles are'],
+    ['the budget report written into benchmark/', 'harness', "const BUDGET_REPORT = '.perf/budget.json'", "const BUDGET_REPORT = 'benchmark/budget.json'",
+      'a local path'],
+    ['the ring sized to one instance', 'sky', 'new THREE.InstancedMesh(geometry, this.horizonMaterial, parts.length)', 'new THREE.InstancedMesh(geometry, this.horizonMaterial, 1)',
+      'one InstancedMesh sized to the parts it collected'],
+    ['the instance upload flag dropped', 'sky', 'this.horizonMesh.instanceMatrix.needsUpdate = true', '// no upload',
+      'flag its instance matrix for upload'],
+    ['the scale written as a cache ratio again', 'sky', 'scale3.set(part.w, part.h, HORIZON_DEPTH)', 'scale3.set(part.w / 2, part.h / 2, 1)',
+      'scale the unit box by the part own metres'],
+    ['the depth retuned away from 0.6', 'sky', 'const HORIZON_DEPTH = 0.6', 'const HORIZON_DEPTH = 1.0',
+      'the one number the substitution depends on'],
+    ['the dead cache method resurrected', 'sky', 'this._buildHorizonInstances(parts)', 'this._horizonGeometry(1, 1)\n    this._buildHorizonInstances(parts)',
+      '_horizonGeometry has a caller again'],
+    // The ordering clause in the check above is a SECOND line of defence and no
+    // mutation here proves it, because a mutation is one contiguous `replace` and
+    // moving a call twenty lines down the file is not one. This row is the defect the
+    // ordering prevents — the writer handed a list that is not the collected one —
+    // expressed the way a single edit can express it. The presence clause catches it
+    // on the `parts` argument; the ordering clause is what would still catch a
+    // version that passed an empty list to a *renamed* writer. Both are kept because
+    // the cost of a redundant clause is one line and the cost of a missing one is a
+    // ring that draws nothing.
+    ['the writer handed a list that is not the collected one', 'sky',
+      'this._buildHorizonInstances(parts)', 'this._buildHorizonInstances([])',
+      'the ring hands its collected parts to the instanced writer'],
+  ]
+  for (const [label, file, from, to, names] of mutations) {
+    const sources = { page, harness, sky }
+    assert.ok(sources[file].includes(from), `the mutation "${label}" no longer matches ${file}, so it is not testing anything`)
+    const mutated = { ...sources, [file]: sources[file].replace(from, to) }
+    assert.notEqual(mutated[file], sources[file], `the mutation "${label}" was a no-op`)
+    assert.ok(!budgetHolds(mutated.harness, mutated.page, mutated.sky), `the mutation "${label}" left the budget claims green — it targets ${names}`)
+  }
+  console.log(`\n  budget claims: 3 checks, ${mutations.length} mutations, every one caught`)
+})
 // ---------------------------------------------------------------------------
 // report
 // ---------------------------------------------------------------------------

@@ -204,6 +204,26 @@ const PUFF_RENDER_ORDER = 0
 const HAZE_INNER_FRACTION = 0.6
 
 /**
+ * HAZE_RAMP — the four vertex alphas of a band strip, `[0, 1, 1, 0]`.
+ *
+ * PASS 17. This was `const alpha = [0, 1, 1, 0]` INSIDE `_presentHaze`'s innermost
+ * loop, so it was a fresh four-element array for every side of every band: 24 a
+ * frame whenever the shimmer drew, and the shimmer draws on every frame the
+ * creature is within 30 m, which is most of Act II. It is a constant, and a
+ * constant on the frame path belongs at module scope.
+ *
+ * The values are unchanged and the ORDER matters: the strip's four vertices are
+ * inner-top, outer-top, outer-bottom, inner-bottom, and this ramp is what makes
+ * the band's alpha 0 on the edge nearest the figure and 1 on the outer edge. It is
+ * a separate constant from the corner order because they are two different facts
+ * about the same four vertices, and folding them into one table would make a
+ * change to either look like a change to both.
+ *
+ * @type {readonly number[]}
+ */
+const HAZE_RAMP = Object.freeze([0, 1, 1, 0])
+
+/**
  * CreatureView — one figure, added to the scene once and re-presented every frame.
  *
  * The scene graph is built for the four things the presentation actually moves and
@@ -577,6 +597,18 @@ export class CreatureView {
     this.scene.add(this.haze)
     this._hazePositions = positions
     this._hazeColours = colours
+    // PASS 17. The six band descriptors `_presentHaze` publishes for pass 15's
+    // probe, allocated once. It used to build them with a `map` on every frame the
+    // shimmer drew; they are pure measurements of this frame, read by a harness
+    // and by nothing in the game, and a measurement the game does not read is the
+    // easiest kind to stop allocating.
+    this._hazeStash = Array.from({ length: HAZE_LAYERS }, () => ({
+      y: 0,
+      halfHeight: 0,
+      inner: 0,
+      outer: 0,
+      alpha: 0,
+    }))
   }
 
   /**
@@ -822,12 +854,20 @@ export class CreatureView {
       // a rotation of the ellipse rather than a rotation of nothing.
       const cos = Math.cos(spin)
       const sin = Math.sin(spin)
+      // PASS 17. `corners` was a fresh four-element array of fresh two-element
+      // arrays on EVERY mark, sixteen marks a frame = 80 allocations, and the shape
+      // is the same rectangle every time except for the two radii. It is now two
+      // numbers per side written straight into the loop, and the two edges the loop
+      // needs are the diagonal of a rectangle: `(-rx, -radius)`, `(rx, radius)` are
+      // one pair and `(rx, -radius)`, `(-rx, radius)` the other, so the four corners
+      // are two `if`s on `i < 2` and the array disappears entirely. The order is the
+      // old order — bottom-left, bottom-right, top-right, top-left — so the two
+      // triangles' shared diagonal and therefore the gradient are unchanged.
       const rx = radius * DRIP_ASPECT
-      const corners = [[-rx, -radius], [rx, -radius], [rx, radius], [-rx, radius]]
       const vertex = slot * 4
       for (let i = 0; i < 4; i += 1) {
-        const ox = corners[i][0]
-        const oz = corners[i][1]
+        const ox = i === 0 || i === 3 ? -rx : rx
+        const oz = i < 2 ? -radius : radius
         const at = (vertex + i) * 3
         positions[at] = x + ox * cos - oz * sin
         positions[at + 1] = DRIP_LIFT
@@ -918,13 +958,26 @@ export class CreatureView {
     // ...and the six bands AS DRAWN, which is `layers` with the inner radius this loop
     // is about to write beside the outer one. The pair is what the geometry actually
     // is, and the probe projects it rather than re-deriving a fraction of a constant.
-    this.hazeLayers = layers.map((layer) => ({
-      y: layer.y,
-      halfHeight: HAZE_BAND_FILL * HAZE_BAND_HEIGHT * scale,
-      inner: layer.halfWidth * HAZE_INNER_FRACTION,
-      outer: layer.halfWidth,
-      alpha: layer.alpha,
-    }))
+    //
+    // PASS 17. This was `layers.map((layer) => ({ ... }))`: a fresh array, a closure
+    // and six five-field objects on every frame the shimmer drew. It is now six
+    // pre-allocated records, refilled in place — `this._hazeStash`, built once in
+    // `_buildHaze`. Nothing about the values changed, and nothing about the STASH's
+    // lifetime changed either: it was `null` when the shimmer was off before and it
+    // is `null` when the shimmer is off now, and a reader who holds on to the old
+    // array across a frame in which the shimmer turned off was already holding
+    // something the method had promised not to keep.
+    const stash = this._hazeStash
+    for (let band = 0; band < HAZE_LAYERS; band += 1) {
+      const layer = layers[band]
+      const row = stash[band]
+      row.y = layer.y
+      row.halfHeight = HAZE_BAND_FILL * HAZE_BAND_HEIGHT * scale
+      row.inner = layer.halfWidth * HAZE_INNER_FRACTION
+      row.outer = layer.halfWidth
+      row.alpha = layer.alpha
+    }
+    this.hazeLayers = stash
     const positions = this._hazePositions
     const colours = this._hazeColours
     for (let band = 0; band < HAZE_LAYERS; band += 1) {
@@ -942,22 +995,26 @@ export class CreatureView {
         // The strip's own (radial, vertical) corners, ordered inner-top, outer-top,
         // outer-bottom, inner-bottom so the alpha ramp `0, 1, 1, 0` runs across the
         // two triangles' shared diagonal and the gradient is continuous.
-        const corners = [
-          [inner, h + twist],
-          [outer, h + twist],
-          [outer, -h - twist],
-          [inner, -h - twist],
-        ]
-        const alpha = [0, 1, 1, 0]
+        //
+        // PASS 17. `corners` and `alpha` were both fresh arrays inside this loop:
+        // four two-element arrays plus a four-element one, twenty-four times (six
+        // bands, four sides) = 144 allocations a frame, and up to 96 of them the
+        // moment the creature came inside `HAZE_RADIUS` and the shimmer drew at
+        // all. The geometry of the strip is a rectangle with a vertical twist, so
+        // the four corners are two radii and two signed half-heights, and the alpha
+        // ramp is a constant — neither ever needed an array. What is left is the
+        // same four vertices in the same order with the same values, written
+        // directly, and `HAZE_RAMP` below is where the ramp that used to be
+        // allocated lives now.
         const angle = (side * Math.PI) / 2
         const cos = Math.cos(angle)
         const sin = Math.sin(angle)
         const vertex = (band * 4 + side) * 4
         for (let i = 0; i < 4; i += 1) {
-          const radial = corners[i][0]
+          const radial = i === 0 || i === 3 ? inner : outer
           const at = (vertex + i) * 3
           positions[at] = radial * cos
-          positions[at + 1] = layer.y + corners[i][1]
+          positions[at + 1] = layer.y + (i < 2 ? h + twist : -h - twist)
           // `-sin` rather than `sin` so the four sides wind the same way round the
           // column. The material is `DoubleSide` so the winding cannot make a band
           // disappear from one bearing — that was the whole argument for a ring.
@@ -966,7 +1023,7 @@ export class CreatureView {
           colours[at4] = 1
           colours[at4 + 1] = 1
           colours[at4 + 2] = 1
-          colours[at4 + 3] = layer.alpha * alpha[i]
+          colours[at4 + 3] = layer.alpha * HAZE_RAMP[i]
         }
       }
     }

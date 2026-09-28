@@ -665,3 +665,223 @@ not the *taste*.
    agree at the seam.
 
 ---
+
+## 10. Pass 17: the budget, measured
+
+This is the section a reviewer should read first, because it is the only part of
+this file that is a **measurement** rather than a technique. Everything above is
+"how the reference does it"; this is "what it cost us, and what we did about it".
+
+### The two instruments, and why there are two
+
+| | what it reads | what it can run on | what it is for |
+|---|---|---|---|
+| `npm run capture -- --budget` | `renderer.info.render.calls` / `.triangles` off a frame a **driver actually drew** | needs a browser and a GPU | the budgeted number. Nothing else is a draw-call count. |
+| `node tools/perf-census.mjs [--tree <path>]` | the scene **graph**: objects, pools, instances, resident triangles, geometries, materials, culling exemptions | plain node, no renderer | runs at **any commit**, so the slice-16 comparison is possible |
+
+The split is not tidiness. The live half is the honest instrument and it costs a
+browser; the graph half overstates draw calls (an `InstancedMesh` is one object for
+any number of instances) but it is the number a change moves first, and it is the
+only half that can run inside `npm run check` on a machine with no GPU at all.
+
+### The measurement
+
+Four poses, taken from the gallery so every row can be read next to a committed
+PNG. The worst case of the four is the worst case in the game.
+
+| pose | draw calls | triangles | programs | geometries | `update()` p50 |
+|---|---|---|---|---|---|
+| `street-avenue` (§16.5.2) | **70** / 256 | 290 200 / 400 000 | 16 / 48 | 134 / 400 | 0.1 ms / 4 |
+| `street-lamp` (§16.5.2, 11 m off the lamp) | **70** / 256 | 290 200 | 16 | 134 | 0.0 ms |
+| `street-portal` (§16.5.5) | **99** / 256 | 292 360 | 16 | 134 | 0.0 ms |
+| `street-creature` (stalker at 17 m) | **90** / 256 | 290 780 | 19 / 48 | 134 | 0.1 ms |
+
+**The whole scene is inside the draw-call budget by 2.6x, and inside the simulation
+budget by 40x.** Nine lights, no shadow pass (`world.js` sets
+`shadowMap.enabled = false` and nothing in `src/` sets `castShadow`), 63 instanced
+meshes carrying 16 529 instances — an average of 262 instances per draw call.
+
+### What the fidelity passes cost, measured against the slice-16 baseline
+
+`bede4ed` is `feat(v2): slice 16` — the checkpoint iteration 2 branched from, before
+any of passes 5–12 added geometry. Same tool, both trees:
+
+```
+git worktree add /tmp/bell-base bede4ed
+ln -s "$PWD/node_modules" /tmp/bell-base/node_modules
+node tools/perf-census.mjs --tree /tmp/bell-base
+```
+
+| | slice 16 | now (after 5–12) | × |
+|---|---|---|---|
+| objects | 70 | 143 | 2.0 |
+| instanced meshes | 19 | 63 | 3.3 |
+| plain meshes | 46 | 74 | 1.6 |
+| instances | 4 089 | 16 529 | 4.0 |
+| **triangles** | **50 990** | **294 140** | **5.8** |
+| geometries | 64 | 134 | 2.1 |
+| materials | 27 | 76 | 2.8 |
+| culling-exempt | 19 | 72 | 3.8 |
+| sky | **absent** (no `skyView.js` at the baseline) | 6 objects / 542 triangles | — |
+
+**The fidelity passes 5.8x'd the triangle count and 4x'd the instance count while
+adding only 73 objects.** That ratio is the whole argument for T1's instancing
+having been done first: everything — windows, poles, wires, furniture, kerb joints,
+cars — went into a pool rather than onto the graph, so the draw-call bill barely
+moved while the vertex bill quadrupled. The city is instanced at 262 instances per
+call, which is why 294k triangles cost 70 calls.
+
+### The one thing that was actually wrong
+
+Draw calls were never the problem. The sky's silhouette ring was.
+
+`skyView._buildHorizon` built **forty-two plain `THREE.Mesh` objects** — fourteen
+three-part silhouettes — from a `BoxGeometry` cache keyed on a 2 m grid. That is
+**23% of the world's draw calls to draw 542 triangles**, 47 of the scene's 113
+culling-exempt objects, and the largest single concentration of draw calls in the
+project for a pure backdrop.
+
+**BEFORE:** 47 objects in `skyView.root` (0 instanced, 46 mesh, 1 points).
+**AFTER:** 6 objects (1 instanced, 4 mesh, 1 points) — a moon, three haze bands, a
+point cloud, and **one `InstancedMesh` over a unit box holding all 42 silhouettes**.
+
+**Triangles: 542 before, 542 after. Bit-identical.** That equality is the proof,
+and it is arithmetic rather than luck: the old code built `BoxGeometry(qw, qh, 0.6)`
+from the quantised cache and then scaled the *mesh* by `(w / qw, h / qh, 1)`. Since
+`qw × (w/qw) = w`, the box was **already** exactly `w × h × 0.6` — the quantisation
+cancelled itself out in the product and had existed only to share buffers. A unit
+box scaled by `(w, h, 0.6)` is the same box. The material is a `MeshBasicMaterial`
+with a colour, no map and no `vertexColors`, so the UVs the unit box carries
+differently are read by nothing, and it does not light, so the normals are read by
+nothing either. Both are load-bearing, and it is why the same trick could not have
+been applied to a `MeshStandardMaterial` part.
+
+Measured effect: **draw calls 111 → 70** at the avenue, **140 → 99** at the portal;
+**geometries 151 → 134**; culling-exempt objects 113 → 72. The pixel cost is zero —
+which is why the gallery was re-shot (14/14, luma floors re-justified) rather than
+assumed, and why `verify-world.mjs`'s three horizon gates now read the *instance
+matrices* instead of the child meshes, which is a stronger check than the one they
+replace: they ask what is drawn rather than what the builder intended.
+
+The now-dead `_horizonGeometry` cache is a tombstone in `skyView.js`, because its
+own history is the clearest statement of what the cache was buying: it keyed on
+`w.toFixed(3)` (42 parts, 42 geometries, and a comment claiming they shared), then
+quantised the scale (still unique per part), then quantised the geometry — and the
+quantisation turned out to have been unnecessary all along.
+
+### The re-shot gallery, and how much of its byte churn is the world
+
+The horizon merge is a visual merge, so §16.5's fourteen frames were re-taken
+(14/14, 0 failed, luma floors re-justified; `win` at 10.42% against its 6.00%
+floor, +4.42 — the same tightest margin REVIEW-16 recorded).
+
+The PNGs are not byte-identical to pass 16's, and the honest question is **how much
+of that difference is this pass.** Measured, with the old bytes restored from
+`082a60a`:
+
+| comparison | pixels changed | mean Δ where changed | max Δ |
+|---|---|---|---|
+| pass 16 `title.png` → pass 17 `title.png` | 93.8% | **2.08** / 255 | 18 |
+| pass 17 `title.png` → pass 17 `title.png`, **a second run of identical code** | 94.2% | **1.90** / 255 | **76** |
+
+**Two runs of the same build differ by MORE than the old build does from the new
+one.** The 2-level spread across 95% of the frame is SwiftShader's rasterisation
+nondeterminism — the same finding REVIEW-pass-16 recorded as "only rasterised luma
+moves, by 0.13–1.18 points" — and it means the committed PNGs are not on their own
+evidence of a pixel change. The evidence is the world-level equality instead: the
+sky's triangle count is 542 before and 542 after, the instance matrices reproduce
+the old world-space boxes, and §16.5's luma floors hold.
+
+This is worth stating plainly because it is the honest limit of the gallery: on this
+box a PNG re-shoot is a re-take, not a diff, and a reviewer comparing bytes should
+compare *runs* before concluding anything about the picture.
+
+### Per-frame allocations, and what was left alone
+
+Steady state (phase PLAYING, three live portals) allocated **≈290 objects and arrays
+per frame** before this pass. Removed:
+
+| site | was | now |
+|---|---|---|
+| `streetView.lampsNear` | 49 × `{x, z}` from `worldOf`, + 1 array, + 2 closures | 1 array; the fold is inlined |
+| `streetView.update` → `_writeDebris` | 42 × `portalDebrisPose` return objects | 42 writes into `this._debrisPose` |
+| `skyView.update` (the ash) | 90 × `{x, y, z}`, + **90 redundant `needsUpdate` writes** | 90 writes into `this._ashAt`, one upload flag |
+| `creatureView._presentHaze` | 144 array literals (24 band-sides × 2) | 0; `HAZE_RAMP` is a frozen module constant |
+| `creatureView._presentTrail` | 80 array literals (16 marks × 5) | 0; two `i` comparisons |
+| `creatureView._presentHaze` (the stash) | 6 objects + array + closure | 6 records refilled in place |
+
+**~460 allocations a frame removed, none of them visible.** Two were worse than
+garbage: the haze's `corners`/`alpha` arrays were rebuilt inside the innermost loop
+24 times a frame, and the ash's `needsUpdate = true` sat *inside* its 90-iteration
+loop, so the upload flag was written ninety times to set one thing.
+
+**LEFT ALONE, deliberately — and this is the honest half of the answer:**
+
+- **`world.js::_audioFrame`** builds ~15 objects a frame, including a
+  `portals.map` with a closure. Untouched because it is `AUDIO_FRAME_FIELDS` —
+  §13's contract, asserted by `verify.mjs`, read by `audio.js` — and a frame object
+  an audio router might retain is the one place in the codebase where reuse is a
+  *correctness* question rather than a performance one. Fifteen small objects
+  against a 0.1 ms p50 is not worth answering it wrongly.
+- **`Math.hypot` in `lampsNear` was NOT replaced** with `Math.sqrt(dx*dx + dz*dz)`,
+  even though the squared form is the obvious optimisation. Measured: over 16 000
+  queries the two find the same set of lamps and disagree on the `distance` value by
+  **one ULP**. `Array.prototype.sort` is stable, so a tie decided on a computed
+  distance can flip when the computation changes — and the light pool is aimed from
+  `lamps[0]`. Paying a rounding difference on the path that aims the light, for a
+  call costing nanoseconds against a 16.7 ms frame, is the wrong trade. (The gate
+  that appeared to catch this turned out to be the two-core load artifact
+  REVIEW-16 recorded; the reasoning for keeping `hypot` is bit-exactness, not a
+  reproduced failure, and the comment in `streetView.js` says so.)
+- **`frustumCulled = false` on all 62 street pools was NOT changed.** The
+  `InstancePool` header's reasoning is correct: three wrapped copies span 1 344 m,
+  the camera is essentially always inside them, and `InstancedMesh` culls
+  all-or-nothing over the whole buffer, so turning it on would cull nothing. Real
+  per-instance culling would mean dropping wrap copies that are genuinely visible —
+  the copies at ±448 m are within the 260 m far plane of the opposite edge of the
+  current one — which is a visual change, and this pass made none.
+
+### What the budget could NOT measure, and said so
+
+`renderMs` is **reported and not gated**: 2.8–39.8 ms on this box's SwiftShader.
+Those are software-rasteriser numbers two to three orders of magnitude off an
+integrated GPU, and a frame time measured here would be a claim about SwiftShader
+wearing the renderer's name. The only timing ceiling in `BUDGET` is `update()`,
+which is pure JavaScript and means the same thing on any machine.
+
+The allocation instrument is a `performance.memory` heap delta with a `gc()` on
+either side, and it reads **0 bytes/frame** at every pose — because V8 collects the
+garbage itself, so the delta measures *net heap growth*, not churn. It is reported
+as a smoke alarm (a leak would show) and not as a scale. The exact gate for churn is
+a source contract in `verify.mjs`, and a missing instrument is a **failing** budget
+row rather than a skipped one: a gate that is skipped on the machine that skipped it
+is the shape of hole REVIEW-16 spent a pass finding in this very file.
+
+### Where the triangles are, and why that is the next pass's problem
+
+The triangle budget is the **one** number in this table more than half spent
+(73.5%), where draw calls sit at 39%. The breakdown, from `--budget`'s top-twelve:
+
+| pool | triangles | instances |
+|---|---|---|
+| `wires` (the catenary ribbon) | 36 288 | 1 |
+| `bollards` | 22 752 | 948 |
+| `windowFrames` | 21 888 | 684 |
+| `poleInsulators` | 21 168 | 1 764 |
+| `parapets` | 18 336 | 573 |
+| `bikeWheels` | 11 520 | 60 |
+
+Those six are **132k triangles, 45% of the scene, and 6 draw calls** — so they are
+not a *frame-time* problem, they are the reason the ceiling is at 73% rather than
+30%. `bikeWheels` is the one that looks wrong: 60 wheels at **192 triangles each**,
+for a bicycle wheel the player never gets closer than a few metres to. That is a
+real, safe, unexploited saving (a wheel is 24 radial segments of cylinder), and it
+is **deliberately left for the next pass** rather than done here: it is a visible
+silhouette change, and this pass's rule was zero visual regression.
+
+`wires` is 36 288 triangles in ONE object for 1 512 conductors — 24 triangles per
+catenary segment, and the whole span is a `frustumCulled = false` mesh because the
+shader needs the screen-space width `streetView.js`'s own header explains. Halving
+`CATENARY_SEGMENTS` would halve it, and it would also thin the wire, which is a
+design decision and not a performance one.
+

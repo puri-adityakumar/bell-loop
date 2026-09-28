@@ -100,6 +100,15 @@ import {
   PROBE_SHIMMER_MIN,
   probeRowOf,
   viewById,
+  // pass 17. The budget's poses, its six ceilings, and the gallery's own viewport,
+  // read from `src/game/capture.js` for the same reason every other import on
+  // this list is there: the thing that decides what is being measured has to be
+  // readable in node, by the gate, without a browser. A budget this file wrote
+  // itself would be a budget with no gate.
+  BUDGET,
+  BUDGET_POSES,
+  BUDGET_ALLOC_FRAMES,
+  CAPTURE_VIEWPORT,
 } from '../src/game/capture.js'
 import {
   creatureContrast,
@@ -127,6 +136,14 @@ const CHROME_ARGS = [
   '--hide-scrollbars',
   '--mute-audio',
   '--disable-dev-shm-usage',
+  // PASS 17. `--expose-gc` and nothing else changed, and it is here for one
+  // measurement: `__captureBudget`'s heap delta needs a way to collect before it
+  // reads, or the delta is dominated by whatever the last major GC happened to
+  // leave behind. It is a V8 flag inside a Chrome flag, which is why it is
+  // `--js-flags=--expose-gc` and not `--expose-gc`. The page checks for
+  // `window.gc` and reports `null` rather than a number if it is missing, so a
+  // browser that drops the flag degrades one row of a report and does not lie.
+  '--js-flags=--expose-gc',
 ]
 
 /** How long one view may take before the harness calls it a failure. */
@@ -150,6 +167,22 @@ const PROBE_DIR = '.probe/frames'
 const PROBE_REPORT = '.probe/creature-probe.json'
 
 /**
+ * BUDGET_REPORT — where pass 17's numbers go.
+ *
+ * `.perf/budget.json`, and the reasoning is the probe's verbatim: this is
+ * instrumentation for one pass, not a deliverable, and `benchmark/` is the
+ * published surface whose contents are quoted as evidence. A committed
+ * `benchmark/budget.json` would be a second report in a folder a reader of the
+ * benchmark has to work out the standing of. The MEASURED numbers are quoted in
+ * `AESTHETIC-NOTES.md` §10 instead, which is where a reader is meant to find
+ * them, and the file itself stays local and gitignored.
+ *
+ * There is no frame directory at all: the budget writes no PNG, and the flag
+ * below has no `--out` default because there is nothing to put in one.
+ */
+const BUDGET_REPORT = '.perf/budget.json'
+
+/**
  * fromRepo — a path in this file's arguments, resolved against the repository root.
  *
  * `path.resolve`, not `new URL('../' + arg, import.meta.url)`. The URL form looks
@@ -165,7 +198,7 @@ function fromRepo(argument) {
 }
 
 function parseArgs(argv) {
-  const options = { only: null, out: null, report: null, probe: false }
+  const options = { only: null, out: null, report: null, probe: false, budget: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--only') options.only = argv[(index += 1)]
@@ -175,7 +208,20 @@ function parseArgs(argv) {
     else if (arg === '--report') options.report = argv[(index += 1)]
     else if (arg.startsWith('--report=')) options.report = arg.slice('--report='.length)
     else if (arg === '--probe') options.probe = true
+    else if (arg === '--budget') options.budget = true
     else throw new Error(`unknown argument: ${arg}`)
+  }
+  // PASS 17. `--budget` is not a third PHOTOGRAPHY mode and it is refused to
+  // pretend to be one. The two flags that only make sense for a set of pictures —
+  // `--only` (one view of a set) and `--out` (a directory of PNGs) — are errors
+  // here rather than being quietly ignored, because a silently ignored `--out` on
+  // a run that writes no frames is a flag that appears to have done something.
+  if (options.budget) {
+    if (options.probe) throw new Error('--probe and --budget are two different measurements; pick one')
+    if (options.only) throw new Error('--only is a view selector, and the budget is not a set of views')
+    if (options.out) throw new Error('--out is a frame directory, and the budget writes no frames')
+    if (options.report === null) options.report = BUDGET_REPORT
+    return options
   }
   // The defaults FOLLOW the mode rather than being written into `parseArgs`, so
   // that a probe run cannot be pointed at the gallery's directory by omission —
@@ -547,8 +593,287 @@ function probeGates(rows) {
   return summary
 }
 
+/**
+ * budgetGates — the six ceilings, read against a run's four poses.
+ *
+ * §16.5's gallery gates its frames against a floor, and this is the same shape
+ * for a different kind of claim. Three rules, and the third is the one that
+ * matters most:
+ *
+ *  1. EVERY pose is measured. A budget read at one street position is a claim
+ *     about that position, and the pass asked for the worst cases, so a run with
+ *     a missing pose is a failed run rather than a partial one.
+ *  2. EVERY pose is judged. A budget that only failed if the WORST row failed
+ *     would let `lamp` regress by 200 draw calls while `street` stayed under the
+ *     line, and the bright frame is the one with the least headroom on a
+ *     fill-limited machine. So the gate is the max over poses, and every breach
+ *     is named with the pose that breached it.
+ *  3. A MISSING instrument is not a pass. `alloc` is `null` when the browser was
+ *     not started with `--expose-gc`, and the row reports that as `not measured`
+ *     with the reason, which is a warning in the report and a red exit code here
+ *     — because a gate that is skipped on the machine that skipped it is exactly
+ *     the shape of hole pass 16 spent a review finding in this very file.
+ *
+ * @param {object[]} poses the page's rows
+ * @returns {object[]} one gate row per ceiling, `fails` empty when green
+ */
+function budgetGates(poses) {
+  const worst = (read) => {
+    let id = null
+    let value = -Infinity
+    for (const pose of poses) {
+      const next = read(pose)
+      if (next === null || next === undefined) continue
+      if (next > value) {
+        value = next
+        id = pose.id
+      }
+    }
+    return { id, value }
+  }
+  const rows = []
+  const ceiling = (key, label, read) => {
+    const { id, value } = worst(read)
+    const fails = []
+    if (!poses.some((pose) => read(pose) !== null && read(pose) !== undefined)) {
+      fails.push(`no pose reported a ${label}, so the ceiling cannot be checked`)
+    } else if (value > BUDGET[key]) {
+      fails.push(`${id} is ${value} ${label}, over the ${BUDGET[key]} ceiling`)
+    }
+    rows.push({ ceiling: key, label, value, pose: id, budget: BUDGET[key], fails })
+  }
+  ceiling('drawCalls', 'draw calls', (pose) => pose.calls)
+  ceiling('triangles', 'triangles', (pose) => pose.triangles)
+  ceiling('programs', 'linked programs', (pose) => pose.programs)
+  ceiling('geometries', 'resident geometries', (pose) => pose.graph.geometries)
+  ceiling('updateMs', 'ms of update per frame', (pose) => pose.updateMs.p50)
+  // rule 3: the allocation instrument being absent is a failure with a reason.
+  const alloc = worst((pose) => (pose.alloc ? pose.alloc.bytes : null))
+  const allocFails = []
+  if (!poses.some((pose) => pose.alloc)) {
+    allocFails.push(
+      'no pose reported an allocation reading, so the ceiling cannot be checked — the browser was ' +
+        'not started with `--expose-gc`, which tools/capture.mjs passes as `--js-flags=--expose-gc`',
+    )
+  } else if (alloc.value > BUDGET.allocBytes) {
+    allocFails.push(`${alloc.id} allocates ${alloc.value} bytes a frame, over the ${BUDGET.allocBytes} ceiling`)
+  }
+  rows.push({
+    ceiling: 'allocBytes',
+    label: 'bytes of garbage per frame',
+    value: poses.some((pose) => pose.alloc) ? alloc.value : null,
+    pose: poses.some((pose) => pose.alloc) ? alloc.id : null,
+    budget: BUDGET.allocBytes,
+    fails: allocFails,
+  })
+  return rows
+}
+
+/**
+ * budgetRun — `--budget`: one page, one world, four poses, no pictures.
+ *
+ * The shape is deliberately unlike the gallery loop. The gallery is a loop over
+ * views because a view is a script that has to be walked; the budget is four
+ * stances of a settled world, and the page's own `__captureBudget` is the only
+ * thing that can take them (it owns the game, the `place` search and the
+ * `SIM_DT` step, all of which are page-side by the argument `capture.html`
+ * itself makes). So this function's whole job is: serve, open, ask, judge,
+ * print, write one JSON file, and never take a screenshot.
+ *
+ * A budget run is therefore FAST — a few seconds rather than the minutes a
+ * fourteen-frame gallery costs — which is the second reason it is worth having
+ * as a mode at all. A performance budget nobody re-measures is a budget that
+ * stops being true silently, and this one costs less than reading this comment.
+ *
+ * @param {object} options from `parseArgs`, with `budget: true`
+ * @returns {Promise<void>}
+ */
+async function budgetRun(options) {
+  const started = Date.now()
+  console.log(`capture: budget -> ${options.report}`)
+  const server = await createServer({
+    root: REPO_ROOT,
+    logLevel: 'warn',
+    server: { port: 0, strictPort: false, host: '127.0.0.1' },
+  })
+  await server.listen()
+  const origin = server.resolvedUrls.local[0]
+  const browser = await puppeteer.launch({
+    executablePath: CHROME,
+    headless: 'shell',
+    args: CHROME_ARGS,
+    protocolTimeout: VIEW_TIMEOUT_MS + 30_000,
+  })
+  const report = {
+    tool: 'tools/capture.mjs --budget',
+    design: 'GAMEDESIGN.md §16.5 / ITERATION-2-CHECKLIST.md PASS 17',
+    module: 'src/game/capture.js',
+    seed: 1337,
+    mode: 'budget',
+    budget: BUDGET,
+    poses: BUDGET_POSES.map((pose) => pose.id),
+    viewport: { ...CAPTURE_VIEWPORT },
+    renderer: null,
+    userAgent: null,
+    browser: await browser.version(),
+    node: process.version,
+    started: new Date(started).toISOString(),
+    ms: 0,
+    measured: [],
+    gates: [],
+  }
+  let exitCode = 0
+  try {
+    const page = await browser.newPage()
+    const pageErrors = []
+    page.on('pageerror', (error) => pageErrors.push(String(error).split('\n')[0]))
+    page.on('console', (message) => {
+      if (message.type() === 'error') pageErrors.push(`console: ${message.text().slice(0, 200)}`)
+    })
+    // The gallery's own viewport, and the reason it is read from `capture.js`
+    // rather than typed here: a budget taken at a different resolution than the
+    // gallery is a budget of a resolution nobody plays at.
+    await page.setViewport({ width: CAPTURE_VIEWPORT.width, height: CAPTURE_VIEWPORT.height })
+    await page.goto(`${origin}capture.html`, { waitUntil: 'domcontentloaded', timeout: VIEW_TIMEOUT_MS })
+    await page.waitForFunction('window.__captureReady === true', { timeout: VIEW_TIMEOUT_MS })
+    report.renderer = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas')
+      if (!canvas) return 'no canvas: the world never built'
+      const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl')
+      if (!gl) return 'no context: this build cannot create WebGL'
+      const debug = gl.getExtension('WEBGL_debug_renderer_info')
+      return debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)
+    })
+    report.userAgent = await browser.userAgent()
+    const measured = await page.evaluate(() => window.__captureBudget())
+    report.measured = measured.poses
+    await page.close()
+    // Rule 1: every pose, or the run is not a run.
+    const missing = report.poses.filter((id) => !report.measured.some((pose) => pose.id === id))
+    if (missing.length > 0) {
+      exitCode = 1
+      report.gates.push({
+        ceiling: 'poses',
+        label: 'poses measured',
+        value: report.measured.length,
+        pose: null,
+        budget: report.poses.length,
+        fails: [`missing: ${missing.join(', ')}`],
+      })
+    } else {
+      try {
+        report.gates = budgetGates(report.measured)
+      } catch (error) {
+        exitCode = 1
+        report.gateError = String(error.message ?? error)
+        console.log(`  FAIL  ${report.gateError}`)
+      }
+    }
+    for (const row of report.gates) {
+      if (row.fails.length > 0) exitCode = 1
+    }
+    for (const message of pageErrors.slice(0, 5)) {
+      exitCode = 1
+      console.log(`        page: ${message}`)
+    }
+  } catch (error) {
+    exitCode = 1
+    report.error = String(error && error.stack ? error.stack : error)
+    console.log(`  FAIL  ${report.error}`)
+  } finally {
+    await browser.close()
+    await server.close()
+  }
+  await writeBudgetReport(report, options, started, exitCode === 0 ? 0 : 1)
+  process.exitCode = exitCode
+}
+
+/**
+ * writeBudgetReport — print the rows, write the JSON, and say the one number
+ * that is deliberately not judged.
+ *
+ * Split out of `budgetRun` so that `budgetRun`'s `try/finally` can be about the
+ * browser and nothing else. This half cannot fail: a report that could not be
+ * written is a loud error, not a silent one, and every write here is to a path
+ * under `.perf/` that `.gitignore` already holds.
+ *
+ * @param {object} report the assembled report, mutated with `ms`
+ * @param {object} options from `parseArgs`
+ * @param {number} started `Date.now()` at entry
+ * @param {number} exitCode 0 green, 1 red — carried through so the caller keeps
+ *   the only assignment of `process.exitCode`
+ */
+function writeBudgetReport(report, options, started, exitCode) {
+  for (const pose of report.measured) {
+    const alloc = pose.alloc
+      ? `${pose.alloc.bytes} B/frame over ${BUDGET_ALLOC_FRAMES} frames`
+      : 'alloc NOT MEASURED'
+    console.log(
+      `  ${pose.id.padEnd(9)} calls ${String(pose.calls).padStart(4)}/${BUDGET.drawCalls}  ` +
+        `tris ${String(pose.triangles).padStart(7)}/${BUDGET.triangles}  ` +
+        `programs ${String(pose.programs).padStart(2)}/${BUDGET.programs}  ` +
+        `geom ${String(pose.graph.geometries).padStart(3)}/${BUDGET.geometries}  ` +
+        `update p50 ${pose.updateMs.p50}ms p95 ${pose.updateMs.p95}ms (/${BUDGET.updateMs})  ` +
+        alloc,
+    )
+    console.log(
+      `            graph ${pose.graph.objects} objects (${pose.graph.kinds.instanced} instanced, ` +
+        `${pose.graph.kinds.mesh} mesh, ${pose.graph.kinds.points} points, ${pose.graph.kinds.line} line, ` +
+        `${pose.graph.kinds.light} lights), ${pose.graph.unculled} unculled, ` +
+        `${pose.graph.instances} instances, ${pose.graph.materials} materials, ` +
+        `${pose.graph.triangles} triangles resident`,
+    )
+  }
+  for (const row of report.gates) {
+    const verdict = row.fails.length === 0 ? 'ok  ' : 'FAIL'
+    console.log(
+      `  ${verdict}  ${row.label.padEnd(30)} ${row.value} / ${row.budget}` +
+        `${row.pose ? ` (worst: ${row.pose})` : ''}`,
+    )
+    for (const sentence of row.fails) console.log(`          ${sentence}`)
+  }
+  // The triangle breakdown, once, from the pose with the most of them. Printed
+  // on every pose's behalf rather than on one pose's, because the shape of the
+  // answer is the same at all four and a reader who wants to diff them has the
+  // JSON.
+  const heaviestPose = report.measured.reduce(
+    (worst, pose) => (pose.graph.triangles > worst.graph.triangles ? pose : worst),
+    report.measured[0],
+  )
+  if (heaviestPose) {
+    console.log(`capture: where the triangles are (${heaviestPose.id}, ${heaviestPose.graph.triangles} total)`)
+    for (const row of heaviestPose.graph.heaviest) {
+      console.log(
+        `  ${String(row.triangles).padStart(7)}  ${row.name.padEnd(28)} ` +
+          `${String(row.instances).padStart(6)} instance(s) over ${row.objects} object(s)` +
+          `${row.unculled ? ', unculled' : ''}`,
+      )
+    }
+  }
+  report.ms = Date.now() - started
+  const reportPath = fromRepo(options.report)
+  mkdirSync(path.dirname(reportPath), { recursive: true })
+  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`)
+  console.log(`capture: budget done in ${report.ms} ms, report -> ${options.report}`)
+  if (report.renderer) console.log(`capture: renderer -> ${report.renderer}`)
+  // `renderMs` is printed and NOT judged, on purpose: it is a software
+  // rasteriser's number wearing a renderer's name, and the page's own header
+  // says so at length. Printing it beside the caveat is more useful than
+  // omitting it, because the first thing anybody does with a frame time is go
+  // looking for a frame time.
+  for (const pose of report.measured) {
+    console.log(`capture: ${pose.id} render ${pose.renderMs} ms on SwiftShader (reported, not budgeted)`)
+  }
+  if (exitCode !== 0) console.log('capture: budget OVER — see the FAIL rows above')
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
+  // PASS 17. The budget is a different job in the same harness, and it is
+  // branched BEFORE anything gallery-shaped is built — no viewport, no `ids`, no
+  // shutter, no luma floor. The gallery loop below is untouched by this pass and
+  // its fourteen rows are exactly what they were.
+  if (options.budget) return budgetRun(options)
   const ids = idsFor(options)
   const started = Date.now()
   console.log(`capture: ${ids.length} view(s) -> ${options.out}`)

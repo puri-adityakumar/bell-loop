@@ -111,9 +111,19 @@ Hard rules for every pass:
   fog in all states; per-state presentation retuned if the warmer fog washes it.
 - [x] `PASS 16: Full capture refresh.` Re-run all 14 captures on the new look,
   luma floors re-justified, gallery replaced. Photographs must be legible.
-- [x] `PASS 17: Performance + draw calls.` Budget check (draw calls, geometry
+- [DONE] `PASS 17: Performance + draw calls.` Budget check (draw calls, geometry
   count), instancing/merging where the fidelity passes added cost, 60 FPS
-  headroom on integrated GPU class.
+  headroom on integrated GPU class. Instrument: `npm run capture -- --budget`
+  (live `renderer.info`) and `node tools/perf-census.mjs` (graph census, runs at
+  any commit — `--tree bede4ed` for the slice-16 baseline). Measured: **draw calls
+  70/256 at the avenue, 99/256 at the portal; triangles 294 140/400 000; programs
+  19/48; `update()` 0.1 ms/4 ms p50.** Against the slice-16 baseline the fidelity
+  passes 5.8x'd triangles and 4x'd instances for +73 objects. The one thing that
+  was actually wrong was `skyView`'s forty-two-mesh silhouette ring, now one
+  `InstancedMesh` over a unit box at **bit-identical 542 triangles** (calls
+  111→70). ~460 per-frame allocations removed from `lampsNear`, `_writeDebris`, the
+  ash loop and the creature's haze/trail. Budget, breakdown, the things left alone
+  and the things the instrument could not measure: `AESTHETIC-NOTES.md` §10.
 - [x] `PASS 18: Game feel sweep.` Spawn framing, first-30-seconds pacing, sigil
   + HUD contrast against the brighter world, reduced-motion still respected.
 - [x] `PASS 19: Debt sweep.` Fix top items from REVIEW-pass-*.md NOT-DONE

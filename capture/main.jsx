@@ -132,6 +132,15 @@ import {
   PROBE_BAND_ROWS,
   PROBE_REFERENCE_INNER,
   PROBE_REFERENCE_OUTER,
+  // pass 17. The budget's four poses, the frames each stage needs, and the six
+  // ceilings the report is measured against. Read from the same module for the
+  // reason the rows above give: a page that owned a budget number would be a
+  // second budget, and two budgets is one number with two answers.
+  BUDGET_POSES,
+  BUDGET,
+  BUDGET_SETTLE_FRAMES,
+  BUDGET_UPDATE_FRAMES,
+  BUDGET_ALLOC_FRAMES,
 } from '../src/game/capture.js'
 import Hud from '../src/ui/Hud.jsx'
 import PauseOverlay from '../src/ui/PauseOverlay.jsx'
@@ -1553,4 +1562,232 @@ window.__captureBaseline = async () => {
     shimmer: game.creatureView.haze.visible === true,
     lamp: { lamp: game.lampDread.lamp, level: round(game.lampDread.level), pulse: round(game.lampDread.pulse) },
   }
+}
+
+/**
+ * ============================================================================
+ * PASS 17 — __captureBudget
+ * ============================================================================
+ *
+ * THE INSTRUMENT, AND WHAT IT IS NOT
+ * ----------------------------------
+ * The budget asks two questions the gallery cannot answer: how many draw calls a
+ * live frame costs, and how much the world allocates to reach the next one. Both
+ * are properties of a *running* world with a real WebGL context behind it, so
+ * this is a live measurement and not a source reading. Every number below is
+ * read out of the same `LongQuietGame` the fourteen views are photographed from,
+ * at poses taken from `BUDGET_POSES`, after the world has been stepped to a
+ * settled state.
+ *
+ * It is a MODE rather than a fifth set of views, and the reason is the one
+ * `capture.js`'s budget section argues: there is no picture here. Nothing is
+ * written to `benchmark/screenshots/`, no luma floor applies, and
+ * `CAPTURE_IDS` stays at fourteen.
+ *
+ * WHY `renderer.info` IS THE RIGHT NUMBER AND NOT A COUNT OF `scene.children`
+ * --------------------------------------------------------------------------
+ * A traverse counts OBJECTS; `renderer.info.render.calls` counts what the driver
+ * was actually asked to draw, which is the number that decides whether a frame
+ * is 60 FPS on an integrated GPU. The two differ in both directions: an
+ * `InstancedMesh` is one object and one call however many instances it holds,
+ * and a frustum-culled mesh can be an object in the graph and no call at all.
+ * Both are counted here — the graph census AND the driver's count — because the
+ * gap between them is the diagnostic: a large gap means culling or instancing is
+ * doing the work, and a small one means the graph is the frame.
+ *
+ * `info.autoReset` is three.js's default `true`, so `render()` clears the
+ * counters at the top of itself and what is read after the call is that one
+ * frame and no other. The harness renders once immediately before reading, and
+ * nothing else draws in between.
+ */
+function census(root) {
+  const kinds = { instanced: 0, mesh: 0, points: 0, line: 0, sprite: 0, light: 0 }
+  let visible = 0
+  let unculled = 0
+  let instances = 0
+  let triangles = 0
+  const geometries = new Set()
+  const materials = new Set()
+  // PASS 17. THE BREAKDOWN, and it is here because the aggregate sent me looking.
+  //
+  // The first run of this instrument reported 111 draw calls against a 256
+  // ceiling and 290 200 triangles against 400 000, and the two halves of that
+  // sentence point in opposite directions: the draw-call half says the scene is
+  // cheap, and the triangle half says it is three-quarters spent. A single total
+  // cannot tell you which of a hundred and fifty geometries to look at, so every
+  // drawable is also recorded BY NAME with its own triangle count and instance
+  // count, and the twelve largest are reported.
+  //
+  // It is a top-N rather than the whole list on purpose: a report that prints 193
+  // rows is a report nobody reads to the end, and the claim this pass makes is
+  // about where the mass is, which is a claim about the head of the list.
+  const byName = new Map()
+  root.updateMatrixWorld(true)
+  root.traverse((object) => {
+    if (object.isInstancedMesh) kinds.instanced += 1
+    else if (object.isMesh) kinds.mesh += 1
+    else if (object.isPoints) kinds.points += 1
+    else if (object.isLine) kinds.line += 1
+    else if (object.isSprite) kinds.sprite += 1
+    else if (object.isLight) kinds.light += 1
+    else return
+    if (object.isLight) return
+    // A `Group` and a `Mesh` both count as one object in a traverse, but only the
+    // second is a draw call, so the two are counted apart and the report says so.
+    if (object.visible) visible += 1
+    if (object.frustumCulled === false) unculled += 1
+    const geometry = object.geometry
+    if (!geometry) return
+    geometries.add(geometry.uuid)
+    const material = object.material
+    if (Array.isArray(material)) material.forEach((entry) => materials.add(entry.uuid))
+    else if (material) materials.add(material.uuid)
+    const per = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
+    const count = object.isInstancedMesh ? object.count : 1
+    instances += count
+    triangles += per * count
+    const name = object.name || object.type
+    const row = byName.get(name) ?? { name, objects: 0, instances: 0, triangles: 0, unculled: false }
+    row.objects += 1
+    row.instances += count
+    row.triangles += per * count
+    row.unculled = row.unculled || object.frustumCulled === false
+    byName.set(name, row)
+  })
+  const heaviest = [...byName.values()]
+    .map((row) => ({ ...row, triangles: Math.round(row.triangles) }))
+    .sort((a, b) => b.triangles - a.triangles)
+    .slice(0, 12)
+  return {
+    kinds,
+    objects: Object.values(kinds).reduce((sum, n) => sum + n, 0),
+    visible,
+    unculled,
+    instances,
+    triangles: Math.round(triangles),
+    geometries: geometries.size,
+    materials: materials.size,
+    heaviest,
+  }
+}
+
+/** The one render's worth of counters, read immediately after that render. */
+function renderInfo() {
+  const info = game.renderer.info
+  return {
+    calls: info.render.calls,
+    triangles: info.render.triangles,
+    points: info.render.points,
+    lines: info.render.lines,
+    geometries: info.memory.geometries,
+    textures: info.memory.textures,
+    programs: info.programs ? info.programs.length : null,
+  }
+}
+
+/** p50/p95 over a sample, to three places. The budget is a distribution, not a mean. */
+function percentiles(samples) {
+  const sorted = [...samples].sort((a, b) => a - b)
+  const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
+  return { p50: Number(at(0.5).toFixed(3)), p95: Number(at(0.95).toFixed(3)) }
+}
+
+/**
+ * WHAT THE TWO TIMINGS ARE, AND WHY ONLY ONE OF THEM IS IN THE BUDGET
+ * ---------------------------------------------------------------------
+ * `updateMs` times `game.update(SIM_DT)` with NOTHING rendered. That is the whole
+ * simulation — player, creature, lamps, portals, the HUD mirror, the audio frame
+ * — and it is pure JavaScript with no GPU involvement, so it is the one number
+ * in this report that means the same thing on a 2015 laptop and on this
+ * software-rendered box. It is what `BUDGET_UPDATE_MS` bounds.
+ *
+ * The cost of `renderer.render()` is NOT in the budget, and deliberately: on
+ * SwiftShader it is a CPU rasterisation of 2.76 million pixels, which is two to
+ * three orders of magnitude slower than the integrated GPU this budget is
+ * written for, and a frame time measured here would be a claim about a software
+ * rasteriser wearing the renderer's name. `renderMs` is reported anyway, clearly
+ * labelled, because a number this misleading is worth publishing rather than
+ * hiding — a reader who knows to skip it is better served than one who never
+ * learns it exists.
+ *
+ * AND THE ALLOCATION INSTRUMENT IS APPROXIMATE. `performance.memory` is
+ * Chromium's own reading of a V8 heap and is quantised and sampled; what is
+ * reported is `(used after 300 frames) - (used before)` with a `gc()` on either
+ * side, so it is the garbage those 300 frames produced plus whatever the live
+ * set moved by, rounded to whatever bucket Chromium last published. It is a
+ * smoke alarm, not a scale: `verify.mjs`'s source contract is the exact gate
+ * that a per-frame `new THREE.Vector3()` fails, and this is the one that would
+ * notice a regression the source gate cannot see. A browser started without
+ * `--expose-gc` reports `null` here rather than a guess, because a budget row
+ * with an invented number in it is worse than a row that admits the instrument
+ * was missing.
+ */
+window.__captureBudget = async () => {
+  if (!game) throw new Error('the capture page never built a world')
+  releaseLoop()
+  // `begin` is the START button's own call, so the budget is measured on a world
+  // that was PLAYED into rather than one left on the title card: the title's
+  // `_updateStart` never reaches the creature, the lamp pool or the audio frame,
+  // and a budget of the title screen is a budget of a menu.
+  game.start()
+  holdLoop()
+  const poses = []
+  for (const pose of BUDGET_POSES) {
+    teleport(place(pose.target, pose.back))
+    // The creature is placed AFTER the teleport, because `placeCreature` reads
+    // `game.player.yaw` for its bearing and a figure posed from a stand-off the
+    // camera has not arrived at yet is at the wrong angle.
+    if (pose.creature) placeCreature({ ...pose.creature })
+    for (let i = 0; i < BUDGET_SETTLE_FRAMES; i += 1) stepWorld(SIM_DT)
+    // The one render the counters are read from. Nothing else draws between it
+    // and the read, which is the whole reason `autoReset` makes this a frame and
+    // not a run.
+    const renderStart = performance.now()
+    game.renderer.render(game.scene, game.camera)
+    const renderMs = performance.now() - renderStart
+    const info = renderInfo()
+    // `update()` alone, N times, no render. Sorted inside `percentiles`.
+    const samples = []
+    for (let i = 0; i < BUDGET_UPDATE_FRAMES; i += 1) {
+      const t0 = performance.now()
+      stepWorld(SIM_DT)
+      samples.push(performance.now() - t0)
+    }
+    // The heap delta, on its own window so it cannot be contaminated by the
+    // timing loop above.
+    let alloc = null
+    if (typeof window.gc === 'function' && performance.memory) {
+      window.gc()
+      const heapBefore = performance.memory.usedJSHeapSize
+      for (let i = 0; i < BUDGET_ALLOC_FRAMES; i += 1) stepWorld(SIM_DT)
+      const heapAfter = performance.memory.usedJSHeapSize
+      alloc = {
+        bytes: Math.round((heapAfter - heapBefore) / BUDGET_ALLOC_FRAMES),
+        frames: BUDGET_ALLOC_FRAMES,
+        heapBefore,
+        heapAfter,
+      }
+    }
+    poses.push({
+      id: pose.id,
+      label: pose.label,
+      target: pose.target,
+      creature: pose.creature ? pose.creature.state : null,
+      calls: info.calls,
+      triangles: info.triangles,
+      points: info.points,
+      lines: info.lines,
+      programs: info.programs,
+      geometries: info.geometries,
+      textures: info.textures,
+      graph: census(game.scene),
+      updateMs: percentiles(samples),
+      renderMs: Number(renderMs.toFixed(3)),
+      alloc,
+      where: { x: round(game.player.pos.x), z: round(game.player.pos.z), yaw: round(game.player.yaw) },
+      dusk: game.state.dusk,
+      portals: { ...(game.state.portals ?? {}) },
+    })
+  }
+  return { budget: BUDGET, poses }
 }

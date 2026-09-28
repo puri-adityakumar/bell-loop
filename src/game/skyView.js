@@ -407,6 +407,23 @@ const BAND_RENDER_ORDER_BASE = -98
 const ASH_RENDER_ORDER = -95
 
 /**
+ * HORIZON_DEPTH — how deep every silhouette box is, in metres.
+ *
+ * 0.6 for every part, and it was a literal inside the deleted `_horizonGeometry`
+ * before this pass. It is named now because the instanced write needs it as a
+ * per-instance scale component, and a scale component that is a bare `0.6` in the
+ * middle of a `Vector3.set` is a number nobody can check.
+ *
+ * The reason it is 0.6 and not more is unchanged and is worth keeping: at 232 m
+ * under 72° of FOV the ring is seen from every bearing, so depth is only ever
+ * read as the silhouette's own width, and a deeper box costs triangles for
+ * nothing. It is also the one number that proves the unit-box substitution is
+ * exact — see `_buildHorizon`'s header, where the old `BoxGeometry(qw, qh, 0.6)`
+ * and the new `scale.set(w, h, HORIZON_DEPTH)` are shown to be the same box.
+ */
+const HORIZON_DEPTH = 0.6
+
+/**
  * `ashDrift` — one mote's position at time `t`, in the camera-relative box.
  *
  * A PURE FUNCTION of `(index, t, seed)`, and this doc block is the gate's
@@ -424,9 +441,17 @@ const ASH_RENDER_ORDER = -95
  * @param {number} index the mote's own index, 0..ASH_COUNT-1
  * @param {number} t seconds on the world's clock
  * @param {number} seed the world's seed
- * @returns {{x: number, y: number, z: number}} metres, camera-relative
+ * @param {{x: number, y: number, z: number}} [into] written instead of a fresh
+ *   object. PASS 17: this is called ninety times per frame from `update`, and a
+ *   function that cannot write through a caller's buffer will allocate a return
+ *   value every time. The object is not frozen and not returned-to by anyone —
+ *   `update` reads the three fields and drops it on the next iteration — so
+ *   reusing one is safe, and the signature keeps working for a caller that wants
+ *   a value rather than a destination.
+ * @returns {{x: number, y: number, z: number}} metres, camera-relative — `into`
+ *   when one is given, and a fresh object otherwise
  */
-function ashDrift(index, t, seed) {
+function ashDrift(index, t, seed, into) {
   const mix = hash32(seed, index, 0x5f3a)
   // Three rates, none a multiple of another, so the paths never re-align.
   const ax = 0.021 + ((mix & 0xff) / 255) * 0.017
@@ -438,11 +463,11 @@ function ashDrift(index, t, seed) {
   // dust on a shelf that stops. A mote's height is its phase, never its history,
   // which is what keeps the function pure.
   const fallen = (t * ay * 4.4 + phase) % ASH_FALL
-  return {
-    x: Math.sin(t * ax + phase) * half,
-    y: ASH_MIN_Y + 1.6 + (ASH_FALL - fallen),
-    z: Math.cos(t * az + phase * 1.7) * half,
-  }
+  const at = into ?? { x: 0, y: 0, z: 0 }
+  at.x = Math.sin(t * ax + phase) * half
+  at.y = ASH_MIN_Y + 1.6 + (ASH_FALL - fallen)
+  at.z = Math.cos(t * az + phase * 1.7) * half
+  return at
 }
 
 
@@ -572,6 +597,13 @@ export class SkyView {
     this._buildHorizon()
     this._buildBands()
     this._buildAsh()
+    // PASS 17. The one object the ash loop writes through, and the only reason
+    // this field exists: `update` places ninety motes a frame and `ashDrift` takes
+    // a destination so that none of the ninety is a fresh object. Allocated here
+    // with the rest of the view's state rather than in `update`, so the frame path
+    // allocates nothing at all — which is the claim `verify.mjs`'s source contract
+    // now checks about this method.
+    this._ashAt = { x: 0, y: 0, z: 0 }
   }
 
   /**
@@ -621,6 +653,44 @@ export class SkyView {
    * All fourteen share ONE material, hazed toward the sky at build time. A
    * per-object material would be fourteen materials for fourteen objects and would
    * make the dusk retune fourteen writes instead of one.
+   *
+   * ITERATION 2, PASS 17 — FORTY-TWO MESHES BECAME ONE, and the argument is
+   * arithmetic rather than taste, because the whole claim of this pass is that
+   * nothing about the picture moved.
+   *
+   * BEFORE: forty-two `THREE.Mesh` objects, one per box, each with its own
+   * `BoxGeometry` drawn from a cache keyed on a 2 m grid. `tools/perf-census.mjs`
+   * measured 46 meshes and 0 instanced meshes in `skyView.root` — 47 of the
+   * scene's 113 culling-exempt objects — for a pure backdrop of 542 triangles.
+   * Nearly a quarter of the world's draw calls for two thousandths of its
+   * geometry. AFTER: one `InstancedMesh` over a unit box, one draw call, one
+   * geometry, forty-two instances.
+   *
+   * WHY IT IS THE SAME PICTURE, and this is the part that matters. The old code
+   * built `BoxGeometry(qw, qh, HORIZON_DEPTH)` from the 2 m-quantised cache and
+   * then scaled the MESH by `(w / qw, h / qh, 1)`. A box of full width `qw` scaled
+   * by `w / qw` has full width `qw * w/qw = w`. So the mesh's world-space box was
+   * ALREADY exactly `w x h x HORIZON_DEPTH` and the quantisation cancelled itself
+   * out in the product — it was nothing but a device for sharing buffers. A unit
+   * box scaled by `(w, h, HORIZON_DEPTH)` is therefore the same box to the last
+   * bit, and `compose` applies T·R·S in both versions with the same rotation, so
+   * the two are the same matrix written a different way round.
+   *
+   * The material is a `MeshBasicMaterial` with a colour, no map and no
+   * `vertexColors`, so the UVs the unit box carries differently are read by
+   * nothing, and `MeshBasicMaterial` does not light, so the normals are read by
+   * nothing either. Both are load-bearing for that claim, and they are why this
+   * could not have been done to a `MeshStandardMaterial` part.
+   *
+   * WHAT IT COSTS. The cache is gone — `_horizonGeometry` and
+   * `horizonGeometryKeys` are deleted rather than left behind, because a geometry
+   * cache for a geometry nothing builds is a comment that has stopped being true.
+   * `horizonCount` still means "how many boxes are on the ring" and is still 42,
+   * because the picture is what the gate is about; the new `horizonParts` carries
+   * each box's `kind`/`w`/`h`/`y` for the gates that used to reach into
+   * `children[i].geometry.parameters`, and those now read the INSTANCE MATRICES
+   * instead — a stronger check, because they ask what is drawn rather than what
+   * the builder intended.
    */
   _buildHorizon() {
     this.horizon = new THREE.Group()
@@ -637,8 +707,12 @@ export class SkyView {
       fog: false,
     })
 
-    this.horizonCount = 0
-    this.horizonGeometryKeys = new Map()
+    // PASS 17. The parts are COLLECTED first and drawn second. The old loop built
+    // and placed each box as it produced it, which is why the instance count was
+    // not known until the loop had finished — and an `InstancedMesh` needs its
+    // capacity before its first matrix is written. Two passes over fourteen
+    // silhouettes, both trivial, and the alternative is a resize.
+    const parts = []
     for (let index = 0; index < HORIZON_COUNT; index += 1) {
       // The kind rotates through the three, so the ring cannot contain four of a
       // kind by accident: 14 / 3 is 4.67, and starting at 0 makes the
@@ -650,35 +724,72 @@ export class SkyView {
       // A per-object scale, so the ring is not fourteen identical stamps. This
       // is the same lesson pass 5's lit windows carry: variety is a property of
       // the draw, and a uniform set reads as generated.
-      // Quantised for the same reason as the jitter below: a continuous scale
-      // would make every silhouette's parts unique sizes and leave the geometry
-      // cache empty. Ten steps from 0.82 to 1.32 is still ten visibly different
-      // towers on a ring.
+      //
+      // PASS 17. The `& 15 / 15` quantisation is RETAINED and is no longer
+      // required. It used to exist so sixteen distinct scale steps would land on
+      // few enough sizes for `_horizonGeometry`'s cache to hit — "ten steps from
+      // 0.82 to 1.32 is still ten visibly different towers on a ring" — and with
+      // the ring on one unit box there is nothing left to collide with. It is kept
+      // because this pass's rule is that nothing about the picture moves, and a
+      // continuous scale would give fourteen towers a subtly different outline.
+      // Sixteen steps is sixteen steps; a reader who wants the quantisation gone
+      // for its own sake is deleting a line that now costs nothing either way.
       const scale = 0.82 + ((hash32(this.seed, index, 0x4b1d) & 15) / 15) * 0.5
       for (const part of this._horizonParts(kind, index, scale)) {
-        const mesh = new THREE.Mesh(
-          this._horizonGeometry(part.w, part.h),
-          this.horizonMaterial,
-        )
-        mesh.name = `skyHorizon_${kind}`
-        // The geometry is the CACHE's size; the scale is the part's own. Without
-        // this the ring would render at whatever the cache rounded to and the
-        // per-object variety would be a claim rather than a picture.
-        mesh.scale.set(part.w / mesh.geometry.parameters.width, part.h / mesh.geometry.parameters.height, 1)
-        mesh.position.set(
-          Math.cos(bearing) * HORIZON_RADIUS,
-          part.y,
-          Math.sin(bearing) * HORIZON_RADIUS,
-        )
-        // Yawed to face the origin, so a tower's flat side is broadside to the
-        // player and reads as a tank rather than as a line.
-        mesh.rotation.y = -bearing
-        mesh.renderOrder = HORIZON_RENDER_ORDER
-        mesh.frustumCulled = false
-        this.horizon.add(mesh)
-        this.horizonCount += 1
+        parts.push({ kind, w: part.w, h: part.h, y: part.y, bearing })
       }
     }
+    this.horizonCount = parts.length
+    this.horizonParts = parts
+    this._buildHorizonInstances(parts)
+  }
+
+  /**
+   * `_buildHorizonInstances` — the collected boxes as ONE instanced draw.
+   *
+   * Split out from `_buildHorizon` so the collection loop reads as what it is —
+   * the shape table, fourteen silhouettes and nothing else — and the three.js
+   * mechanics live in one place. The header's arithmetic is the argument for the
+   * scale this writes; this method is only where it happens.
+   *
+   * @param {{kind: string, w: number, h: number, y: number, bearing: number}[]} parts
+   */
+  _buildHorizonInstances(parts) {
+    // ONE unit box, and the four scratch objects the write loop needs, allocated
+    // here rather than per part. `InstancePool` in `streetView.js` hoists the same
+    // four for the same reason; a build-time loop would not notice it, and a
+    // per-frame one would.
+    const geometry = new THREE.BoxGeometry(1, 1, 1)
+    this._geometries.push(geometry)
+    this.horizonMesh = new THREE.InstancedMesh(geometry, this.horizonMaterial, parts.length)
+    this.horizonMesh.name = 'skyHorizon_ring'
+    this.horizonMesh.renderOrder = HORIZON_RENDER_ORDER
+    // The same reason every pool in `streetView.js` sets it, and the reason
+    // `_buildMoon` gives for itself: the ring is camera-relative, so its bounding
+    // sphere is in the wrong frame for a frustum test.
+    this.horizonMesh.frustumCulled = false
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const quaternion = new THREE.Quaternion()
+    const scale3 = new THREE.Vector3()
+    const euler = new THREE.Euler()
+    for (let slot = 0; slot < parts.length; slot += 1) {
+      const part = parts[slot]
+      position.set(Math.cos(part.bearing) * HORIZON_RADIUS, part.y, Math.sin(part.bearing) * HORIZON_RADIUS)
+      // Yawed to face the origin, so a tower's flat side is broadside to the
+      // player and reads as a tank rather than as a line.
+      euler.set(0, -part.bearing, 0)
+      quaternion.setFromEuler(euler)
+      // `(w, h, HORIZON_DEPTH)` and NOT the old mesh's `(w/qw, h/qh, 1)`: on a unit
+      // box those are the same world-space extents, and this is the form that does
+      // not need a cache to be right. See `_buildHorizon`'s header for the
+      // arithmetic.
+      scale3.set(part.w, part.h, HORIZON_DEPTH)
+      matrix.compose(position, quaternion, scale3)
+      this.horizonMesh.setMatrixAt(slot, matrix)
+    }
+    this.horizonMesh.instanceMatrix.needsUpdate = true
+    this.horizon.add(this.horizonMesh)
   }
 
   /**
@@ -755,50 +866,32 @@ export class SkyView {
   }
 
   /**
-   * `_horizonGeometry` — one box geometry per distinct part size, SHARED.
+   * `_horizonGeometry` — DELETED IN PASS 17, and this is the tombstone.
    *
-   * Twenty-eight of the forty-six parts have one of about six distinct
-   * dimensions, so a per-part `BoxGeometry` would be forty-six 12-triangle
-   * buffers where six will do. Keyed on the dimensions because a geometry is
-   * what is shared, and the key is what makes "shared" true rather than
-   * aspirational — `verify-world.mjs` counts the distinct geometries off the
-   * built group and requires it far below the part count.
+   * It built `BoxGeometry(qw, qh, 0.6)` from a 2 m-quantised cache so that
+   * forty-two parts shared about a dozen buffers, and its own history is the
+   * clearest statement of why that was never enough:
    *
-   * 0.6 m deep, and the same for every part: at 232 m and 72° of FOV the ring is
-   * seen from every bearing, so depth is only ever read as the silhouette's own
-   * width, and a deeper box costs triangles for nothing.
+   *  - The first version keyed on `w.toFixed(3)`, which is unique per part, so
+   *    the cache never hit: 42 parts, 42 geometries, and a doc comment claiming
+   *    they shared. `verify-world.mjs` counted the distinct geometries off the
+   *    built group and found 42 of 42 — which is how a comment that reads true
+   *    and is false gets found.
+   *  - Quantising the SCALE was not enough either, because the shape tables
+   *    multiply three different numbers (scale, jitter, and a per-kind constant)
+   *    and the product is still unique per part. So the cache was keyed on a
+   *    coarse grid and the MESH carried the remainder.
+   *  - And then the quantisation turned out to be unnecessary, because the mesh
+   *    scale cancelled it: `BoxGeometry(qw, qh, d)` scaled by `(w/qw, h/qh, 1)`
+   *    IS a `w x h x d` box. Twenty lines of cache were buying a sharing that one
+   *    `InstancedMesh` over a unit box buys outright, and were paying 42 draw
+   *    calls for it.
    *
-   * @param {number} w metres
-   * @param {number} h metres
-   * @returns {THREE.BoxGeometry}
+   * The method is gone rather than left uncalled, because an uncalled method with
+   * a fifteen-line justification of itself is precisely the thing this pass's own
+   * source contract would flag. `HORIZON_DEPTH` took the `0.6` with it, and
+   * `_buildHorizon`'s header carries the arithmetic that replaced all of it.
    */
-  _horizonGeometry(w, h) {
-    // The geometry is built at the QUANTISED size and the mesh is SCALED to the
-    // exact one, and the second half is the point.
-    //
-    // The first version built at the exact size, so a key of `w.toFixed(3)` was
-    // unique per part and the cache never hit — 42 parts, 42 geometries, and a
-    // doc comment claiming they shared. `verify-world.mjs` counted the distinct
-    // geometries off the built group and found 42 of 42, which is how a comment
-    // that reads true and is false gets found.
-    //
-    // Quantising the SCALE alone was not enough either, because the shape tables
-    // multiply three different numbers (scale, jitter, and a per-kind constant) and
-    // the product is still unique per part. So the cache is keyed on a coarse
-    // grid and the mesh carries the remainder: the ring is forty-two meshes over
-    // about a dozen geometries, and the variation the pass wants survives as
-    // per-mesh scale rather than as per-mesh buffers.
-    const STEP = 2
-    const qw = Math.max(STEP, Math.round(w / STEP) * STEP)
-    const qh = Math.max(STEP, Math.round(h / STEP) * STEP)
-    const key = `${qw}x${qh}`
-    const found = this.horizonGeometryKeys.get(key)
-    if (found) return found
-    const geometry = new THREE.BoxGeometry(qw, qh, 0.6)
-    this.horizonGeometryKeys.set(key, geometry)
-    this._geometries.push(geometry)
-    return geometry
-  }
 
   /**
    * `_buildBands` — the three strata.
@@ -940,14 +1033,28 @@ export class SkyView {
       mesh.lookAt(this.root.position)
     }
 
+    // PASS 17 — the ash, and the two things this loop was getting wrong on the
+    // frame path.
+    //
+    // 1. `ashDrift` RETURNED a fresh `{x, y, z}` ninety times a frame. It takes
+    //    an `into` argument now and writes through it, and `this._ashAt` is the
+    //    one object it writes into. Ninety small objects a frame at 60 Hz is
+    //    5400 a second for a scene that is entirely fog, and the allocation is
+    //    invisible in the heap instrument because V8 collects it herself — which
+    //    is exactly why the source contract in `verify.mjs` is the gate and the
+    //    heap reading is only the smoke alarm.
+    // 2. `needsUpdate = true` was INSIDE the loop, so the flag was written ninety
+    //    times to set one thing. It is a boolean assignment, so it cost nothing
+    //    measurable, and it was still wrong: the buffer is uploaded once, on the
+    //    way out, and a reader counting the uploads would count ninety.
     for (let index = 0; index < ASH_COUNT; index += 1) {
-      const at = ashDrift(index, t, this.seed)
+      const at = ashDrift(index, t, this.seed, this._ashAt)
       const i = index * 3
       this.ashPositions[i] = at.x
       this.ashPositions[i + 1] = at.y
       this.ashPositions[i + 2] = at.z
-      this.ash.geometry.attributes.position.needsUpdate = true
     }
+    this.ash.geometry.attributes.position.needsUpdate = true
   }
 
   /**
@@ -1030,7 +1137,12 @@ export class SkyView {
     this._geometries = []
     this.textures = []
     this._materials = []
-    this.horizonGeometryKeys = new Map()
+    // PASS 17. `horizonGeometryKeys` is GONE, not emptied: the cache it named was
+    // the deleted `_horizonGeometry`'s, and there is no geometry left for it to
+    // key. The instanced ring's single unit box is in `_geometries` and is
+    // disposed by the loop above, and `horizonParts` is build-time data on a
+    // disposed view that `root.clear()` has already orphaned.
+    this.horizonParts = []
     this.root.clear()
   }
 }

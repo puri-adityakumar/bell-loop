@@ -13,8 +13,8 @@
   "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.8037.57 Safari/537.36",
   "browser": "HeadlessChrome/154.0.8037.57",
   "node": "v26.7.0",
-  "started": "2026-09-27T22:04:56.498Z",
-  "ms": 580910,
+  "started": "2026-09-28T00:34:40.532Z",
+  "ms": 576595,
   "captured": 14,
   "failed": 0,
   "captures": [
@@ -28,9 +28,9 @@
       "file": "benchmark/screenshots/title.png",
       "minLit": 0.035,
       "luma": {
-        "lit": 0.4836197916666667,
-        "litPct": 48.36,
-        "mean": 37.758,
+        "lit": 0.4846375868055556,
+        "litPct": 48.46,
+        "mean": 38.695,
         "max": 205
       },
       "furniture": {
@@ -86,7 +86,7 @@
           "height": 720
         },
         "steps": 2,
-        "ms": 5429,
+        "ms": 3313,
         "phase": "start",
         "paused": false,
         "simFrozen": false,
@@ -188,7 +188,7 @@
           }
         }
       },
-      "ms": 5429
+      "ms": 3313
     },
     {
       "id": "street",
@@ -200,9 +200,9 @@
       "file": "benchmark/screenshots/street.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8362261284722222,
-        "litPct": 83.62,
-        "mean": 78.334,
+        "lit": 0.8363975694444444,
+        "litPct": 83.64,
+        "mean": 78.735,
         "max": 249
       },
       "furniture": {
@@ -258,7 +258,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 8655,
+        "ms": 12198,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -360,7 +360,7 @@
           }
         }
       },
-      "ms": 8655
+      "ms": 12198
     },
     {
       "id": "hammer-located",
@@ -372,10 +372,10 @@
       "file": "benchmark/screenshots/hammer-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.2315581597222222,
-        "litPct": 23.16,
-        "mean": 46.587,
-        "max": 234
+        "lit": 0.22730251736111112,
+        "litPct": 22.73,
+        "mean": 45.925,
+        "max": 236
       },
       "furniture": {
         "pools": 8,
@@ -430,7 +430,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 9967,
+        "ms": 9906,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -532,7 +532,7 @@
           }
         }
       },
-      "ms": 9967
+      "ms": 9906
     },
     {
       "id": "hammer-awakening",
@@ -544,10 +544,10 @@
       "file": "benchmark/screenshots/hammer-awakening.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.2143012152777778,
+        "lit": 0.21426866319444443,
         "litPct": 21.43,
-        "mean": 44.958,
-        "max": 234
+        "mean": 45.917,
+        "max": 238
       },
       "furniture": {
         "pools": 8,
@@ -602,7 +602,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 22072,
+        "ms": 24629,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -704,7 +704,7 @@
           }
         }
       },
-      "ms": 22072
+      "ms": 24629
     },
     {
       "id": "portal-located",
@@ -716,10 +716,10 @@
       "file": "benchmark/screenshots/portal-located.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.41339192708333333,
-        "litPct": 41.34,
-        "mean": 55.842,
-        "max": 218
+        "lit": 0.41300130208333335,
+        "litPct": 41.3,
+        "mean": 55.614,
+        "max": 217
       },
       "furniture": {
         "pools": 8,
@@ -774,7 +774,7 @@
           "height": 720
         },
         "steps": 4,
-        "ms": 10478,
+        "ms": 11368,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -876,7 +876,7 @@
           }
         }
       },
-      "ms": 10478
+      "ms": 11368
     },
     {
       "id": "portal-shutdown",
@@ -888,10 +888,10 @@
       "file": "benchmark/screenshots/portal-shutdown.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8820160590277778,
-        "litPct": 88.2,
-        "mean": 33.007,
-        "max": 189
+        "lit": 0.8826388888888889,
+        "litPct": 88.26,
+        "mean": 33.271,
+        "max": 188
       },
       "furniture": {
         "pools": 8,
@@ -946,7 +946,7 @@
           "height": 720
         },
         "steps": 3,
-        "ms": 21921,
+        "ms": 22341,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1048,7 +1048,7 @@
           }
         }
       },
-      "ms": 21921
+      "ms": 22341
     },
     {
       "id": "creature-stalking",
@@ -1060,9 +1060,9 @@
       "file": "benchmark/screenshots/creature-stalking.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.3314388020833333,
-        "litPct": 33.14,
-        "mean": 46.759,
+        "lit": 0.33376953125,
+        "litPct": 33.38,
+        "mean": 48.734,
         "max": 252
       },
       "furniture": {
@@ -1118,7 +1118,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 17649,
+        "ms": 22785,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1261,7 +1261,7 @@
           }
         }
       },
-      "ms": 17649
+      "ms": 22785
     },
     {
       "id": "creature-chasing",
@@ -1273,10 +1273,10 @@
       "file": "benchmark/screenshots/creature-chasing.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8547287326388889,
-        "litPct": 85.47,
-        "mean": 48.702,
-        "max": 250
+        "lit": 0.8625043402777778,
+        "litPct": 86.25,
+        "mean": 49.077,
+        "max": 249
       },
       "furniture": {
         "pools": 8,
@@ -1331,7 +1331,7 @@
           "height": 720
         },
         "steps": 6,
-        "ms": 23685,
+        "ms": 23768,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1474,7 +1474,7 @@
           }
         }
       },
-      "ms": 23685
+      "ms": 23768
     },
     {
       "id": "banish",
@@ -1486,9 +1486,9 @@
       "file": "benchmark/screenshots/banish.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.71396484375,
-        "litPct": 71.4,
-        "mean": 68.901,
+        "lit": 0.7010568576388889,
+        "litPct": 70.11,
+        "mean": 68.169,
         "max": 242
       },
       "furniture": {
@@ -1544,7 +1544,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 28107,
+        "ms": 29943,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1687,7 +1687,7 @@
           }
         }
       },
-      "ms": 28107
+      "ms": 29943
     },
     {
       "id": "capture-reset",
@@ -1699,9 +1699,9 @@
       "file": "benchmark/screenshots/capture-reset.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.8482747395833333,
-        "litPct": 84.83,
-        "mean": 77.878,
+        "lit": 0.837421875,
+        "litPct": 83.74,
+        "mean": 79.946,
         "max": 249
       },
       "furniture": {
@@ -1757,7 +1757,7 @@
           "height": 720
         },
         "steps": 7,
-        "ms": 31064,
+        "ms": 31964,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -1859,7 +1859,7 @@
           }
         }
       },
-      "ms": 31064
+      "ms": 31964
     },
     {
       "id": "finale-headlights",
@@ -1871,10 +1871,10 @@
       "file": "benchmark/screenshots/finale-headlights.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9516796875,
-        "litPct": 95.17,
-        "mean": 45.189,
-        "max": 241
+        "lit": 0.9491579861111111,
+        "litPct": 94.92,
+        "mean": 45.469,
+        "max": 245
       },
       "furniture": {
         "pools": 8,
@@ -1929,7 +1929,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 84752,
+        "ms": 83730,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -2031,7 +2031,7 @@
           }
         }
       },
-      "ms": 84752
+      "ms": 83730
     },
     {
       "id": "win",
@@ -2043,9 +2043,9 @@
       "file": "benchmark/screenshots/win.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.10570095486111111,
-        "litPct": 10.57,
-        "mean": 16.694,
+        "lit": 0.10847222222222222,
+        "litPct": 10.85,
+        "mean": 16.586,
         "max": 196
       },
       "furniture": {
@@ -2101,7 +2101,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 94876,
+        "ms": 93693,
         "phase": "won",
         "paused": false,
         "simFrozen": false,
@@ -2203,7 +2203,7 @@
           }
         }
       },
-      "ms": 94876
+      "ms": 93693
     },
     {
       "id": "responsive",
@@ -2215,9 +2215,9 @@
       "file": "benchmark/screenshots/responsive.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.9308450429352069,
-        "litPct": 93.08,
-        "mean": 65.796,
+        "lit": 0.9299570647931303,
+        "litPct": 93,
+        "mean": 63.825,
         "max": 249
       },
       "furniture": {
@@ -2273,7 +2273,7 @@
           "height": 854
         },
         "steps": 4,
-        "ms": 5376,
+        "ms": 5089,
         "phase": "playing",
         "paused": false,
         "simFrozen": false,
@@ -2375,7 +2375,7 @@
           }
         }
       },
-      "ms": 5376
+      "ms": 5089
     },
     {
       "id": "pause",
@@ -2387,9 +2387,9 @@
       "file": "benchmark/screenshots/pause.png",
       "minLit": 0.06,
       "luma": {
-        "lit": 0.6796766493055556,
-        "litPct": 67.97,
-        "mean": 47.027,
+        "lit": 0.6802907986111111,
+        "litPct": 68.03,
+        "mean": 47.764,
         "max": 196
       },
       "furniture": {
@@ -2445,7 +2445,7 @@
           "height": 720
         },
         "steps": 5,
-        "ms": 6578,
+        "ms": 6538,
         "phase": "playing",
         "paused": true,
         "simFrozen": true,
@@ -2547,17 +2547,17 @@
           }
         }
       },
-      "ms": 6578
+      "ms": 6538
     }
   ],
   "luma": {
     "floor": 6,
-    "mean": 60.553,
+    "mean": 60.436,
     "tightest": {
       "id": "win",
-      "litPct": 10.57,
+      "litPct": 10.85,
       "floor": 6,
-      "margin": 4.57
+      "margin": 4.85
     }
   }
 }

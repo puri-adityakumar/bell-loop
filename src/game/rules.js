@@ -656,7 +656,24 @@ export function portalDebrisRing(seed, index) {
  * @param {number} time seconds on the view's own clock
  * @returns {{x: number, y: number, angle: number, size: number}}
  */
-export function portalDebrisPose(rock, time) {
+/**
+ * portalDebrisPose — one flake's position and spin at `time`, in the ring's plane.
+ *
+ * PASS 17. The `into` argument is new and optional, and it exists for the same
+ * reason `ashDrift`'s is: this is called fourteen times a frame per live portal
+ * (forty-two a frame in a full Act I) and a function that can only return a value
+ * will allocate one every time. The module is PURE and stays pure — this writes
+ * into a caller's object rather than mutating any of its own — and every existing
+ * caller that wants a value rather than a destination is unaffected, because the
+ * fresh-object path is still there when `into` is omitted.
+ *
+ * @param {object} rock one flake's own `{phase, rate, radius, size}`
+ * @param {number} time seconds on the view's clock; negative clamps to zero
+ * @param {{x: number, y: number, angle: number, size: number}} [into] written
+ *   instead of allocating a fresh object
+ * @returns {{x: number, y: number, angle: number, size: number}}
+ */
+export function portalDebrisPose(rock, time, into) {
   // NEGATIVE TIME IS CLAMPED TO ZERO, and this is not a formality. `t` on the
   // view's clock only ever rises, so a negative value cannot occur here — but the
   // function's two siblings in this file (`portalCollapse`, and the `t` a caller
@@ -667,12 +684,12 @@ export function portalDebrisPose(rock, time) {
   // apart from a rock whose clock had run backwards.
   const t = Number.isFinite(time) ? Math.max(0, time) : 0
   const angle = rock.phase + rock.rate * t
-  return {
-    x: Math.cos(angle) * rock.radius,
-    y: Math.sin(angle) * rock.radius * PORTAL_DEBRIS_FLATTEN,
-    angle: angle * 3,
-    size: rock.size,
-  }
+  const pose = into ?? { x: 0, y: 0, angle: 0, size: 0 }
+  pose.x = Math.cos(angle) * rock.radius
+  pose.y = Math.sin(angle) * rock.radius * PORTAL_DEBRIS_FLATTEN
+  pose.angle = angle * 3
+  pose.size = rock.size
+  return pose
 }
 
 /**

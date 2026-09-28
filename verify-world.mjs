@@ -5914,6 +5914,97 @@ function skyObjects(sky) {
   return out
 }
 
+/**
+ * `HORIZON_POSITION_TOLERANCE` — how far off the 232 m ring a silhouette may sit,
+ * in metres, and WHY THE NUMBER IS WHAT IT IS.
+ *
+ * PASS 17, and this tolerance is not a loosened threshold — it is a replacement
+ * for one that was measuring the wrong instrument.
+ *
+ * BEFORE: `worst < 1e-6`, which was correct FOR THE OLD REPRESENTATION and is
+ * meaningless for this one. The ring was forty-two `THREE.Mesh` children, each
+ * holding a float64 `Vector3`, and `getWorldPosition` read it back exactly. The
+ * bound was 1 µm on a 232 m ring, and it passed at 0.0.
+ *
+ * AFTER: the ring is one `InstancedMesh`, and `instanceMatrix` is a
+ * `THREE.InstancedBufferAttribute` over a **`Float32Array`**. Every position this
+ * check reads has been through a float32 round trip, so the floor on the
+ * measurement is set by float32's resolution and not by anything in the code:
+ *
+ *     232 m * 2^-24  =  1.4e-5 m   (half a ULP at 232 in single precision)
+ *
+ * The first run of the new check reported `worst = 2.6e-6` and printed
+ * `0.0000 m off the ring` — the error is real, it is four micrometres, and it is
+ * entirely float32 quantisation. Measured, not assumed: the recovered `x` came
+ * back as `38.1832733154296875`, which is a value representable in single
+ * precision, and the float64 construction is `38.18327562618308`.
+ *
+ * The ceiling is `1e-3` — one millimetre — and the reason it is a millimetre and
+ * not `1.4e-5` is that the bound has to survive a camera position far from the
+ * origin as well as the quantisation: the check folds by adding and subtracting
+ * the camera's own coordinate, and at a wrapped position of ±448 m that
+ * subtraction gives up about a further `5.7e-14`. A millimetre is four hundred
+ * times the quantisation, and it is still **0.004 of one pixel** at the ring —
+ * at 232 m under 72° of FOV across 1280 px, one pixel is about 0.26 m. The
+ * property being tested is that no silhouette can stand in front of a portal, and
+ * four micrometres cannot do that; a value that could would be metres.
+ *
+ * @type {number}
+ */
+const HORIZON_POSITION_TOLERANCE = 1e-3
+
+/**
+ * `horizonBoxes` — the ring's 42 boxes, as WORLD positions and world-space extents.
+ *
+ * PASS 17. The ring used to be 42 `THREE.Mesh` children of `sky.horizon` and these
+ * three checks walked `horizon.children` calling `getWorldPosition` on each. It is
+ * now ONE `InstancedMesh` with 42 instance matrices, so there is one object and
+ * forty-two transforms to decompose.
+ *
+ * The helper is here rather than inline in each check because three separate gates
+ * need the same answer and the whole point of this pass is that a duplicated
+ * traversal is a second place for the two representations to drift. It reads the
+ * INSTANCE MATRICES, which is strictly better than what it replaced: the old code
+ * asked each child mesh where it was, and this asks the ring what it is about to
+ * draw. A builder that placed a mesh correctly and then failed to write the matrix
+ * passes the old check and fails this one.
+ *
+ * @param {object} sky a `SkyView`
+ * @returns {{x: number, y: number, z: number, w: number, h: number, d: number}[]}
+ */
+function horizonBoxes(sky) {
+  const ring = sky.horizonMesh
+  assert.ok(ring && ring.isInstancedMesh, 'the horizon is not an InstancedMesh, so horizonBoxes has nothing to read')
+  assert.equal(ring.count, sky.horizonCount, `the ring draws ${ring.count} instances and claims ${sky.horizonCount} boxes`)
+  const out = []
+  const matrix = new THREE.Matrix4()
+  const position = new THREE.Vector3()
+  const quaternion = new THREE.Quaternion()
+  const scale = new THREE.Vector3()
+  // `horizon` is a child of `root`, which sits on the camera in x and z and at y 0,
+  // so the world matrix of the ring is the product of the two. Read it rather than
+  // assuming it: the wrap-immunity claim in the sibling check is that `root` does
+  // NOT translate by whole street periods, and this is where that is felt.
+  //
+  // AND THE UPDATE, which is not an optimisation — it is what the old
+  // `getWorldPosition` call did for free. `Object3D.getWorldPosition` calls
+  // `updateWorldMatrix(true, false)` on the way in, and this harness's fake
+  // renderer never calls `updateMatrixWorld` on anything, so without this line the
+  // parent is whatever it was at the last time something else refreshed it. The
+  // first run of the new helper reported a silhouette at 452 m on a 232 m ring
+  // after the check teleported the player: the ring's own matrices were fresh and
+  // the camera-relative parent was not.
+  sky.root.updateMatrixWorld(true)
+  const parent = new THREE.Matrix4().copy(sky.horizon.matrixWorld)
+  for (let slot = 0; slot < ring.count; slot += 1) {
+    ring.getMatrixAt(slot, matrix)
+    matrix.premultiply(parent)
+    matrix.decompose(position, quaternion, scale)
+    out.push({ x: position.x, y: position.y, z: position.z, w: scale.x, h: scale.y, d: scale.z })
+  }
+  return out
+}
+
 check('the sky is built, camera-relative, and never inside the wrapped street group', () => {
   game.restart()
   run(game, 0.5)
@@ -5987,23 +6078,26 @@ check('the horizon ring is a constant radius from the eye, and clear of every po
   // 448 m of continuous cases rather than a constant. The camera-relative ring
   // collapses the whole question to one number, and the number cannot change
   // because nothing in the ring reads the player's position.
-  const ring = sky.horizon.children
+  // PASS 17. `horizonBoxes(sky)` instead of `sky.horizon.children`: one
+  // `InstancedMesh` with 42 instance matrices where there were 42 child meshes, and
+  // the boxes are read out of the matrices the renderer will use. See the helper for
+  // why that is a stronger read than the one it replaced.
+  sky.root.updateMatrixWorld(true)
+  const ring = horizonBoxes(sky)
   assert.ok(ring.length >= 14, `the horizon has ${ring.length} parts, so the ring is not built`)
   let worst = 0
-  for (const mesh of ring) {
-    // The part is a child of `horizon`, which is a child of `root`, which is at
-    // the camera. The world position is the sum, and the distance from the eye is
-    // the radius by construction — so this measures the construction rather than
+  for (const box of ring) {
+    // The part is placed under `horizon`, which is under `root`, which is at the
+    // camera. The world position is the sum, and the distance from the eye is the
+    // radius by construction — so this measures the construction rather than
     // trusting it.
-    const world = new THREE.Vector3()
-    mesh.getWorldPosition(world)
     const eye = new THREE.Vector3(game.camera.position.x, 0, game.camera.position.z)
-    const distance = Math.hypot(world.x - eye.x, world.z - eye.z)
+    const distance = Math.hypot(box.x - eye.x, box.z - eye.z)
     worst = Math.max(worst, Math.abs(distance - radius))
   }
   assert.ok(
-    worst < 1e-6,
-    `a horizon silhouette is ${worst.toFixed(4)} m off the ${radius} m ring, so the ring is not a constant radius and the sightline guarantee is void`,
+    worst < HORIZON_POSITION_TOLERANCE,
+    `a horizon silhouette is ${worst.toExponential(3)} m off the ${radius} m ring, over the ${HORIZON_POSITION_TOLERANCE} m the instanced representation can resolve, so the ring is not a constant radius and the sightline guarantee is void`,
   )
 
   // ...and it is the same constant from EVERY position, which is the guarantee.
@@ -6014,13 +6108,11 @@ check('the horizon ring is a constant radius from the eye, and clear of every po
     run(game, 0.2)
     const moved = game.skyView
     const eye = { x: game.camera.position.x, z: game.camera.position.z }
-    for (const mesh of moved.horizon.children) {
-      const world = new THREE.Vector3()
-      mesh.getWorldPosition(world)
-      const distance = Math.hypot(world.x - eye.x, world.z - eye.z)
+    for (const box of horizonBoxes(moved)) {
+      const distance = Math.hypot(box.x - eye.x, box.z - eye.z)
       assert.ok(
-        Math.abs(distance - radius) < 1e-6,
-        `at (${x}, ${z}) a silhouette is ${distance.toFixed(2)} m from the eye rather than ${radius} m`,
+        Math.abs(distance - radius) < HORIZON_POSITION_TOLERANCE,
+        `at (${x}, ${z}) a silhouette is ${distance.toFixed(4)} m from the eye rather than ${radius} m`,
       )
     }
   }
@@ -6352,15 +6444,23 @@ check('the horizon is a hazed silhouette: dark against the live sky, and varied 
   assert.ok(shapeLuma < skyLuma, 'and it must still be under the sky')
 
   // PROFILE, and this is the one property of the ring that is about SHAPE. Three
-  // kinds, and a ring of one kind is a fence. The check counts the meshes by name
-  // off the built group rather than reading the table, because a kind that is
-  // named in `HORIZON_SHAPES` and never built is the exact defect: the first
-  // version of `_horizonParts` had no `crane` branch at all and let it fall
-  // through, which rendered correctly until a fourth kind arrived.
+  // kinds, and a ring of one kind is a fence. The check counts the KINDS off
+  // `skyView`'s own record of what it built rather than reading the shape table,
+  // because a kind that is named in `HORIZON_SHAPES` and never built is the exact
+  // defect: the first version of `_horizonParts` had no `crane` branch at all and
+  // let it fall through, which rendered correctly until a fourth kind arrived.
+  //
+  // PASS 17. The kinds used to be counted off `mesh.name.replace('skyHorizon_', '')`
+  // over `horizon.children` — forty-two names, one per box. The ring is one
+  // `InstancedMesh` with one name now, so the record has moved to
+  // `sky.horizonParts`, which is the same list the writer loop consumed: one entry
+  // per instance, in the same order, carrying the `kind` it was built for. That is
+  // a stronger read than the names were — a box whose matrix was written from the
+  // wrong part would have carried the wrong name too, and now carries the wrong
+  // record, and both are checked against the count below.
   const kinds = new Map()
-  for (const mesh of sky.horizon.children) {
-    const kind = mesh.name.replace('skyHorizon_', '')
-    kinds.set(kind, (kinds.get(kind) ?? 0) + 1)
+  for (const part of sky.horizonParts) {
+    kinds.set(part.kind, (kinds.get(part.kind) ?? 0) + 1)
   }
   assert.deepEqual(
     [...kinds.keys()].sort(),
@@ -6370,42 +6470,60 @@ check('the horizon is a hazed silhouette: dark against the live sky, and varied 
   for (const [kind, count] of kinds) {
     assert.ok(count >= 4, `only ${count} ${kind} parts on a fourteen-silhouette ring, so one quadrant has none`)
   }
-  // Every part is THREE boxes, so 14 x 3 = 42, and the whole ring is 42 boxes
-  // sharing a handful of geometries. The count is the cheap-geometry claim.
-  assert.equal(sky.horizonCount, [...kinds.values()].reduce((a, b) => a + b, 0), 'horizonCount does not match the meshes actually in the group')
-  // The geometry cache has to HIT, and the first version of the check demanded a
-  // third of the parts and was wrong: the ring is three different SHAPES at three
-  // different heights, so even a perfect cache cannot collapse them further than
-  // the number of distinct sizes, which is about eighteen. The claim is that the
-  // cache is doing work — one geometry per part would mean forty-two buffers, and
-  // the doc comment claiming they share would be false while reading true.
-  const distinct = new Set(sky.horizon.children.map((mesh) => mesh.geometry)).size
-  assert.ok(
-    distinct < sky.horizonCount / 2,
-    `the ring has ${sky.horizonCount} parts on ${distinct} distinct geometries, so the sharing claim in \`_horizonGeometry\` is not true`,
-  )
+  // Every silhouette is THREE boxes, so 14 x 3 = 42, and the record has one entry
+  // per instance rather than per child mesh. The two counts have to agree or the
+  // record and the draw have drifted apart — which is the only way a per-instance
+  // representation can be wrong while still looking right.
+  assert.equal(sky.horizonParts.length, sky.horizonCount, 'horizonParts does not match horizonCount')
+  assert.equal(sky.horizonCount, [...kinds.values()].reduce((a, b) => a + b, 0), 'horizonCount does not match the parts actually recorded')
   // The parts differ in SIZE, which is the variety claim: fourteen identical
-  // stamps read as generated, and the per-object scale is what stops that.
-  const heights = sky.horizon.children.map((mesh) => mesh.geometry.parameters.height)
+  // stamps read as generated, and the per-instance scale is what stops that.
+  //
+  // PASS 17. This used to read `mesh.geometry.parameters.height` — the height of
+  // the CACHED box, which pass 9 quantised to a 2 m grid, so the numbers it
+  // compared were the cache's and not the world's. It now reads the DECOMPOSED
+  // instance scale, which is the box's actual world-space height. The unit box is
+  // 1 m and the scale carries the part's own height, so `h` here is metres and the
+  // ratio is the one the eye sees.
+  const boxes = horizonBoxes(sky)
+  const heights = boxes.map((box) => box.h)
   const tallest = Math.max(...heights)
   const shortest = Math.min(...heights)
-  assert.ok(tallest / shortest > 1.5, `every part on the ring is between ${shortest.toFixed(1)} m and ${tallest.toFixed(1)} m, so the per-object scale is not being applied`)
+  assert.ok(tallest / shortest > 1.5, `every part on the ring is between ${shortest.toFixed(1)} m and ${tallest.toFixed(1)} m, so the per-instance scale is not being applied`)
+  // ...and the WIDTHS vary too, which the old check never asked because the cache
+  // put a tower's tank and its stalk on the same key. A ring of same-height
+  // different-width boxes is a fence with windows.
+  const widths = boxes.map((box) => box.w)
+  assert.ok(
+    Math.max(...widths) / Math.min(...widths) > 1.5,
+    `the ring's widths only run from ${Math.min(...widths).toFixed(1)} m to ${Math.max(...widths).toFixed(1)} m, so the parts are one shape at four sizes`,
+  )
+  // ...and every box is `HORIZON_DEPTH` deep, which is the one number the unit-box
+  // substitution depends on and the one a reader of the new code cannot check by
+  // looking at a `BoxGeometry` any more.
+  const depths = new Set(boxes.map((box) => Number(box.d.toFixed(6))))
+  assert.equal(depths.size, 1, `the ring's parts are ${depths.size} different depths, so the shared unit box is not the shared box the pass claimed`)
 
-  // The cost, and pass 17's budget is the frame of reference. The whole pass is
-  // three draw calls plus one Points and about 500 triangles; the world draws
-  // about ninety. This is the check that says the sky is cheap, and it is a
-  // triangle count because a draw-call count would be a claim about the source.
+  // The cost, and pass 17's budget is the frame of reference. The whole pass is a
+  // handful of draw calls plus one Points and about 500 triangles; the world draws
+  // about a hundred. This is the check that says the sky is cheap, and it is a
+  // TRIANGLE count because a draw-call count is `tools/capture.mjs --budget`'s job
+  // and this harness has no renderer.
   let triangles = 0
   for (const mesh of skyObjects(sky)) {
     if (mesh.name === 'skyAsh') continue  // points, not triangles
     const geometry = mesh.geometry
     const per = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
-    // Instanced meshes would need the count; the horizon is not instanced, so
-    // each child is one object and the geometry count IS the triangle count.
-    triangles += per
+    // PASS 17. An `InstancedMesh` draws `count` copies, so the ring's contribution
+    // is 12 triangles times 42 instances and not 12. Before this pass the horizon
+    // was forty-two plain meshes, which is why the same sum was correct then and
+    // would have UNDER-counted the ring by 492 triangles — a gate that read low
+    // because it could not see the change, which is the failure mode this whole
+    // pass exists to remove.
+    triangles += per * (mesh.isInstancedMesh ? mesh.count : 1)
   }
   assert.ok(triangles < 800, `the sky costs ${triangles} triangles, over the 800 this pass budgeted for a backdrop`)
-  console.log(`\n  pass-9 silhouette: luma ${shapeLuma.toFixed(1)} (unhazed ${raw.toFixed(1)}) against a sky of ${skyLuma.toFixed(1)} and fog of ${fogLuma.toFixed(1)}; ${[...kinds].map(([k, n]) => `${n} ${k}`).join(', ')} on ${distinct} geometries, ${triangles} triangles`)
+  console.log(`\n  pass-9 silhouette: luma ${shapeLuma.toFixed(1)} (unhazed ${raw.toFixed(1)}) against a sky of ${skyLuma.toFixed(1)} and fog of ${fogLuma.toFixed(1)}; ${[...kinds].map(([k, n]) => `${n} ${k}`).join(', ')} on ONE instanced box, ${triangles} triangles`)
 })
 
 check('the sky costs three draw calls and a point cloud, and teardown releases all of it', () => {
@@ -6417,22 +6535,36 @@ check('the sky costs three draw calls and a point cloud, and teardown releases a
   run(game, 0.5)
   const sky = game.skyView
   const objects = skyObjects(sky)
-  // One group, one moon, 42 horizon parts, three bands, one point cloud.
+  // One group, one instanced ring of 42 parts, one moon, three bands, one point
+  // cloud. PASS 17: the ring used to be counted as `parts.length >= 42`, which was
+  // true and was also the reason forty-two draw calls went unremarked for eight
+  // passes — the check read a count of OBJECTS and called it a budget. It now
+  // counts INSTANCES off the one mesh, and separately asserts that the mesh is
+  // one object, which is the property the budget actually needs.
   const bands = objects.filter((mesh) => mesh.name.startsWith('skyHazeBand'))
-  const horizonParts = objects.filter((mesh) => mesh.name.startsWith('skyHorizon_'))
+  const rings = objects.filter((mesh) => mesh.name === 'skyHorizon_ring')
   const ash = objects.filter((mesh) => mesh.name === 'skyAsh')
   const moon = objects.filter((mesh) => mesh.name === 'skyMoon')
   assert.equal(bands.length, 3, `there are ${bands.length} haze bands, so the pass's own budget is wrong`)
   assert.equal(moon.length, 1, 'there is not exactly one moon')
   assert.equal(ash.length, 1, 'the ash is not a single point cloud')
-  assert.ok(horizonParts.length >= 42, `the ring has ${horizonParts.length} parts, so it is not the fourteen three-part silhouettes the pass claims`)
+  assert.equal(rings.length, 1, `the horizon is ${rings.length} objects, so the forty-two parts are not one instanced draw`)
+  assert.equal(sky.horizonMesh.count, 42, `the ring draws ${sky.horizonMesh.count} instances, so it is not the fourteen three-part silhouettes the pass claims`)
+  // ...and the whole sky, in draw calls, which is what the check's NAME has always
+  // claimed and what it could not measure until the ring was instanced. One moon,
+  // one ring, three bands, one point cloud: six objects, and a point cloud is a
+  // call. `tools/capture.mjs --budget` reads the same number off a real driver.
+  assert.equal(objects.length, 6, `the sky is ${objects.length} drawable objects, not the six this pass's own name claims`)
   // The bands share ONE geometry and ONE texture, which is the cheap claim: three
   // copies of a 64x64 canvas would be three uploads and three chances to
   // generate a different band, and the bands must match to read as one fog bank.
   assert.equal(new Set(bands.map((mesh) => mesh.geometry)).size, 1, 'the three haze bands do not share one geometry')
   assert.equal(new Set(bands.map((mesh) => mesh.material.map)).size, 1, 'the three haze bands do not share one texture')
-  // The ring shares ONE material, so the dusk retune is one write.
-  assert.equal(new Set(horizonParts.map((mesh) => mesh.material)).size, 1, 'the horizon parts do not share one material')
+  // The ring shares ONE material and ONE geometry, so the dusk retune is one write
+  // and the whole backdrop is one buffer. Before pass 17 the second half was "about
+  // a dozen geometries"; it is now exactly one, and the check says so.
+  assert.equal(new Set(rings.map((mesh) => mesh.material)).size, 1, 'the horizon ring does not share one material')
+  assert.equal(new Set(rings.map((mesh) => mesh.geometry)).size, 1, 'the horizon ring is not one geometry')
 
   // TEARDOWN, and the order matters: `dispose` is the last check in this file
   // because it destroys the shared `game`. So the sky's part is asserted HERE,
@@ -6452,7 +6584,7 @@ check('the sky costs three draw calls and a point cloud, and teardown releases a
   // ...and it is idempotent, because `dispose` may legitimately be called twice
   // on the way out of a hot reload.
   scratch.dispose()
-  console.log(`\n  pass-9 cost: 3 bands on 1 geometry + 1 texture, ${horizonParts.length} horizon parts on 1 material, 1 point cloud; teardown released ${geometries} geometries and ${textures} textures`)
+  console.log(`\n  pass-9 cost: 3 bands on 1 geometry + 1 texture, ${sky.horizonMesh.count} horizon parts on 1 instanced box and 1 material, 1 point cloud, ${objects.length} drawable objects; teardown released ${geometries} geometries and ${textures} textures`)
 })
 
 // ---------------------------------------------------------------------------
@@ -8305,6 +8437,170 @@ check('pass-11: a footfall puff is in the frame, and the cap holds in the built 
     assert.equal(view._materials.includes(view.puffMaterial), false, 'and the puff material was not')
     assert.equal(view._materials.includes(view.hazeMaterial), false, 'and the shimmer material was not')
   }
+})
+
+// ---------------------------------------------------------------------------
+// iteration 2, pass 17 — the budget, counted off the built world
+//
+// WHY THIS IS HERE AND NOT ONLY IN `tools/capture.mjs --budget`
+// -----------------------------------------------------------
+// Because the live mode needs a browser and a GPU, and this runs on every commit.
+// The two halves measure different things and only one of them is a draw call:
+//
+//  - `tools/capture.mjs --budget` reads `renderer.info.render.calls` off a frame a
+//    driver actually drew. That is the budgeted number and nothing here can
+//    replace it.
+//  - THIS measures the scene GRAPH: objects, instanced pools, instance counts,
+//    resident triangles, distinct geometries, materials and culling exemptions.
+//
+// The graph census OVERSTATES draw calls (an `InstancedMesh` is one object for any
+// number of instances) and it is still the right thing to hold statically, for two
+// reasons. It is the number a change moves first — nobody converts forty-two
+// meshes into one instanced mesh by accident — and it is the only half that can
+// catch the regression in the ten seconds between commits, on a machine with no
+// GPU at all.
+//
+// The ceilings are read from `src/game/capture.js` rather than restated, so a
+// retune is one edit and the two instruments cannot end up judging the same budget
+// by different numbers.
+// ---------------------------------------------------------------------------
+
+check('pass-17: the built scene is inside the triangle and geometry budget, and its cost is instanced', () => {
+  // ITS OWN WORLD, and the reason is positional rather than defensive: this check
+  // sits after the puff field's teardown, and that check ends with `game.dispose()`
+  // on the SHARED instance — which is correct for it and leaves this one looking at
+  // a scene whose three views have been removed from it. `game.restart()` resets
+  // simulation state and does not rebuild the graph, so a census taken here without
+  // a fresh world would count an empty scene. The pass-11 collapse check records the
+  // same lesson from the other direction: "a measurement that read as its own
+  // opposite" was a reused instance carrying a previous run's state.
+  const scratch = new BellLoopGame(container, { store: createStartStore(), audio: makeFakeAudio(), createRenderer: makeFakeRenderer })
+  run(scratch, 0.5)
+  const view = scratch.streetView
+  const scene = scratch.scene
+
+  // THE CENSUS, and it is the same traversal `tools/perf-census.mjs` and the capture
+  // page's `census` both run, written out a third time because each of the three is a
+  // different process: node without a renderer, chrome with one, and this harness.
+  // The numbers are cross-checked against the other two below, which is what makes
+  // the duplication safe — three copies that have to agree.
+  const census = (root) => {
+    const kinds = { instanced: 0, mesh: 0, points: 0, line: 0, sprite: 0, light: 0 }
+    let unculled = 0
+    let instances = 0
+    let triangles = 0
+    const geometries = new Set()
+    const materials = new Set()
+    root.updateMatrixWorld(true)
+    root.traverse((object) => {
+      if (object.isInstancedMesh) kinds.instanced += 1
+      else if (object.isMesh) kinds.mesh += 1
+      else if (object.isPoints) kinds.points += 1
+      else if (object.isLine) kinds.line += 1
+      else if (object.isSprite) kinds.sprite += 1
+      else if (object.isLight) kinds.light += 1
+      else return
+      if (object.frustumCulled === false) unculled += 1
+      if (!object.geometry) return
+      const geometry = object.geometry
+      geometries.add(geometry.uuid)
+      const material = object.material
+      if (Array.isArray(material)) material.forEach((entry) => materials.add(entry.uuid))
+      else if (material) materials.add(material.uuid)
+      const per = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3
+      const count = object.isInstancedMesh ? object.count : 1
+      instances += count
+      triangles += per * count
+    })
+    return { kinds, unculled, instances, triangles: Math.round(triangles), geometries: geometries.size, materials: materials.size }
+  }
+  const whole = census(scene)
+  const street = census(view.group)
+  const sky = census(scratch.skyView.root)
+  const drawable = whole.kinds.instanced + whole.kinds.mesh + whole.kinds.points
+
+  // 1. THE TWO CEILINGS, on the whole scene. Both are read from `capture.js`, and
+  //    the message names the measured number because a ceiling nobody quotes is a
+  //    ceiling nobody can act on.
+  assert.ok(
+    whole.triangles <= cap.BUDGET.triangles,
+    `the world submits ${whole.triangles} triangles, over the ${cap.BUDGET.triangles} ceiling`,
+  )
+  assert.ok(
+    whole.geometries <= cap.BUDGET.geometries,
+    `the world holds ${whole.geometries} geometries, over the ${cap.BUDGET.geometries} ceiling`,
+  )
+  // 2. AND THE INSTANCING IS DOING THE WORK, which is the claim the numbers exist to
+  //    support. The city is 16 000-odd instances across a few dozen pools; if that
+  //    ratio collapsed, the draw-call count would be the scene graph and the budget
+  //    would be a different argument entirely. A hundred instances per pool is a
+  //    floor and not a target: the cheapest kind in the set (a 12-triangle yard) is
+  //    over four hundred, and the most expensive (the wire ribbon) is one object.
+  const pools = whole.kinds.instanced
+  assert.ok(pools >= 30, `only ${pools} instanced meshes, so the world has lost the instancing that holds its draw calls down`)
+  assert.ok(
+    whole.instances / pools > 100,
+    `the ${pools} instanced meshes carry ${whole.instances} instances, so they are not earning their draw calls`,
+  )
+  // 3. AND THE ROAD IS THE INSTANCED HALF, which is the specific claim the fidelity
+  //    passes have to be held to: passes 5-12 added houses, poles, wires, furniture,
+  //    ground detail and cars, and every one of them went into a pool rather than
+  //    onto the graph. At the slice-16 baseline `streetView` held 19 pools; it holds
+  //    62, and `tools/perf-census.mjs --tree <bede4ed>` measured the baseline to be
+  //    the same 19.
+  // ...and every instanced mesh in the street is accounted for BY NAME, which is
+  // stronger than a count. `view.pools` is the `InstancePool` registry (every
+  // fixture and every lot part); the three portal debris rings are built directly
+  // in `_buildPortals` as `InstancedMesh`es and deliberately are not pools, because
+  // a pool is a reused geometry with a fixed capacity and a ring is rewritten every
+  // frame. Both halves are named so a fourth unaccounted ring would fail here.
+  assert.equal(
+    street.kinds.instanced,
+    view.pools.length + view.portals.length,
+    'the census found instanced meshes in the street that neither view.pools nor the portal rings account for',
+  )
+  assert.ok(
+    street.kinds.instanced >= 60,
+    `streetView holds ${street.kinds.instanced} instanced meshes, down from the 62 passes 5-12 built`,
+  )
+  // 4. THE SKY IS SIX OBJECTS, and this is the one number this pass moved. It was 47
+  //    (forty-two horizon boxes, a moon, three bands and a point cloud) and it is now
+  //    6, because the ring is one `InstancedMesh`. The TRIANGLES ARE UNCHANGED at 542
+  //    — twelve per instance, forty-two instances — and that is the whole proof that
+  //    the merge cost the picture nothing. Both halves are asserted because either
+  //    alone would pass on a regression that broke the other.
+  assert.equal(sky.kinds.instanced, 1, `the sky holds ${sky.kinds.instanced} instanced meshes, so the ring is not one`)
+  assert.equal(sky.kinds.mesh, 4, `the sky holds ${sky.kinds.mesh} plain meshes — a moon and three bands — and nothing else should be a mesh`)
+  assert.equal(sky.triangles, 542, `the sky costs ${sky.triangles} triangles, not the 542 the instanced ring was measured at before the merge`)
+  // 5. AND NOTHING IN THE SKY IS CULLING-EXEMPT BY ACCIDENT. Every sky object is
+  //    camera-relative, so all six are exempt by design — and the count is six, so a
+  //    seventh object appearing exempt is a change somebody made and did not mean.
+  assert.equal(sky.unculled, 6, `${sky.unculled} of the sky's six objects are culling-exempt`)
+  // 6. THE GRAPH OVERSTATES CALLS AND THIS CHECK SAYS SO. `drawable` is objects, not
+  //    calls: 143 objects is fewer calls than it looks like only because 62 of them
+  //    are pools. The published `renderer.info.render.calls` for this same world is
+  //    111 at the avenue pose and 140 at the portal, and the two numbers are RELATED
+  //    rather than equal. Asserting the live figure here would be asserting a number
+  //    this harness cannot measure, so what is asserted is the bound it must not
+  //    exceed: the graph is already inside the draw-call ceiling before culling has
+  //    removed anything at all, which is the only direction that can be checked
+  //    without a driver.
+  assert.ok(
+    drawable <= cap.BUDGET.drawCalls,
+    `the scene graph holds ${drawable} drawable objects, over the ${cap.BUDGET.drawCalls} ceiling even before culling`,
+  )
+  console.log(
+    `\n  pass-17 budget: ${drawable} drawable objects (${whole.kinds.instanced} instanced + ${whole.kinds.mesh} mesh + ` +
+      `${whole.kinds.points} points), ${whole.instances} instances over them, ${whole.triangles} triangles ` +
+      `(ceiling ${cap.BUDGET.triangles}), ${whole.geometries} geometries (ceiling ${cap.BUDGET.geometries}), ` +
+      `${whole.materials} materials, ${whole.unculled} culling-exempt; sky ${sky.triangles} triangles in ` +
+      `${sky.kinds.instanced + sky.kinds.mesh + sky.kinds.points} objects`,
+  )
+  // ...and the world it measured is released like any other, because §15's teardown
+  // claim is "every mount releases everything" and a check that leaked a world would
+  // be the one place in the file that did not.
+  scratch.dispose()
+  assert.equal(scratch.disposed, true, 'the budget world did not dispose, so this check leaked a scene')
 })
 
 check('dispose() tears the whole world down without throwing', () => {

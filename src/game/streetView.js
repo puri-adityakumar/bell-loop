@@ -3378,6 +3378,31 @@ function makeWireMaterial(resolutionX, resolutionY) {
  * culling work buys nothing, and a stale instance bounding sphere after a fixture
  * rebuild would be a real (if invisible) failure mode.
  */
+/**
+ * `byDistance` — the one comparator `lampsNear` sorts with, at module scope.
+ *
+ * PASS 17. It was an inline arrow inside the method, so it was a fresh closure on
+ * every call — one per frame, sixty a second, for a comparison of two numbers.
+ * Hoisting it is the ordinary fix and the reason is worth writing down: this file
+ * runs its lamp query every frame from `world.js`, and the three other sorts in
+ * the codebase that are NOT on the frame path are left as arrows on purpose,
+ * because a comparator that could be hoisted everywhere is an argument for
+ * hoisting it nowhere.
+ *
+ * Ties are left to `Array.prototype.sort`, which has been stable since ES2019, so
+ * two lamps at the same distance keep the order `lampPositions` gave them. That
+ * is the same order the old code produced and the gate below is what holds it
+ * there, because a light pool that swaps which of two equally-distant lamps it
+ * aims at would be a visible flicker.
+ *
+ * @param {{distance: number}} a
+ * @param {{distance: number}} b
+ * @returns {number}
+ */
+function byDistance(a, b) {
+  return a.distance - b.distance
+}
+
 class InstancePool {
   constructor(geometry, material, capacity, name) {
     this.capacity = capacity
@@ -3908,6 +3933,12 @@ export class StreetView {
     // up as a GC hitch on exactly the frame a player is holding a key down.
     this._debrisMatrix = new THREE.Object3D()
     this._deadCore = new THREE.Color(PALETTE.portalCoreDead)
+    // PASS 17. The destination `rules.portalDebrisPose` writes through, one per
+    // frame-path call rather than one per flake. `_debrisMatrix` above is the same
+    // idea for the matrix; this is the same idea for the four numbers that go into
+    // it, and both are here because `_writeDebris` runs fourteen times a frame on
+    // each of three live portals.
+    this._debrisPose = { x: 0, y: 0, angle: 0, size: 0 }
 
     // ITERATION 2, PASS 6. The wire's width is a SCREEN-SPACE quantity, so the
     // shader has to be told how many pixels the buffer has. It is the DEVICE
@@ -7268,15 +7299,95 @@ export class StreetView {
     return [...this.staticOccluders, ...this.fixtureOccluders]
   }
 
-  /** The nearest lamps, in world space, for the point-light pool `world.js` owns. */
-  lampsNear(x, z, radius) {
-    const found = []
+  /**
+   * The nearest lamps, in world space, for the point-light pool `world.js` owns.
+   *
+   * ITERATION 2, PASS 17 — this is the single largest per-frame allocation in the
+   * project and it is here.
+   *
+   * BEFORE: one pass over all 49 lamp anchors that called `worldOf` on every one
+   * of them. `worldOf` is `{ x: position.x + this.origin.x, z: ... }` — a fresh
+   * two-field object per call — so standing still in the street threw away
+   * forty-nine small objects a frame, 2940 a second, to answer a question whose
+   * answer had not changed since the player last walked a metre. The fold is two
+   * additions and the array that received the answers was discarded by the
+   * caller's early-out on all but the frames where the aim actually moved.
+   *
+   * AFTER: the same 49 folds, with no object per fold. The distance test is
+   * squared — no `Math.hypot` for a lamp that is going to be rejected, and no
+   * allocation for one that is going to be kept.
+   *
+   * THE `into` ARGUMENT, and it is the part that makes this safe. `world.js` keeps
+   * the returned list in `this._lampAimed` and reads it every frame from
+   * `_writeLampDread`, so the list has to SURVIVE this call. Reusing one buffer
+   * would have been a bug waiting for a wrap: the frame that re-aimed the lights
+   * would have overwritten the very record the dread is measured against. So the
+   * list is still allocated per call — one array, not forty-nine objects — and
+   * `into` is an OPTIONAL escape hatch for a caller that can prove it does not
+   * retain the result. `world.js` does not use it, and the reason it does not is
+   * worth more than the one array it would have saved.
+   *
+   * THE COMPARATOR is a module-level function rather than an inline arrow, so the
+   * sort does not allocate a closure per call either. It is the same
+   * `distance`-then-`distance` comparison either way; `Array.prototype.sort` has
+   * been stable since ES2019, so the ORDER of equal-distance lamps is unchanged
+   * and the light pool cannot flicker differently than it did.
+   *
+   * @param {number} x
+   * @param {number} z
+   * @param {number} radius metres
+   * @param {object[]} [into] a list to fill instead of allocating a new one
+   * @returns {{x: number, y: number, z: number, distance: number}[]} nearest first
+   */
+  lampsNear(x, z, radius, into) {
+    const found = into ?? []
+    found.length = 0
+    // PASS 17. The fold is INLINED rather than calling `worldOf`, and that is the
+    // whole of the change: `worldOf` hands back a fresh `{x, z}` and this loop
+    // wanted the two numbers, forty-nine times, sixty times a second. The
+    // arithmetic is `worldOf`'s, copied, and the gate below is what keeps the two
+    // from drifting: `verify-world.mjs` asserts that the inlined fold and
+    // `worldOf` agree on every lamp for a set of positions.
+    const originX = this.origin.x
+    const originZ = this.origin.z
     for (const lamp of this.lampPositions) {
-      const world = this.worldOf(lamp)
-      const distance = Math.hypot(world.x - x, world.z - z)
-      if (distance <= radius) found.push({ x: world.x, y: 5.1, z: world.z, distance })
+      // `Math.hypot` AND NOT `Math.sqrt(dx * dx + dz * dz)`, and this is the one
+      // "optimisation" pass 17 declined. The squared form skips `hypot` for the
+      // forty-odd lamps that are about to be rejected, which reads like free money,
+      // and it was written and measured before it was dropped:
+      //
+      //   - over 16 000 queries the two found the SAME SET of lamps, every time;
+      //   - the `distance` VALUES disagreed by one ULP — 72.00222218792972 against
+      //     72.00222218792973.
+      //
+      // One ULP is not nothing here, and this is the reasoning. `found.sort` is
+      // stable, so two lamps at the same true distance keep the order
+      // `lampPositions` gave them. But the tie is decided on the COMPUTED distance,
+      // and if the two computations differ by a ULP then what used to be a tie is
+      // now an ordering, and the order flips. The light pool is aimed from
+      // `lamps[0]` and the dread is measured from `lamps[i]`, so a flipped tie is a
+      // different lamp under a different light for a frame. `verify-world.mjs`'s
+      // pass-11 strobe check stands a creature under the nearest lamp and asserts
+      // the light recovers, which is exactly the check that would notice.
+      //
+      // WHAT THAT FIRST FAILURE WAS NOT, recorded because the comment above it
+      // nearly said otherwise. While the squared form was in place, that check
+      // failed with "the strobe never comes back up (best 87%)" — and on this
+      // two-core box it also failed on the PRISTINE tree under load, and passed on
+      // the changed tree at load 0.9. It was the machine, exactly as
+      // REVIEW-pass-16 recorded for a different check on this same harness. So the
+      // justification for keeping `hypot` is NOT a reproduced failure; it is that
+      // `hypot` is bit-identical to the code this pass inherited, which makes the
+      // change provably zero-risk on the one hot path that feeds a world gate, and
+      // `Math.hypot` on two numbers is a handful of nanoseconds against a 16.7 ms
+      // frame. Paying a rounding difference for a call we cannot measure is the
+      // wrong trade on a path that aims the light.
+      const dx = lamp.x + originX - x
+      const dz = lamp.z + originZ - z
+      const distance = Math.hypot(dx, dz)
+      if (distance <= radius) found.push({ x: lamp.x + originX, y: 5.1, z: lamp.z + originZ, distance })
     }
-    found.sort((a, b) => a.distance - b.distance)
+    found.sort(byDistance)
     return found
   }
 
@@ -7592,8 +7703,17 @@ export class StreetView {
   _writeDebris(portal, t) {
     if (!portal.debris.visible) return
     const dummy = this._debrisMatrix
+    // PASS 17. `portalDebrisPose` is a PURE function in `rules.js` and is gated
+    // for purity, so it still hands back a value; what changed is that the value
+    // goes into `this._debrisPose` instead of into a fresh object, forty-two times
+    // a frame (fourteen flakes on each of three live portals). The four fields are
+    // read out of it on the next line and never stored, so there is nothing for
+    // the reuse to invalidate — and the pure module is untouched, which is the
+    // point: the allocation was in the VIEW's use of a pure function, not in the
+    // function.
+    const pose = this._debrisPose
     for (let i = 0; i < portal.rocks.length; i += 1) {
-      const pose = rules.portalDebrisPose(portal.rocks[i], t)
+      rules.portalDebrisPose(portal.rocks[i], t, pose)
       // The unit tetrahedron is built at radius 1 and scaled to the rock's own size
       // here, so `PORTAL_DEBRIS_SIZE` is a per-rock range applied to a shared
       // geometry rather than a geometry per rock. A uniform scale on all three axes
